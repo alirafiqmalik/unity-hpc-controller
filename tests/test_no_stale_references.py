@@ -26,10 +26,6 @@ def test_nothing_references_the_retired_templates():
     assert not offenders, f"stale template references in: {offenders}"
 
 
-def test_no_unresolvable_plugin_dir_anywhere():
-    offenders = [
-        str(p.relative_to(REPO_ROOT))
-        for p in _text_files()
-        if "<plugin_dir>" in p.read_text(errors="replace")
-    ]
-    assert not offenders, f"<plugin_dir> still present in: {offenders}"
+# The `<plugin_dir>` placeholder check was promoted to the marketplace-level
+# suite (tests/test_shipping_safety.py) — it applies to every plugin, not just
+# this one. The assertions above stay here because they are unity-hpc history.
