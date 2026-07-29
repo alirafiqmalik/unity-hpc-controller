@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# hpc-compare <commit-a> <commit-b> — diff two experiments
+# Shows val_bpb delta, memory delta, and train.py diff
+set -euo pipefail
+
+if [[ $# -lt 2 ]]; then
+    echo "Usage: hpc-compare <commit-a> <commit-b>" >&2
+    exit 1
+fi
+
+A="$1"; B="$2"
+HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
+TSV="$HPC_DIR/results.tsv"
+
+if [[ ! -f "$TSV" ]]; then
+    echo "No results.tsv found in $HPC_DIR" >&2
+    exit 1
+fi
+
+# Find rows matching commit prefix
+ROW_A=$(awk -F'\t' -v c="$A" 'NR>1 && index($1, c)==1 {print; exit}' "$TSV")
+ROW_B=$(awk -F'\t' -v c="$B" 'NR>1 && index($1, c)==1 {print; exit}' "$TSV")
+
+echo "=== Experiment Comparison ==="
+echo ""
+if [[ -n "$ROW_A" ]]; then
+    BPB_A=$(echo "$ROW_A" | cut -f2)
+    MEM_A=$(echo "$ROW_A" | cut -f3)
+    DESC_A=$(echo "$ROW_A" | cut -f5)
+    echo "A ($A): val_bpb=$BPB_A  memory=${MEM_A}GB  \"$DESC_A\""
+else
+    echo "A ($A): not found in results.tsv"
+    BPB_A=""
+fi
+
+if [[ -n "$ROW_B" ]]; then
+    BPB_B=$(echo "$ROW_B" | cut -f2)
+    MEM_B=$(echo "$ROW_B" | cut -f3)
+    DESC_B=$(echo "$ROW_B" | cut -f5)
+    echo "B ($B): val_bpb=$BPB_B  memory=${MEM_B}GB  \"$DESC_B\""
+else
+    echo "B ($B): not found in results.tsv"
+    BPB_B=""
+fi
+
+if [[ -n "$BPB_A" && -n "$BPB_B" ]]; then
+    echo ""
+    python3 -c "
+a, b = float('$BPB_A'), float('$BPB_B')
+delta = b - a
+pct = (delta / a) * 100
+arrow = '▼' if delta < 0 else '▲'
+print(f'val_bpb delta: {arrow} {abs(delta):.6f} ({abs(pct):.2f}% {\"improvement\" if delta < 0 else \"regression\"})')
+ma, mb = float('$MEM_A'), float('$MEM_B')
+print(f'memory delta:  {mb-ma:+.1f} GB')
+"
+fi
+
+echo ""
+echo "=== train.py diff ($A → $B) ==="
+git -C "$HPC_DIR" diff "$A" "$B" -- train.py 2>/dev/null || \
+    echo "(git diff not available — not in a git repo or commits not found)"

@@ -1,0 +1,179 @@
+/* Unity cluster monitor — styling.
+   Palette values come straight from the dataviz reference palette (validated,
+   colorblind-safe). Light values are the defaults; the dark column swaps in
+   under prefers-color-scheme:dark and the [data-theme] toggle. Edit colors
+   here in one place — the charts read them via CSS custom properties. */
+
+:root {
+  color-scheme: light;
+
+  /* chrome & ink */
+  --page:        #f9f9f7;
+  --surface:     #fcfcfb;
+  --ink:         #0b0b0b;
+  --ink-2:       #52514e;
+  --muted:       #898781;
+  --grid:        #e1e0d9;
+  --axis:        #c3c2b7;
+  --border:      rgba(11, 11, 11, 0.10);
+
+  /* categorical series (fixed slot order — never cycle) */
+  --series-1: #2a78d6;  /* blue    */
+  --series-2: #008300;  /* green   */
+  --series-3: #e87ba4;  /* magenta */
+  --series-4: #eda100;  /* yellow  */
+  --series-5: #1baf7a;  /* aqua    */
+  --series-6: #eb6834;  /* orange  */
+  --series-7: #4a3aa7;  /* violet  */
+  --series-8: #e34948;  /* red     */
+
+  /* status */
+  --good:     #0ca30c;
+  --warning:  #fab219;
+  --critical: #d03b3b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page:    #0d0d0d;
+    --surface: #1a1a19;
+    --ink:     #ffffff;
+    --ink-2:   #c3c2b7;
+    --muted:   #898781;
+    --grid:    #2c2c2a;
+    --axis:    #383835;
+    --border:  rgba(255, 255, 255, 0.10);
+
+    --series-1: #3987e5;
+    --series-2: #008300;
+    --series-3: #d55181;
+    --series-4: #c98500;
+    --series-5: #199e70;
+    --series-6: #d95926;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:    #0d0d0d;
+  --surface: #1a1a19;
+  --ink:     #ffffff;
+  --ink-2:   #c3c2b7;
+  --muted:   #898781;
+  --grid:    #2c2c2a;
+  --axis:    #383835;
+  --border:  rgba(255, 255, 255, 0.10);
+  --series-1: #3987e5;
+  --series-2: #008300;
+  --series-3: #d55181;
+  --series-4: #c98500;
+  --series-5: #199e70;
+  --series-6: #d95926;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 56px; }
+
+/* ── header ── */
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 4px; }
+header h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--muted); font-size: 12.5px; }
+.controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button {
+  border: 0; background: transparent; color: var(--ink-2);
+  font: inherit; font-size: 12.5px; padding: 5px 11px; cursor: pointer;
+}
+.seg button:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.seg button.on { background: var(--series-1); color: #fff; }
+
+.icon-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
+  border-radius: 8px; width: 32px; height: 30px; cursor: pointer; font-size: 15px; line-height: 1;
+}
+.icon-btn:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+
+/* ── KPI tiles ── */
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0 20px; }
+.kpi {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px 16px;
+}
+.kpi .label { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi .value { font-size: 30px; font-weight: 650; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.kpi .value .unit { font-size: 14px; font-weight: 500; color: var(--ink-2); margin-left: 4px; }
+.kpi .foot { color: var(--ink-2); font-size: 12px; margin-top: 4px; }
+.kpi .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: baseline; }
+
+/* ── chart cards ── */
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px 16px 12px; margin-bottom: 16px;
+}
+.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.card .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+.card svg { display: block; width: 100%; height: auto; overflow: visible; }
+
+/* legend */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+/* svg text roles */
+.ax { fill: var(--muted); font-size: 10.5px; }
+.axline { stroke: var(--axis); stroke-width: 1; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+
+/* ── heatmap ── */
+.heatmap { display: grid; grid-template-columns: 34px repeat(24, 1fr); gap: 2px; align-items: center; }
+.heatmap .hcell { aspect-ratio: 1 / 1; border-radius: 3px; min-height: 14px; }
+.heatmap .hlabel { font-size: 10.5px; color: var(--muted); text-align: right; padding-right: 4px; }
+.heatmap .hhour { font-size: 9.5px; color: var(--muted); text-align: center; }
+
+/* ── tooltip ── */
+#tip {
+  position: fixed; pointer-events: none; z-index: 20; opacity: 0;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px; font-size: 12px; line-height: 1.45;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.18); transition: opacity .08s; max-width: 240px;
+}
+#tip b { font-weight: 600; }
+#tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+
+.empty { color: var(--muted); font-size: 13px; padding: 22px 4px; text-align: center; }
+
+/* ── cluster profile markdown ── */
+.md { font-size: 13px; color: var(--ink-2); }
+.md h3 { font-size: 13px; font-weight: 600; color: var(--ink); margin: 16px 0 6px; }
+.md h4 { font-size: 12.5px; font-weight: 600; color: var(--ink); margin: 12px 0 4px; }
+.md p { margin: 6px 0; }
+.md ul { margin: 6px 0; padding-left: 18px; }
+.md li { margin: 2px 0; }
+.md code { background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.md blockquote { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--axis); background: color-mix(in srgb, var(--ink) 3%, transparent); border-radius: 0 6px 6px 0; color: var(--muted); font-size: 12.5px; }
+.md table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 12.5px; }
+.md th, .md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+.md th { background: color-mix(in srgb, var(--ink) 5%, transparent); font-weight: 600; color: var(--ink); white-space: nowrap; }
+.md tr:first-child th { position: sticky; top: 0; }
+
+footer { color: var(--muted); font-size: 11.5px; margin-top: 20px; }
+
+@media (max-width: 720px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .grid2 { grid-template-columns: 1fr; }
+}

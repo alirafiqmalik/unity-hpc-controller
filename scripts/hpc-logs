@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# hpc-logs [N] — tail the monitor log for the active campaign
+# N: number of lines (default: follow live with tail -f)
+set -euo pipefail
+
+HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
+STATE_DIR="$HPC_DIR/.unity_state"
+
+LOG=$(ls -t "$STATE_DIR"/*.monitor.log 2>/dev/null | head -1)
+if [[ -z "$LOG" ]]; then
+    echo "No monitor log found in $STATE_DIR" >&2
+    echo "Is a campaign running? Check: hpc-status" >&2
+    exit 1
+fi
+
+echo "Log: $LOG"
+echo "---"
+
+if [[ -n "${1:-}" ]]; then
+    tail -n "$1" "$LOG"
+else
+    tail -f "$LOG"
+fi

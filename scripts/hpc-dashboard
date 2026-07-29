@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# hpc-dashboard — start the Unity cluster monitor dashboard (Tailscale-friendly).
+#
+# Usage:
+#   hpc-dashboard                 start on 0.0.0.0:8787 (view over your tailnet)
+#   hpc-dashboard --port 9000     pick a port
+#   hpc-dashboard --host 127.0.0.1  bind locally only
+#   hpc-dashboard --open          also open it in your browser
+#   hpc-dashboard --tailscale     start bound to localhost + `tailscale serve` (HTTPS, tailnet-only)
+#
+# The server reads the data files on every request. Live panels stay fresh via
+# the usual telemetry sync; historical panels read an archived snapshot until
+# the dashboard is rewired to summaries.db. Ctrl-C to stop.
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVE="$PLUGIN_DIR/cluster-intel/dashboard/serve.py"
+
+HOST="0.0.0.0"
+PORT="8787"
+OPEN=0
+TAILSCALE=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --host)      HOST="$2"; shift 2 ;;
+        --port)      PORT="$2"; shift 2 ;;
+        --open)      OPEN=1; shift ;;
+        --tailscale) TAILSCALE=1; HOST="127.0.0.1"; shift ;;
+        -h|--help)   grep '^#' "${BASH_SOURCE[0]}" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+    esac
+done
+
+if [ ! -f "$SERVE" ]; then
+    echo "dashboard server not found at $SERVE" >&2
+    exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required" >&2
+    exit 1
+fi
+
+echo "Unity cluster monitor"
+echo "  local : http://localhost:${PORT}"
+if command -v tailscale >/dev/null 2>&1; then
+    TS_IP="$(tailscale ip -4 2>/dev/null | head -1 || true)"
+    [ -n "${TS_IP:-}" ] && echo "  tailnet: http://${TS_IP}:${PORT}"
+fi
+
+# Optional: expose over the tailnet via HTTPS with no open port.
+if [ "$TAILSCALE" -eq 1 ]; then
+    if ! command -v tailscale >/dev/null 2>&1; then
+        echo "tailscale not found — falling back to plain bind on ${HOST}:${PORT}" >&2
+    else
+        tailscale serve --bg "$PORT" >/dev/null 2>&1 \
+            && echo "  serve : $(tailscale serve status 2>/dev/null | grep -o 'https://[^ ]*' | head -1)" \
+            || echo "  (could not start 'tailscale serve'; the port is still reachable directly)"
+    fi
+fi
+
+# Optionally open a browser (only when a display is available).
+if [ "$OPEN" -eq 1 ]; then
+    ( sleep 1
+      URL="http://localhost:${PORT}"
+      if command -v xdg-open >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+          xdg-open "$URL" >/dev/null 2>&1 || true
+      elif command -v open >/dev/null 2>&1; then
+          open "$URL" >/dev/null 2>&1 || true
+      fi ) &
+fi
+
+exec python3 "$SERVE" --host "$HOST" --port "$PORT"

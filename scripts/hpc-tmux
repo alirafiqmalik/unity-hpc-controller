@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# hpc-tmux <cmd> [args] — manage named tmux sessions on Unity via SSH
+# Usage:
+#   hpc-tmux ls                      list all sessions
+#   hpc-tmux start <name> [command]  create a new detached session
+#   hpc-tmux attach <name>           attach interactively
+#   hpc-tmux kill <name>             kill a session
+#   hpc-tmux send <name> <keys>      send keys to a session
+set -euo pipefail
+
+HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
+ENV_FILE="$HPC_DIR/unityHPC/.env"
+[[ -f "$ENV_FILE" ]] && set -a && source "$ENV_FILE" && set +a
+UNITY_HOST="${UNITY_HOST:-unity}"
+
+CMD="${1:-ls}"
+shift || true
+
+case "$CMD" in
+    ls|list)
+        echo "tmux sessions on $UNITY_HOST:"
+        ssh "$UNITY_HOST" "tmux ls 2>/dev/null || echo '  (no sessions)'"
+        ;;
+    start|new)
+        NAME="${1:?Usage: hpc-tmux start <name> [command]}"
+        SESS_CMD="${2:-bash}"
+        if ssh "$UNITY_HOST" "tmux has-session -t '$NAME' 2>/dev/null"; then
+            echo "Session '$NAME' already exists on $UNITY_HOST"
+        else
+            ssh "$UNITY_HOST" "tmux new-session -d -s '$NAME' '$SESS_CMD'"
+            echo "Started session '$NAME' on $UNITY_HOST"
+        fi
+        ;;
+    attach)
+        NAME="${1:?Usage: hpc-tmux attach <name>}"
+        ssh -t "$UNITY_HOST" "tmux attach-session -t '$NAME'"
+        ;;
+    kill)
+        NAME="${1:?Usage: hpc-tmux kill <name>}"
+        ssh "$UNITY_HOST" "tmux kill-session -t '$NAME'"
+        echo "Killed session '$NAME' on $UNITY_HOST"
+        ;;
+    send)
+        NAME="${1:?Usage: hpc-tmux send <name> <keys>}"
+        KEYS="${2:?provide keys to send}"
+        ssh "$UNITY_HOST" "tmux send-keys -t '$NAME' '$KEYS' Enter"
+        ;;
+    *)
+        echo "Usage: hpc-tmux ls | start <name> [cmd] | attach <name> | kill <name> | send <name> <keys>" >&2
+        exit 1
+        ;;
+esac

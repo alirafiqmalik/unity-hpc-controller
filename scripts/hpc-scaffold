@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Generate the unityHPC/ scaffold for a project.
+
+Usage:
+  hpc-scaffold --type {cpu,gpu,ml} [--project-dir DIR] [--dry-run]
+
+Invoked by /unity-hpc:setup. Existing files that differ from the canonical
+template are moved into unityHPC/.pre-redesign/ rather than being overwritten
+in place; an existing .env is always left alone.
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import scaffold  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="hpc-scaffold")
+    parser.add_argument("--type", dest="ptype", required=True, choices=scaffold.TYPES)
+    parser.add_argument("--project-dir", default=".")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print what would change and exit without writing")
+    args = parser.parse_args()
+
+    project_dir = Path(args.project_dir).expanduser().resolve()
+    if not project_dir.is_dir():
+        print(f"hpc-scaffold: not a directory: {project_dir}", file=sys.stderr)
+        return 2
+
+    try:
+        actions = scaffold.plan(project_dir, args.ptype)
+    except ValueError as exc:
+        print(f"hpc-scaffold: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print(f"Would generate the {args.ptype} scaffold in {project_dir}/unityHPC:")
+        for action in actions:
+            print(f"  {action.kind:<8} unityHPC/{action.path.name}")
+        return 0
+
+    print(f"Generating the {args.ptype} scaffold in {project_dir}/unityHPC:")
+    for line in scaffold.apply(actions):
+        print(line)
+
+    if any(a.kind == "replace" for a in actions):
+        print(f"\nDisplaced files are preserved in "
+              f"unityHPC/{scaffold.BACKUP_DIRNAME}/ — review them if you had "
+              f"local changes.")
+    print("\nNext: fill in SLURM_ACCOUNT, REMOTE_DIR and JOB_COMMAND in unityHPC/.env")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

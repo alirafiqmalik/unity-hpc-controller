@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "unity-hpc": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--quiet",
+        "--with",
+        "mcp>=1.0.0",
+        "python",
+        "${CLAUDE_PLUGIN_ROOT}/mcp/hpc_server.py"
+      ]
+    }
+  }
+}

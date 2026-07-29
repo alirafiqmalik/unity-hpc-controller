@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# hpc-cleanup [days] — remove .unity_state/ DB and log files older than N days
+# Default: 30 days. Asks for confirmation before deleting.
+set -euo pipefail
+
+DAYS="${1:-30}"
+HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
+STATE_DIR="$HPC_DIR/.unity_state"
+
+if [[ ! -d "$STATE_DIR" ]]; then
+    echo "No .unity_state/ found in $HPC_DIR"
+    exit 0
+fi
+
+echo "Looking for campaign files older than $DAYS days in $STATE_DIR ..."
+echo ""
+
+OLD_FILES=$(find "$STATE_DIR" -maxdepth 1 \( -name "*.db" -o -name "*.log" -o -name "*.pid" \) -mtime +"$DAYS" 2>/dev/null)
+
+if [[ -z "$OLD_FILES" ]]; then
+    echo "Nothing to clean up (no files older than $DAYS days)."
+    exit 0
+fi
+
+echo "Files to delete:"
+echo "$OLD_FILES" | while read -r f; do
+    SIZE=$(du -sh "$f" 2>/dev/null | cut -f1)
+    echo "  $SIZE  $f"
+done
+
+echo ""
+read -rp "Delete these files? [y/N] " CONFIRM
+if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+    echo "$OLD_FILES" | xargs rm -f
+    echo "Cleaned up."
+else
+    echo "Cancelled."
+fi

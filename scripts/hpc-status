@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# hpc-status — show campaign job state counts from local SQLite DB (no SSH)
+# Exit: 0=all done  1=jobs running/pending  2=failed or no campaign
+set -euo pipefail
+
+HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
+STATE_DIR="$HPC_DIR/.unity_state"
+
+if [[ ! -d "$STATE_DIR" ]]; then
+    echo "No .unity_state/ found in $HPC_DIR" >&2
+    exit 2
+fi
+
+DB=$(ls -t "$STATE_DIR"/*.db 2>/dev/null | head -1)
+if [[ -z "$DB" ]]; then
+    echo "No campaign database found in $STATE_DIR" >&2
+    exit 2
+fi
+
+CAMPAIGN=$(basename "$DB" .db)
+echo "Campaign: $CAMPAIGN"
+echo
+
+sqlite3 "$DB" "SELECT status, COUNT(*) as n FROM jobs GROUP BY status ORDER BY n DESC;" \
+    | while IFS='|' read -r status count; do
+        printf "  %-20s %s\n" "$status" "$count"
+    done
+
+echo
+
+ACTIVE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM jobs WHERE status IN ('RUNNING','PENDING','REQUEUED');")
+FAILED=$(sqlite3 "$DB" "SELECT COUNT(*) FROM jobs WHERE status IN ('FAILED','NODE_FAIL','TIMEOUT','PREEMPTED') AND attempt >= 2;")
+DONE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM jobs WHERE status IN ('COMPLETED','CANCELLED');")
+TOTAL=$(sqlite3 "$DB" "SELECT COUNT(*) FROM jobs;")
+
+echo "Total: $TOTAL | Done: $DONE | Active: $ACTIVE | Permanently failed: $FAILED"
+
+[[ "$ACTIVE" -gt 0 ]] && exit 1
+[[ "$FAILED" -gt 0 ]] && exit 2
+exit 0

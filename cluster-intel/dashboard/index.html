@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unity Cluster Monitor</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Unity Cluster Monitor</h1>
+      <span class="sub" id="meta">loading…</span>
+      <div class="controls">
+        <div class="seg" id="window">
+          <button data-h="24">24h</button>
+          <button data-h="168" class="on">7d</button>
+          <button data-h="720">30d</button>
+          <button data-h="87600">all</button>
+        </div>
+        <button class="icon-btn" id="theme" title="Toggle light/dark">◐</button>
+      </div>
+    </header>
+
+    <!-- live snapshot KPIs -->
+    <section class="kpis" id="kpis"></section>
+
+    <!-- shared cluster profile (from /unity-hpc:recon) -->
+    <div class="card" id="profile-card" hidden>
+      <h2>Cluster profile <span class="hint" id="profile-updated" style="font-weight:400"></span></h2>
+      <p class="hint">Shared across all projects · written by <code>/unity-hpc:recon</code>.</p>
+      <div class="md" id="profile-body"></div>
+    </div>
+
+    <!-- historical GPU allocation over time -->
+    <div class="card">
+      <h2>GPU allocation over time</h2>
+      <p class="hint">Allocated GPUs per 15-min slot, by GPU type (sacct history).</p>
+      <div id="chart-alloc"></div>
+      <div class="legend" id="legend-alloc"></div>
+    </div>
+
+    <div class="grid2">
+      <!-- live queue trend -->
+      <div class="card">
+        <h2>Queue trend (live)</h2>
+        <p class="hint">GPU jobs running vs pending, from the 15-min poller.</p>
+        <div id="chart-queue"></div>
+        <div class="legend" id="legend-queue"></div>
+      </div>
+
+      <!-- per-type summary -->
+      <div class="card">
+        <h2>Per-GPU-type demand</h2>
+        <p class="hint">Average and peak GPUs allocated over the window.</p>
+        <div id="chart-bytype"></div>
+      </div>
+    </div>
+
+    <!-- hour x day-of-week heatmap -->
+    <div class="card">
+      <h2>When is the cluster busy?</h2>
+      <p class="hint">Average total GPUs allocated by hour (UTC) × day of week. Darker = busier.</p>
+      <div id="chart-heat"></div>
+    </div>
+
+    <footer id="footer"></footer>
+  </div>
+
+  <div id="tip"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# hpc-sync-telemetry — exposed entry point for the retention-aware telemetry pull.
+# Thin wrapper so the script is callable by name from any project.
+exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cluster-intel/sync-telemetry.sh" "$@"

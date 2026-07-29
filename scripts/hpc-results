@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# hpc-results — pretty-print results.tsv with aligned columns and status colors
+set -euo pipefail
+
+HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
+TSV="$HPC_DIR/results.tsv"
+
+if [[ ! -f "$TSV" ]]; then
+    echo "No results.tsv found in $HPC_DIR" >&2
+    exit 1
+fi
+
+# ANSI colors
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; RESET='\033[0m'
+
+# Read and align, then colorize status column
+awk -F'\t' '
+NR == 1 {
+    printf "%-10s  %-12s  %-10s  %-8s  %s\n", $1, $2, $3, $4, $5
+    printf "%-10s  %-12s  %-10s  %-8s  %s\n", "----------", "------------", "----------", "--------", "---"
+    next
+}
+{
+    printf "%-10s  %-12s  %-10s  %-8s  %s\n", $1, $2, $3, $4, $5
+}
+' "$TSV" | while IFS= read -r line; do
+    if echo "$line" | grep -q '\bkeep\b'; then
+        echo -e "${GREEN}${line}${RESET}"
+    elif echo "$line" | grep -q '\bcrash\b'; then
+        echo -e "${RED}${line}${RESET}"
+    elif echo "$line" | grep -q '\bdiscard\b'; then
+        echo -e "${YELLOW}${line}${RESET}"
+    else
+        echo "$line"
+    fi
+done
+
+TOTAL=$(awk -F'\t' 'NR>1' "$TSV" | wc -l)
+BEST=$(awk -F'\t' 'NR>1 && $4=="keep" {print $2}' "$TSV" | sort -n | head -1)
+echo ""
+echo "Total: $TOTAL experiments | Best val_bpb (keep): ${BEST:-n/a}"
