@@ -7,57 +7,74 @@ description: "Submit a batch of related Unity jobs under one campaign — respec
 
 Announce: "Using unity-hpc:sweep to submit a batch of jobs to Unity."
 
-A sweep is not a separate mechanism: it is N ordinary submissions sharing one
-`--campaign`, which is what makes them a single unit for status, fetch and
-telemetry. Vary the jobs however the project already varies them — a different
-`JOB_COMMAND` per variant, an argument the entrypoint reads, or an env var.
+A sweep is not a separate mechanism. It is N ordinary submissions that share one
+`--campaign`. That shared campaign makes them one unit for status, fetch and
+telemetry.
+
+Vary the jobs the way the project already varies them: a different `JOB_COMMAND`
+for each variant, an argument that the entrypoint reads, or an env var.
 
 ## Steps
 
-**1. Source env**: `set -a && . unityHPC/.env && set +a`
+**1. Source the env file**
 
-**2. Check account limits**
+```bash
+set -a && . unityHPC/.env && set +a
+```
+
+**2. Check the account limits**
+
 Call `mcp__unity-hpc__unity_cluster_profile` and read `MaxSubmitJobs` for the
-account. If there is no profile yet, run `/unity-hpc:recon` first.
+account. If there is no cluster configuration yet, run `/unity-hpc:recon` first.
 
-Count the variants. If the count exceeds `MaxSubmitJobs`, stop and tell the user
-the cap — offer to submit the first batch now and the rest later. Do not submit
-past the limit: SLURM will reject the overflow and the ledger will disagree with
-the cluster.
+Count the variants. If the count is more than `MaxSubmitJobs`, stop and print the
+cap. Offer to submit the first batch now, and the rest later.
 
-**3. Check queue**
-Call `mcp__unity-hpc__unity_traffic`. Print the queue state. If it is deep
-(>50 pending), say so and offer the `-preempt` partition or an off-peak window
-before committing a whole batch.
+Do not submit past the limit. SLURM rejects the overflow, and then the ledger
+disagrees with the cluster.
 
-**4. Confirm the plan before submitting**
-Print the exact list of jobs to be submitted and the campaign name, and get the
-user's go-ahead. A sweep is the one place where a mistake is multiplied.
+**3. Check the queue**
+
+Call `mcp__unity-hpc__unity_traffic` and print the queue state. If more than 50
+jobs are pending, print that fact. Then offer the `-preempt` partition, or an
+off-peak window, before the user commits a whole batch.
+
+**4. Get approval for the plan**
+
+Print the exact list of jobs and the campaign name. Then ask the user to approve.
+A sweep is the one place where one mistake is multiplied.
 
 **5. Submit the batch**
-One campaign for the whole sweep:
+
+Use one campaign for the whole sweep:
+
 ```bash
 CAMPAIGN=<sweep-name>
 for variant in <variants>; do
     bash unityHPC/run.sh run "${variant}" --campaign "$CAMPAIGN"
 done
 ```
-Submit sequentially — each call is a short SSH round-trip, and serial submission
-keeps the ledger consistent and the login node unloaded.
 
-If any submission fails, stop and report which ones made it. Never silently
-continue past a rejection: the account limit is the usual cause.
+Submit the jobs in sequence. Each call is a short SSH round-trip. Serial
+submission keeps the ledger consistent and the login node unloaded.
 
-**6. Verify what landed**
+If any submission fails, stop and print which jobs went through. Never continue
+past a rejection: the usual cause is the account limit.
+
+**6. Check what landed**
+
 ```bash
 bash unityHPC/run.sh jobs --campaign "$CAMPAIGN"
 ```
-Confirm the row count matches the number of variants, then print:
-"Submitted N jobs for campaign `<name>`."
 
-**7. Print next steps**
+Check that the row count matches the number of variants. Then print: "Submitted
+N jobs for campaign `<name>`."
+
+**7. Print the next steps**
+
 ```
 Live state:  bash unityHPC/run.sh status --campaign <name>
 Output:      /unity-hpc:fetch
 ```
-Nothing collects results on its own — fetch when the jobs are terminal.
+
+Nothing collects the results on its own. Fetch them when every job is terminal.

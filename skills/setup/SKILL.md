@@ -1,6 +1,6 @@
 ---
 name: setup
-description: "Bootstrap a new Unity HPC experiment — verifies SSH, syncs code to /work, starts cluster-intel poller, runs recon if needed."
+description: "Bootstrap a new Unity HPC experiment — checks SSH, syncs code to /work, starts the cluster-intel collector, and runs recon if needed."
 ---
 
 # unity-hpc:setup
@@ -9,15 +9,17 @@ Announce: "Using unity-hpc:setup to bootstrap a new Unity HPC experiment."
 
 ## Steps
 
-Execute in order. Every step is safe to re-run: each detects existing state and
-reports skip-vs-create rather than clobbering. Stop and report clearly on failure.
+Do the steps in order. Every step is safe to re-run: each one detects the
+existing state, and reports skip or create instead of a clobber. On any failure,
+stop and print what failed.
 
-**1. Determine the project type**
+**1. Get the project type**
 
-Ask the user: is this project **cpu** (CPU-only jobs), **gpu** (single-node GPU),
-or **ml** (multi-node training via torchrun)? Do not guess — the answer selects
-the job template. If they are unsure, `cpu` is the safe default and can be
-regenerated later.
+Ask the user for the project type: **cpu** for CPU-only jobs, **gpu** for
+single-node GPU jobs, or **ml** for multi-node training with `torchrun`.
+
+Do not guess. The answer selects the job template. If the user is not sure, use
+`cpu`. It is the safe default, and you can generate a new scaffold later.
 
 **2. Generate the unityHPC/ scaffold**
 
@@ -25,29 +27,33 @@ regenerated later.
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" --type <cpu|gpu|ml> --dry-run
 ```
 
-Show the user what will change, then run it without `--dry-run` to apply.
+Print what will change. Then run the same command without `--dry-run` to apply
+it.
 
 This writes `unityHPC/{run.sh,job_template.sh,sync.sh,.env}`. An existing `.env`
-is always preserved. Any other file that differs from the canonical template is
-moved to `unityHPC/.pre-redesign/<name>` and replaced — the command reports every
-move. If the project previously carried a hand-written `run.sh`, tell the user
-where it went and that the generated dispatcher now owns that contract.
+always stays as it is. Any other file that differs from the canonical template
+moves to `unityHPC/.pre-redesign/<name>`, and the command writes a new one. The
+command prints every move.
+
+If the project had a hand-written `run.sh`, tell the user where that file went.
+Also tell the user that the generated dispatcher now owns that contract.
 
 **3. Fill in .env**
 
-`unityHPC/.env` needs three values before anything can run:
-`SLURM_ACCOUNT`, `REMOTE_DIR`, and `JOB_COMMAND`. Ask the user for them, or ask
-them to edit the file. Stop here until they confirm.
+`unityHPC/.env` needs three values before any job can run: `SLURM_ACCOUNT`,
+`REMOTE_DIR` and `JOB_COMMAND`. Ask the user for the three values, or ask the
+user to edit the file. Stop here until the user approves.
 
-**4. SSH check**
+**4. Check SSH**
 
 ```bash
 set -a && . unityHPC/.env && set +a
 ssh "$UNITY_HOST" 'echo unity-ok'
 ```
 
-Expected: `unity-ok`. If it fails, diagnose SSH config, VPN (campus or UMass VPN),
-and key auth. Do not proceed until SSH works.
+Expected output: `unity-ok`. If the command fails, check the SSH configuration,
+the VPN (campus or UMass VPN), and key authentication. Do not continue until SSH
+works.
 
 **5. Create the remote directory**
 
@@ -61,19 +67,19 @@ ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
 bash unityHPC/sync.sh
 ```
 
-Expected: `Sync done.`
+Expected output: `Sync done.`
 
-**7. Verify the dispatcher renders**
+**7. Check that the dispatcher renders**
 
 ```bash
 bash unityHPC/run.sh render smoke-test
 ```
 
-This prints the sbatch script and submits nothing. Confirm the `#SBATCH` lines
-match what the user expects — particularly `--time`, `--mem`, and (for gpu/ml)
-`--gres`.
+This prints the sbatch script and submits nothing. Check that the `#SBATCH`
+lines match what the user expects, in particular `--time`, `--mem` and, for gpu
+or ml, `--gres`.
 
-**8. Experiment branch (only if this is a git repo)**
+**8. Create an experiment branch, only in a git repo**
 
 ```bash
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -89,28 +95,30 @@ else
 fi
 ```
 
-If it is not a repo, offer to run `git init` but **do not** do so unasked, and do
-not treat this as a failure. Version control is not required to run jobs.
+If the directory is not a repo, offer to run `git init`. Do not run `git init`
+unasked, and do not treat the absent repo as a failure. Version control is not
+necessary to run jobs.
 
-**9. Initialise results.tsv (if absent)**
+**9. Create results.tsv, if it is absent**
 
 ```bash
 [ -f results.tsv ] || printf 'commit\tmetric\tvalue\tstatus\tdescription\n' > results.tsv
 ```
 
-The columns are the project's to choose — everything downstream reads this
-header rather than assuming a schema. If the user already tracks results
-elsewhere, skip this file entirely.
+The columns belong to the project. Everything downstream reads this header
+instead of an assumed schema. If the user already tracks the results somewhere
+else, skip this file.
 
 **9b. Optional — declare a headline metric**
 
-Ask, but **default to skipping**: does this project have one number that decides
-whether a run was good (a loss, an accuracy, a throughput, a residual)?
+Ask the question, but default to a skip: does this project have one number that
+decides whether a run was good? A loss, an accuracy, a throughput or a residual
+are all examples.
 
-- **No / not sure** → skip. `unity_results` will report whatever each job prints
-  and rank nothing. This is the right answer for most projects, and it is what
-  keeps the plugin honest about work it knows nothing about.
-- **Yes** → write `unityHPC/metrics.json` with the user's own metric names:
+- **No, or not sure** — skip it. `unity_results` then reports whatever each job
+  prints, and ranks nothing. This is the correct answer for most projects, and it
+  keeps the plugin honest about work that it knows nothing about.
+- **Yes** — write `unityHPC/metrics.json` with the user's own metric names:
 
 ```json
 {
@@ -121,33 +129,34 @@ whether a run was good (a loss, an accuracy, a throughput, a residual)?
 }
 ```
 
-`primary` + `goal` (`min`/`max`) enable "best job" reporting; `report` puts those
-columns first; `labels` renames them for display only. Every field is optional,
-and metrics the job prints but does not declare are still shown. The job must
-print them as `name: value` lines on stdout.
+`primary` and `goal` (`min` or `max`) turn on best-job reporting. `report` puts
+those columns first. `labels` renames them for the display only. Every field is
+optional, and the tools still print metrics that the job prints but does not
+declare. The job must print each one as a `name: value` line on stdout.
 
-This file is the *only* place a domain metric is ever named — the plugin core
-has none built in, so an ML project and a CPU simulation get the same treatment
-until each says otherwise.
+This file is the only place that ever names a domain metric. The plugin core has
+none built in. An ML project and a CPU simulation therefore get the same
+treatment, until each one says otherwise.
 
-**10. Cluster profile**
+**10. Get the cluster configuration**
 
-The cluster profile is shared by every project on this machine. If it does not
-exist yet, invoke the `unity-hpc:recon` skill (read-only, safe). If it exists,
-skip it — another project already produced it.
+Every project on this machine shares one cluster configuration. If it does not
+exist yet, run the `unity-hpc:recon` skill. It is read-only and safe. If the
+configuration exists, skip this step: another project already produced it.
 
-**11. Cluster-intel collector — ASK FIRST, this is opt-in**
+**11. Cluster-intel collector — ask the user first, this is opt-in**
 
-> ⚠ **This step leaves a lasting footprint on shared infrastructure.** It starts
-> one **long-lived tmux session on the Unity login node** — `collector.sh`
-> sampling queue/partition/GPU/job state every 15 minutes — which keeps running
-> after your session ends and is visible to other cluster users.
+> ⚠ **CAUTION: This step leaves a lasting footprint on shared infrastructure.**
+> It starts one **long-lived tmux session on the Unity login node**.
+> `collector.sh` samples queue, partition, GPU and job state every 15 minutes. It
+> keeps running after your session ends, and other cluster users can see it.
 
-Ask the user explicitly whether to deploy it. **Default to no.** Nothing else in
-this skill depends on it; it feeds usage analytics only. If the user declines,
-say so plainly in the summary and continue — setup is complete without it.
+Ask the user directly whether to deploy the collector. **Default to no.** Nothing
+else in this skill depends on it, and it feeds usage analytics only. If the user
+declines, say so in the summary and continue. Setup is complete without the
+collector.
 
-If and only if the user opts in:
+Run the next commands only after the user opts in:
 
 ```bash
 CID=/work/${SLURM_ACCOUNT}/${USER}/cluster-intel
@@ -160,25 +169,25 @@ ssh "$UNITY_HOST" "tmux has-session -t unity-collector 2>/dev/null \
        'UNITY_CID=$CID bash $CID/collector.sh loop'"
 ```
 
-`collector.sh` is the single cluster-side telemetry writer: it is
-singleton-guarded by both `tmux has-session` (one session) and a `flock` on
-`collector.lock` (one writer even if two sessions somehow raced), so
-re-running setup never starts a second copy or double-writes. It also owns
-the 35-day retention prune on its own output — there is no separate pruning
-step.
+`collector.sh` is the single cluster-side telemetry writer. Two guards keep it a
+singleton: `tmux has-session` allows one session, and a `flock` on
+`collector.lock` allows one writer even if two sessions race. A second setup run
+therefore never starts a second copy, and never writes a record twice. The
+collector also owns the 35-day retention prune on its own output, so there is no
+separate prune step.
 
 **12. Print the summary**
 
-Report what was created, what was skipped, what was moved to `.pre-redesign/`,
-and whether collectors were deployed. Then:
+Report what the run created, what it skipped, what it moved to `.pre-redesign/`,
+and whether it deployed the collector. Then print:
 
 ```
 Next: bash unityHPC/run.sh run <job-name>
   or: use the unity_submit MCP tool
 ```
 
-**If anything behaves unlike the documentation**, call
-`mcp__unity-hpc__unity_doctor` before investigating further. It reports which
-plugin version this server process is *actually running* and whether the code
-was upgraded after the session started — a stale server looks exactly like a
-bug in code that has already been fixed.
+**If any behavior differs from this documentation**, call
+`mcp__unity-hpc__unity_doctor` before you investigate further. It reports the
+plugin version that this server process runs, and whether the code changed after
+the session started. A stale server looks exactly like a bug in code that is
+already fixed.

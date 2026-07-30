@@ -1,48 +1,62 @@
 ---
 name: resume
-description: "Rebuild full session context after a reset — reads results, job ledger, cluster profile, and queue conditions."
+description: "Rebuild full session context after a reset — reads the results, the job ledger, the cluster configuration, and the queue conditions."
 ---
 
 # unity-hpc:resume
 
 Announce: "Using unity-hpc:resume to rebuild session context."
 
-This skill is read-only — it submits nothing and modifies no files.
+This skill is read-only. It submits nothing and modifies no files.
 
 ## Steps
 
-**1. Read project context**
-- Read `CLAUDE.md` if present (project instructions)
-- Read `unityHPC/.env` — note UNITY_HOST, REMOTE_DIR (mask USER_EMAIL in output)
+**1. Read the project context**
 
-**2. Read research direction**
-Read `program-unity.md` (or the project's equivalent). Print the first 8 lines
-as the current direction. Skip silently if there is none.
+- If `CLAUDE.md` exists, read it. It holds the project instructions.
+- Read `unityHPC/.env`. Note `UNITY_HOST` and `REMOTE_DIR`. Mask `USER_EMAIL` in
+  the output.
 
-**3. Read experiment history**
-Call `mcp__unity-hpc__unity_results_tsv`. It returns the file's own header plus
-rows keyed by that header — the columns are whatever this project chose. Report:
-- total rows, broken down by `status` if that column exists
+**2. Read the research direction**
+
+Read `program-unity.md`, or the equivalent file of this project. Print the first
+8 lines as the current direction. If there is no such file, skip this step
+silently.
+
+**3. Read the experiment history**
+
+Call `mcp__unity-hpc__unity_results_tsv`. It returns the file's own header, and
+the rows keyed by that header. The columns are whatever this project chose.
+Report:
+
+- the total number of rows, split by `status` if that column exists
 - the most recent few rows
-- the best row *only* if the project's own convention makes "best" meaningful
-  (e.g. a documented metric column); otherwise do not invent a ranking
+- the best row, but only if a convention of this project makes "best" meaningful,
+  for example a documented metric column
 
-**4. Check the current campaign**
-Call `mcp__unity-hpc__unity_status` for job state counts, then
-`mcp__unity-hpc__unity_jobs` for the per-job list. If any job is non-terminal,
-note that these come from the ledger and that
-`bash unityHPC/run.sh status` gives a live answer.
+If no such convention exists, invent no ranking.
 
-**5. Read the cluster profile**
-Call `mcp__unity-hpc__unity_cluster_profile` — the profile is shared by every
-project on this machine. Note partition limits, GPU types, and MaxSubmitJobs.
-If it reports no profile yet, suggest `/unity-hpc:recon`.
+**4. Read the current campaign**
 
-**6. Check queue conditions**
-Call `mcp__unity-hpc__unity_traffic` for current queue depth and the
+Call `mcp__unity-hpc__unity_status` for the job state counts. Then call
+`mcp__unity-hpc__unity_jobs` for the per-job list.
+
+If any job is non-terminal, print that these counts come from the ledger. Also
+print that `bash unityHPC/run.sh status` gives a live answer.
+
+**5. Read the cluster configuration**
+
+Call `mcp__unity-hpc__unity_cluster_profile`. Every project on this machine shares
+this configuration. Note the partition limits, the GPU types and `MaxSubmitJobs`.
+If the tool reports no configuration yet, offer `/unity-hpc:recon`.
+
+**6. Read the queue conditions**
+
+Call `mcp__unity-hpc__unity_traffic` for the current queue depth and the
 recommendation.
 
 **7. Print a structured resume brief**
+
 ```
 ╔════════════════════════════════════════════╗
 ║              RESUME BRIEF                  ║
@@ -61,9 +75,13 @@ recommendation.
 ║ Next:   <fetch / submit / wait>            ║
 ╚════════════════════════════════════════════╝
 ```
-Omit any line whose data does not exist rather than printing a placeholder.
 
-Choose "Next" from:
-- All jobs terminal → "Run /unity-hpc:fetch, then /unity-hpc:log-result"
-- Jobs still active → "Check progress: bash unityHPC/run.sh status"
-- No campaign → "Run /unity-hpc:run <exp> to submit the next job"
+If the data for a line does not exist, omit the line. Do not print a placeholder.
+
+Pick the "Next" line from these three:
+
+- If every job is terminal, print "Run /unity-hpc:fetch, then
+  /unity-hpc:log-result".
+- If any job is still active, print "Check progress: bash unityHPC/run.sh status".
+- If there is no campaign, print "Run /unity-hpc:run <exp> to submit the next
+  job".

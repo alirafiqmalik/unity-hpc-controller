@@ -7,7 +7,7 @@ description: "Check this project's Unity job states — instant local read, with
 
 Announce: "Using unity-hpc:status to check job states."
 
-There are two sources, and it is worth knowing which you are reading:
+There are two sources of job state. Know which one you read.
 
 | Source | Cost | Freshness |
 |---|---|---|
@@ -16,8 +16,10 @@ There are two sources, and it is worth knowing which you are reading:
 
 ## Steps
 
-**1. Get job state counts**
-Call `mcp__unity-hpc__unity_status`. Print the breakdown:
+**1. Get the job state counts**
+
+Call `mcp__unity-hpc__unity_status`. Print the counts:
+
 ```
 Campaign: <name>
   COMPLETED    N
@@ -26,11 +28,13 @@ Campaign: <name>
   FAILED       N
 ```
 
-If it reports no campaign DB, the project has not submitted anything through
-the dispatcher yet — point at `/unity-hpc:run`, do not treat it as an error.
+If the tool reports no campaign DB, the project submitted nothing through the
+dispatcher yet. Point the user at `/unity-hpc:run`. This is not an error.
 
-**2. Get job details**
+**2. Get the job details**
+
 Call `mcp__unity-hpc__unity_jobs`:
+
 ```
 job_id  exp         partition      status     hardware
 ------  ----------  -------------  ---------  --------
@@ -38,48 +42,59 @@ job_id  exp         partition      status     hardware
 12346   sweep-lr    gpu-preempt    RUNNING    -
 ```
 
-**3. Get a live answer when any job is non-terminal**
-If any job is PENDING or RUNNING, the ledger may simply be behind the collector.
-Run the live check and re-report:
+**3. Get a live answer for every non-terminal job**
+
+If any job is PENDING or RUNNING, the ledger can be behind the collector. Run
+the live check, then print the counts again:
+
 ```bash
 bash unityHPC/run.sh status
 ```
 
-**4. Handle PREEMPTED**
-Report them plainly: "N job(s) were preempted by higher-priority work. Nothing
-requeues them automatically — resubmit with `/unity-hpc:run` if you want them
-back, ideally on a non-preempt partition."
+**4. Report PREEMPTED jobs**
 
-**5. Handle failures**
-For FAILED / TIMEOUT / OUT_OF_MEMORY / NODE_FAIL, name each job and suggest
-`/unity-hpc:fetch` to pull its `.err` file. For OUT_OF_MEMORY, also suggest
-raising `SLURM_MEM` in `.env`; for TIMEOUT, `WALLTIME`.
+Print this text: "Higher-priority work preempted N job(s). Nothing requeues them
+automatically. To get them back, resubmit with `/unity-hpc:run`, preferably on a
+non-preempt partition."
 
-**6. Handle all complete**
-If every job is terminal: "Campaign complete. Run /unity-hpc:fetch to retrieve
-output."
+**5. Report failures**
+
+For each job in FAILED, TIMEOUT, OUT_OF_MEMORY or NODE_FAIL, print the job id.
+Offer `/unity-hpc:fetch` to get its `.err` file. For OUT_OF_MEMORY, also offer to
+raise `SLURM_MEM` in `.env`. For TIMEOUT, offer to raise `WALLTIME`.
+
+**6. Report a complete campaign**
+
+If every job is terminal, print: "Campaign complete. Run /unity-hpc:fetch to get
+the output."
 
 **7. Watch a running job**
-For live output from the newest job in the campaign:
+
+For live output from the newest job in the campaign, run:
+
 ```bash
 bash unityHPC/run.sh logs [-n 40]
 ```
 
-## When the output disagrees with the documentation
-Call `mcp__unity-hpc__unity_doctor`. It reports the plugin version this server
-process is running, whether the code changed after the session started, and the
-project's scaffold/ledger state. A server started before a plugin upgrade keeps
-serving the old behaviour while the source on disk shows the fix — `/reload-plugins`
-or a session restart is the cure.
+## If the output disagrees with the documentation
 
-If `unity_doctor` itself is unavailable or answers `Unknown tool`, that is the
-answer: the session is running a server from before 0.8.0. Reload it.
+Call `mcp__unity-hpc__unity_doctor`. It reports the plugin version that this
+server process runs. It also reports whether the code changed after the session
+started, and the scaffold and ledger state of the project.
 
-Do not spend time reconciling observed behaviour against the source until this
-check is clean — reading a file that has already been fixed proves nothing about
-the process serving you.
+A server that started before a plugin upgrade keeps the old behavior, while the
+source on disk shows the fix. The cure is `/reload-plugins`, or a session
+restart.
+
+If `unity_doctor` is absent, or answers `Unknown tool`, that is the answer: this
+session runs a server from before 0.8.0. Reload it.
+
+Do not compare the observed behavior against the source until this check is
+clean. A file that is already fixed proves nothing about the process that serves
+you.
 
 ## Efficiency of past jobs
-`mcp__unity-hpc__unity_my_jobs` adds what each job actually *used* — hardware,
-wait time, CPU and memory efficiency — from shared telemetry. Use it when the
-question is "was this job sized correctly", not "is it done yet".
+
+`mcp__unity-hpc__unity_my_jobs` adds what each job *used*: hardware, wait time,
+CPU efficiency and memory efficiency, from shared telemetry. Use it for the
+question "was this job sized correctly", not "is it done yet".

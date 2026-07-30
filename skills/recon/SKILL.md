@@ -1,33 +1,39 @@
 ---
 name: recon
-description: "Cluster reconnaissance — observes partition capacity, GPU fleet, account limits, fair-share and storage, and merges them into the shared cluster-config.json in $UNITY_HPC_DATA. Read-only on the cluster; never clobbers another project's observations."
+description: "Cluster reconnaissance — observes partition capacity, GPU fleet, account limits, fair-share and storage, then merges them into the shared cluster-config.json in $UNITY_HPC_DATA. Read-only on the cluster, and it never clobbers another project's observations."
 ---
 
 # unity-hpc:recon
 
-Announce: "Using unity-hpc:recon to gather cluster configuration."
+Announce: "Using unity-hpc:recon to gather the cluster configuration."
 
-Read-only on the cluster. Produces a single **cluster-neutral** observation and
-merges it into the shared `cluster-config.json` through a locked, deterministic
-read-merge-write. **Never** write project-specific commentary (e.g. "not used by
-this project") into the config — that is what caused the `a100=157 → a100=40`
-regression. Absence is not evidence of absence: if you did not probe GPUs, do not
-emit a `gpu_fleet` key at all, and the merge will leave the existing fleet intact.
+This skill only reads from the cluster. It produces one **cluster-neutral**
+observation, and merges it into the shared `cluster-config.json` through a
+locked, deterministic read-merge-write.
 
-## Where the config lives
+**Never** write project-specific commentary into the configuration. A note that
+one project ignores part of the fleet caused the `a100=157 → a100=40` regression.
+
+Absence is not evidence of absence. If you did not probe the GPUs, emit no
+`gpu_fleet` key at all. The merge then keeps the existing fleet as it is.
+
+## Where the configuration lives
 
 ```
 ${UNITY_HPC_DATA:-$HOME/.local/share/unity-hpc}/cluster-config.json
 ```
 
-Shared by every project, outside the versioned plugin. Read it back at any time
-with the `unity_cluster_profile` MCP tool, which renders it as markdown.
+Every project shares this file, and it sits outside the versioned plugin. To read
+it back at any time, use the `unity_cluster_profile` MCP tool. That tool renders
+the file as markdown.
 
 ## Staleness guard
 
-Recon is skipped if the config is younger than `UNITY_HPC_RECON_TTL` (default
-`43200` seconds = 12h). To force a re-probe, pass `--force` to `hpc-config-write`
-(step 6) and proceed with the SSH probes below regardless. Check first:
+Recon skips the probe while the configuration is younger than
+`UNITY_HPC_RECON_TTL`. The default is `43200` seconds, that is 12 hours.
+
+To force a new probe, pass `--force` to `hpc-config-write` in step 6. Then do the
+SSH probes below in every case. Check the age first:
 
 ```bash
 python3 - <<'PY'
@@ -37,22 +43,24 @@ print("probe" if cc.should_probe(int(__import__("os").environ.get("UNITY_HPC_REC
 PY
 ```
 
-If it prints `fresh` and the user did not ask to force, stop and report that the
-config is current. Otherwise continue.
+If it prints `fresh`, and the user did not ask to force a probe, stop. Then print
+that the configuration is current. In every other case, continue.
 
 ## Steps
 
-**1. SSH connectivity check**
+**1. Check SSH connectivity**
+
 ```bash
 ssh unity "echo ok"
 ```
-If this fails, stop and tell the user to check their `~/.ssh/config` entry for `unity`.
 
-**2. Observe partitions, GPU fleet, limits, fair-share, storage**
+If this fails, stop. Tell the user to check the `unity` entry in `~/.ssh/config`.
 
-All probes run in one remote shell with the wrapper PATH and pager fix. The
+**2. Observe the partitions, GPU fleet, limits, fair-share and storage**
+
+All probes run in one remote shell, with the wrapper PATH and the pager fix. The
 `unity-slurm-*` wrappers live in `/modules/user-resources/bin`, which is not on
-the non-interactive PATH, and block on a pager unless `PAGER=NONE`.
+the non-interactive PATH. They also block on a pager until you set `PAGER=NONE`.
 
 ```bash
 ssh unity 'export PATH=/modules/user-resources/bin:$PATH; export PAGER=NONE
@@ -67,14 +75,21 @@ ssh unity 'export PATH=/modules/user-resources/bin:$PATH; export PAGER=NONE
 
 **3. Build a cluster-neutral observation**
 
-Transcribe the output into a JSON object. Emit **only** the sections you actually
-observed; stamp every point-in-time record with `observed_utc` (current UTC in
-`YYYY-MM-DDTHH:MM:SSZ`). Capacity counts (`nodes`, `cpus_total`, `gpus_total`,
-`total_accessible`) are merged by max, so a partial reading never shrinks a
-fuller one. Describe the **cluster only** — never a project's usage of it, and
-never how much of the fleet a given project needs or avoids. Use
-`${SLURM_ACCOUNT:-your_account}` (from env/.env), never a literal account name.
-Example shape (omit any key you did not observe):
+Transcribe the output into a JSON object. Emit **only** the sections that you
+observed. Stamp every point-in-time record with `observed_utc`, that is the
+current UTC time in `YYYY-MM-DDTHH:MM:SSZ` form.
+
+The merge takes the maximum of each capacity count (`nodes`, `cpus_total`,
+`gpus_total`, `total_accessible`), so a partial reading never shrinks a fuller
+one.
+
+Describe the **cluster only**. Never describe how one project uses the cluster.
+Never describe how much of the fleet a project needs or avoids.
+
+Use `${SLURM_ACCOUNT:-your_account}` from the env or `.env`, never a literal
+account name.
+
+This is the shape. Omit every key that you did not observe:
 
 ```json
 {
@@ -97,45 +112,53 @@ Example shape (omit any key you did not observe):
 }
 ```
 
-**4. Probe sacct scope** (feeds the telemetry collector)
+**4. Probe the sacct scope**
+
+This value feeds the telemetry collector.
+
 ```bash
 ssh unity "sacct -a -S now-1hours -X -P --noheader 2>&1 | head -1"
 ```
-If rows return, set `"sacct_scope": "-a"`; if denied, `"sacct_scope": "-A ${SLURM_ACCOUNT}"`.
+
+If rows come back, set `"sacct_scope": "-a"`. If the cluster denies the request,
+set `"sacct_scope": "-A ${SLURM_ACCOUNT}"`.
 
 **5. Write the observation to a temp file**
+
 ```bash
 cat > /tmp/unity-recon-obs.json <<'JSON'
 <the JSON object you built in steps 3–4>
 JSON
 ```
 
-**6. Merge into the shared config through the locked CLI**
+**6. Merge into the shared configuration through the locked CLI**
+
 ```bash
 PROJECT_NAME="$(basename "$(pwd)")"
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-config-write" \
     --obs-file /tmp/unity-recon-obs.json --writer "$PROJECT_NAME"
-# add --force only if the user asked to re-probe within the TTL
+# add --force only if the user asked for a new probe inside the TTL
 ```
-This acquires `locks/config.lock`, merges with union/max/newest-wins rules, and
-atomically rewrites `cluster-config.json`. No project's write ever blindly
-replaces another's observations — the merge is the only path to the file. It
-prints `written` or `skipped`.
 
-**7. Confirm**
+This command takes `locks/config.lock`, merges with union, max and newest-wins
+rules, and rewrites `cluster-config.json` atomically. The merge is the only path
+to the file, so no project's write ever replaces another project's observations.
+The command prints `written` or `skipped`.
 
-Read the merged result back with the `unity_cluster_profile` MCP tool and show the
-user the partition and GPU-fleet tables.
+**7. Check the merged result**
 
-**8. Print summary**
+Read the merged file back with the `unity_cluster_profile` MCP tool. Print the
+partition table and the GPU-fleet table to the user.
 
-Report the account limits, accessible GPU types, and whether the write was
-applied or skipped by the TTL guard. Suggest: "Run /unity-hpc:setup to configure
-your project for this cluster."
+**8. Print the summary**
+
+Report the account limits, the accessible GPU types, and whether the TTL guard
+skipped the write. Then print: "Run /unity-hpc:setup to configure your project
+for this cluster."
 
 ## Migrating an old prose profile
 
-If a legacy prose profile document (the pre-JSON format) exists in the data
-dir, it is handled once by the migration script (`cluster-intel/migrate.py`),
-which seeds `cluster-config.json` from it taking maximum capacity values and
-archives the original. Do not parse it here.
+An old prose profile document, in the format that came before the JSON, can still
+sit in the data directory. The migration script `cluster-intel/migrate.py`
+handles that file once: it seeds `cluster-config.json` from the maximum capacity
+values, and archives the original. Do not parse that file here.

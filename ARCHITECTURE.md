@@ -1,78 +1,80 @@
 # unity-hpc — architecture
 
-Version 0.9.1. An abstraction layer between a project's experiments and Unity's
-SLURM cluster. The plugin's job is plumbing — submit, record, observe, fetch —
-and to stay generic: nothing in the core knows what a project's metrics mean.
+Version 0.10.1. This plugin is an abstraction layer between a project's
+experiments and Unity's SLURM cluster. It does plumbing only: submit, record,
+observe, fetch. It stays generic, so nothing in the core knows what a project's
+metrics mean.
 
 **The central contract:** `unityHPC/run.sh` records every job it submits into
 `<project>/.unity_state/<campaign>.db`. Every management tool reads that ledger.
-If a job is not in the ledger, the project cannot name it.
+A job that is not in the ledger is a job the project cannot name.
 
 ---
 
 ## 1. Skills
 
-User-facing entry points, invoked as `/unity-hpc:<name>`.
+These are the user-facing entry points. You run each one as
+`/unity-hpc:<name>`.
 
 | Skill | Purpose | Touches cluster? |
 |---|---|---|
-| `setup` | Bootstrap a project: verify SSH, scaffold `unityHPC/`, sync code to `/work`, run recon if the shared profile is missing | yes |
+| `setup` | Bootstrap a project: check SSH, scaffold `unityHPC/`, sync code to `/work`, run recon if the shared configuration is absent | yes |
 | `run` | Submit one job, queue-aware, and record it in the ledger | yes |
-| `sweep` | Submit a batch under one campaign, respecting account submit limits and queue depth | yes |
-| `status` | This project's job states — local ledger read, with an explicit live SLURM check when it matters | no (opt-in) |
-| `fetch` | rsync job output back, then summarise whatever metrics the jobs printed | yes |
-| `log-result` | Append a row to `results.tsv`, using that file's existing columns and the project's declared metric | no |
-| `recon` | Observe partitions, GPU fleet, account limits, fair-share and storage; merge into the shared `cluster-config.json` | yes (read-only) |
-| `recommend-hardware` | Rank backends: what you may request ∩ what is free now ∩ what has been fastest for you | no |
-| `resume` | Rebuild session context after a reset, from ledger + results + cluster profile + queue | no |
+| `sweep` | Submit a batch under one campaign, inside the account submit limit and the queue depth | yes |
+| `status` | This project's job states — a local ledger read, plus an explicit live SLURM check when it matters | no (opt-in) |
+| `fetch` | rsync the job output back, then summarise whatever metrics the jobs printed | yes |
+| `log-result` | Append a row to `results.tsv`, with that file's existing columns and the project's declared metric | no |
+| `recon` | Observe partitions, GPU fleet, account limits, fair-share and storage, then merge them into the shared `cluster-config.json` | yes (read-only) |
+| `recommend-hardware` | Rank backends: what you can request ∩ what is free now ∩ what has been fastest for you | no |
+| `resume` | Rebuild the session context after a reset, from the ledger, the results, the cluster configuration and the queue | no |
 
 ## 2. MCP tools
 
-Served by `mcp/hpc_server.py` over stdio; namespaced `mcp__unity-hpc__*`.
-Stdlib + `mcp` only.
+`mcp/hpc_server.py` serves these over stdio, in the `mcp__unity-hpc__*`
+namespace. It needs the standard library and `mcp`, nothing else.
 
 **Project-local reads — no SSH, instant**
 
 | Tool | Returns |
 |---|---|
-| `unity_status` | Job state counts for the latest (or named) campaign |
-| `unity_jobs` | job_id, exp, partition, status, and the hardware each landed on |
-| `unity_results` | Numeric `key: value` pairs each fetched job printed to stdout — metric-agnostic |
-| `unity_results_tsv` | Local `results.tsv` as structured rows, header-driven |
-| `unity_my_jobs` | This project's jobs enriched from shared telemetry |
-| `unity_doctor` | Which plugin version this server process is actually running, plus scaffold drift |
+| `unity_status` | Job state counts for the latest campaign, or a named one |
+| `unity_jobs` | job_id, exp, partition, status, and the hardware each job landed on |
+| `unity_results` | The numeric `key: value` pairs each fetched job printed — metric-agnostic |
+| `unity_results_tsv` | The local `results.tsv` as structured rows, driven by its own header |
+| `unity_my_jobs` | This project's jobs, enriched from the shared telemetry |
+| `unity_doctor` | The plugin version this server process actually runs, plus the scaffold drift |
 
 **Cluster-touching**
 
 | Tool | Notes |
 |---|---|
-| `unity_submit` | Delegates to `run.sh run`; `--dry-run` previews |
-| `unity_logs` | Live tail over SSH, falling back to a fetched copy |
-| `unity_ssh` | Read-only command on the login node; blocks dangerous writes; `timeout` arg |
+| `unity_submit` | Delegates to `run.sh run`. `--dry-run` previews the job |
+| `unity_logs` | A live tail over SSH, with a fetched copy as the fallback |
+| `unity_ssh` | One read-only command on the login node. It blocks dangerous writes, and takes a `timeout` argument |
 
 **Shared-tier reads**
 
 | Tool | Notes |
 |---|---|
-| `unity_cluster_profile` | Partitions, GPU types, account limits, capacity — cwd-independent |
-| `unity_traffic` | Live-ish queue signal plus best/worst submit hours |
+| `unity_cluster_profile` | Partitions, GPU types, account limits, capacity — independent of the working directory |
+| `unity_traffic` | A near-live queue signal, plus the best and worst submit hours |
 | `unity_usage` | Historical usage by window: GPU allocation by type, jobs, memory |
 
 ## 3. Internal tools
 
-**Dispatcher** — `unityHPC/run.sh`, generated into each project.
-Subcommands: `run` · `render` · `sync` · `status` · `jobs` · `logs` · `fetch`.
+**Dispatcher** — `unityHPC/run.sh`, generated into each project. Its subcommands
+are `run`, `render`, `sync`, `status`, `jobs`, `logs` and `fetch`.
 
 **Python libraries** (`lib/`)
 
 | Module | Role |
 |---|---|
-| `campaign.py` | The per-project job ledger — the one record every management tool reads |
-| `scaffold.py` | Typed scaffold generator; version stamping and append-only backups |
-| `metrics.py` | Optional, per-project metric declaration (`unityHPC/metrics.json`) |
-| `queries.py` | Read-only helpers over `summaries.db`; these never write |
-| `cluster_config.py` | Deterministic, order-independent merge for the shared cluster config |
-| `retention.py` | Retention gate: decide whether an `rsync --delete` is safe |
+| `campaign.py` | The per-project job ledger — the one record that every management tool reads |
+| `scaffold.py` | The typed scaffold generator, with version stamping and append-only backups |
+| `metrics.py` | The optional per-project metric declaration (`unityHPC/metrics.json`) |
+| `queries.py` | Read-only helpers over `summaries.db`. These never write |
+| `cluster_config.py` | The deterministic, order-independent merge for the shared cluster configuration |
+| `retention.py` | The retention gate. It decides whether an `rsync --delete` is safe |
 | `paths.py` | Resolution of the machine-wide data store |
 
 **cluster-intel** — `collector.sh`, `collector_parse.py`, `rollup.py`,
@@ -82,10 +84,18 @@ Subcommands: `run` · `render` · `sync` · `status` · `jobs` · `logs` · `fet
 `hpc-logs`, `hpc-ssh`, `hpc-tmux`, `hpc-usage`, `hpc-compare`, `hpc-dashboard`,
 `hpc-cleanup`, `hpc-sync-telemetry`, `hpc-retention-gate`, `hpc-config-write`.
 
-**Templates** (`templates/scaffold/`) — `common/{run.sh,sync.sh}` plus typed
+**Templates** (`templates/scaffold/`) — `common/{run.sh,sync.sh}`, plus typed
 `cpu|gpu|ml/{env.example,job_template.sh}`.
 
 **Agents** (`agents/`) — `recon`, `experiment-dispatcher`, `result-analyzer`.
+
+`recon` does the same work as the `recon` skill, and delegates to the same locked
+merge CLI. The other two are optional personas for an ML experiment loop: they
+expect a `program-unity.md` file, a declared metric and a short training budget.
+Each one states that scope in its own header, and names the skill to use instead.
+
+The core stays general-purpose for CPU, GPU and ML SLURM jobs. That core is the
+skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
 
 ---
 
@@ -144,11 +154,13 @@ Subcommands: `run` · `render` · `sync` · `status` · `jobs` · `logs` · `fet
  --dry-run  ─▶ renders + prints, touches nothing, records nothing
 ```
 
-Every variable `render()` bakes into the job must appear in `UNITY_OVERRIDABLE`.
-A variable that is exported but not overridable silently ignores the caller —
-`MODULES`, `VENV_PATH`, `HF_HOME` and `USER_EMAIL` all did, until 0.9.1. A
-contract test now enforces the rule, and a second test enforces that every key
-`env.example` advertises is actually read by someone.
+Every variable that `render()` bakes into the job must appear in
+`UNITY_OVERRIDABLE`. A variable that `render()` exports without that listing
+ignores the caller in silence. `MODULES`, `VENV_PATH`, `HF_HOME` and `USER_EMAIL`
+all did, until 0.9.1.
+
+Two tests now hold the line. One enforces that rule. The second enforces that
+somebody actually reads every key `env.example` advertises.
 
 ## 6. Read path — no SSH unless asked
 
@@ -191,12 +203,15 @@ contract test now enforces the rule, and a second test enforces that every key
                                                              (may ∩ free ∩ fast)
 ```
 
-`hardware` is a device class and never a queue name; the queue lives in its own
-`task_run.partition` column. Mixing the two made `task_profile`,
-`recommend-hardware` and `project_hardware_profile` rank buckets that were not
-comparable — 22,070 a100 jobs sat in a bucket labelled `gpu`.
-`backfill_hardware.py` repairs historical rows by re-deriving them from raw
-telemetry, guessing nothing.
+`hardware` is a device class, never a queue name. The queue lives in its own
+`task_run.partition` column.
+
+Mixing the two made `task_profile`, `recommend-hardware` and
+`project_hardware_profile` rank buckets that were not comparable. 22,070 a100 jobs
+sat in a bucket labelled `gpu`.
+
+`backfill_hardware.py` repairs the historical rows. It re-derives each one from the
+raw telemetry, and guesses nothing.
 
 ## 8. Scaffold drift
 
@@ -215,21 +230,54 @@ telemetry, guessing nothing.
 ```
 
 This is the plugin's one structural hazard: two update channels with different
-latencies. A project can run a months-old dispatcher against a current MCP
-server and see correct-looking local output while the cluster does something
-else. `unity_doctor` exists to make that visible; content comparison rather than
-version equality keeps it from crying wolf on server-only releases.
+latencies.
 
-## 9. Design rules
+A project can run a months-old dispatcher against a current MCP server. The local
+output then looks correct while the cluster does something else. `unity_doctor`
+exists to make that visible. It compares content rather than version numbers,
+which keeps it from crying wolf on a server-only release.
 
-- **Metric-agnostic core.** Nothing in the plugin knows what a metric means.
-  Projects may declare one in `unityHPC/metrics.json` (`primary`, `goal`,
-  `report`, `labels`); without it, tools report whatever the job printed.
-- **Reads never write.** Management tools do not migrate schemas, do not create
-  files, and do not SSH unless the operation inherently requires it.
+## 9. Concurrency invariants (I1–I9)
+
+Code comments and tests cite these identifiers in more than 20 places. Search the
+tree for `I7` or `RC-3` and you land on the mechanism that holds the invariant.
+
+| Invariant | Mechanism |
+|---|---|
+| I1 · Telemetry has exactly one writer | `collector.sh` runs **on the cluster**, and is the only writer of the authoritative `/work/.../cluster-intel/telemetry/`. Two guards keep it single: `tmux has-session` and `collector.lock` |
+| I2 · Only the sync script mutates telemetry | The local tree is a **mirror**. `sync-telemetry.sh` changes it through `rsync` alone. No other module opens anything under `telemetry/` to write or to delete, and there is deliberately no local pruner |
+| I3 · A reader never sees a partial DB | A rollup builds a `.tmp` file, then calls `os.replace()`. That is atomic on POSIX, on the same filesystem |
+| I4 · A config write never loses data | `flock`, then read-merge-write, then an atomic rename. The merge takes the union and the max, and it leaves an unobserved field untouched |
+| I5 · Redundant work is skipped | A TTL staleness guard on recon, with `--force` to override it |
+| I6 · Missing data degrades, and never crashes | Every reader returns a clear empty state that names the command which populates it |
+| I7 · The pull and the rollup are serialised | One `flock` on `locks/sync.lock` spans the rsync **and** the rollup. A concurrent invocation exits cleanly, and skips both |
+| I8 · Raw data is summarised before it disappears | `sync-telemetry.sh` withholds `--delete` for the whole run if any day it would remove has `day_index.fully_summarised` false, or if `summaries.db` is absent. `UNITY_HPC_FORCE_PRUNE=1` overrides this |
+| I9 · A summary outlives its raw data | A rollup upserts, and never deletes a row. A full rebuild is a migration-only operation |
+
+**RC-3**, cited in `tests/test_recon_skill.py`, is the historical fault these
+invariants answer: recon used to do a blind create-or-overwrite of the single
+shared prose profile, with no lock, no merge and no staleness check.
+`docs/design-decisions.md` records that history in full.
+
+## 10. Design rules
+
+- **The core is metric-agnostic.** Nothing in the plugin knows what a metric
+  means. A project can declare one in `unityHPC/metrics.json` (`primary`, `goal`,
+  `report`, `labels`).
+
+  Without that file, the tools report whatever the job printed.
+- **Reads never write.** A management tool does not migrate a schema, does not
+  create a file, and does not use SSH unless the operation needs it.
 - **Consumer project data is never destroyed.** `.env`, hand-written scripts and
-  git state are untouched; scaffold replacement preserves originals in
-  append-only backups.
-- **The login node is shared.** Every SSH call is wrapped in `timeout`; no
-  compute runs on the login node.
+  git state stay as they are. A scaffold replacement keeps the original in an
+  append-only backup.
+- **Other users share the login node.** No compute runs on the login node, and a
+  non-interactive SSH call runs under `timeout`. The MCP server (`$UNITY_SSH_TIMEOUT`,
+  default 60s), `collector.sh` and `hpc-tmux` all obey this. **The dispatcher does
+  not yet:** `run.sh` makes six untimed SSH calls, so a wedged login node hangs it.
+  That is a known gap, not a decision.
+- **Two safe-name gates, kept in step.** `run.sh` and `hpc-tmux` each hold their
+  own copy of `_require_safe_name`, because `hpc-scaffold` copies the dispatcher into consumer
+  projects, and that copy cannot source plugin code. `tests/test_safe_name_parity.py` fails
+  if the two copies diverge.
 - **GPU testing runs inside a written envelope** — see `docs/gpu-test-envelope.md`.

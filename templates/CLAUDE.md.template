@@ -1,68 +1,110 @@
 # HPC Project — Unity Cluster
 
+> Template. Replace every `your...` placeholder, and delete the sections that do
+> not apply to this project. The lines marked **project-specific** are examples of
+> a machine-learning project. A CPU project must replace or delete them.
+
 ## Cluster facts
+
 - Host: Unity (UMass) · you@umass.edu · SSH alias: `unity`
 - SLURM account: `pi_yourlab_umass_edu`
-- Storage: `/work/pi_yourlab_umass_edu/you/` — PI group allocation, `you/` reserved for user
-- Home: `/home/you_umass_edu/` — personal quota (configs/dotfiles only)
+- Storage: `/work/pi_yourlab_umass_edu/you/` — PI group allocation, `you/` is
+  reserved for the user
+- Home: `/home/you_umass_edu/` — personal quota, for configuration and dotfiles
+  only
 - REMOTE_DIR: `/work/pi_yourlab_umass_edu/you/<project>/`
 - HF_HOME: `/work/pi_yourlab_umass_edu/you/hf/`
-- Partitions: `gpu` → `gpu-preempt` (automatic fallback on submit)
-- Time budget: 5 min wall-clock training, fixed
-- Metric: `val_bpb` — lower is better
+- Partitions: `gpu`, with `gpu-preempt` as the fallback on submit
+- Time budget **(project-specific)**: 5 minutes of wall-clock training, fixed
+- Metric **(project-specific)**: declared in `unityHPC/metrics.json`. Without that
+  file, the tools rank nothing.
 
-## ⚠ Login node limits — NEVER run compute on the login node
-Operations OK on login node: `sbatch`, `squeue`, `sacct`, `rsync`, `git`, `tmux`, `module avail`, light file ops
-Operations NOT OK on login node: `python train.py`, model loading, CUDA ops, heavy compilation
-Interactive GPU session: `srun --pty --gres=gpu:1 -p gpu bash` (inside tmux for resilience)
+## ⚠ CAUTION: never run compute on the login node
 
-## Run experiments — always via unityHPC/run.sh, never raw sbatch
+The login node is shared with every other cluster user.
+
+- Allowed on the login node: `sbatch`, `squeue`, `sacct`, `rsync`, `git`, `tmux`,
+  `module avail`, and light file operations.
+- Not allowed on the login node: a training entrypoint, model loading, CUDA
+  operations, and heavy compilation.
+
+For an interactive GPU session, run `srun --pty --gres=gpu:1 -p gpu bash`. Run it
+inside tmux, so an SSH drop does not kill it.
+
+## Run experiments through unityHPC/run.sh, never with raw sbatch
+
 ```bash
 set -a && . unityHPC/.env && set +a
-bash unityHPC/run.sh run <exp>          # submit single job + start monitor
-bash unityHPC/run.sh sweep <exp> <cfg>  # parameter sweep
-bash unityHPC/run.sh status             # live job counts via sacct
+bash unityHPC/run.sh run <exp>          # submit one job and record it
+bash unityHPC/run.sh status             # live job counts from sacct
 bash unityHPC/run.sh fetch              # rsync _results/ back
-bash unityHPC/run.sh logs               # tail monitor log
+bash unityHPC/run.sh logs               # tail the newest job's output
 ```
 
-## Local checks (no SSH needed)
+`run.sh run` records every job in `.unity_state/<campaign>.db`. A job submitted
+with bare `sbatch` is invisible to every management tool.
+
+For a batch of related jobs, run `/unity-hpc:sweep`. It gives them one campaign.
+
+## Local checks, with no SSH
+
 ```bash
 hpc-status       # reads .unity_state/*.db — exit 0=done 1=running 2=failed
-hpc-results      # pretty-print results.tsv with color
+hpc-results      # print results.tsv with color
 hpc-usage --last 7d --plot util   # terminal plot of cluster GPU usage
-hpc-tmux ls      # check tmux sessions on cluster
+hpc-tmux ls      # list the tmux sessions on the cluster
 ```
 
 ## Pick a backend
-Run `/unity-hpc:recommend-hardware` — ranks GPU types by your measured speed vs current
-availability. Or check raw usage: `mcp__unity-hpc__unity_usage` / `unity_traffic`.
 
-## tmux sessions on cluster (persistent across SSH drops)
-- `cluster-history` — sacct usage collector (backfill + hourly incremental)
-- `cluster-snapshot` — 15-min live queue poller
+Run `/unity-hpc:recommend-hardware`. It ranks GPU types by your measured speed
+against current availability. For the raw numbers, call
+`mcp__unity-hpc__unity_usage` or `mcp__unity-hpc__unity_traffic`.
+
+## tmux sessions on the cluster
+
+A tmux session survives an SSH drop.
+
+- `unity-collector` — the cluster-intel telemetry collector, one 15-minute sample
+  loop
 - `interactive` — for `srun --pty` GPU sessions
-- Manage: `hpc-tmux ls | start <name> [cmd] | attach <name> | kill <name>`
+
+Manage them with `hpc-tmux ls | start <name> [cmd] | attach <name> | kill <name>`.
 
 ## Multi-node experiments
-Set `SLURM_NODES=2` (or more) in `unityHPC/.env`. The job template automatically switches to `torchrun` launcher. Check the shared cluster profile (`unity_cluster_profile` MCP tool, or `$UNITY_HPC_DATA/cluster-profile.md`) for MaxJobs limit before sweeps.
 
-## Constraints (DO NOT violate)
-- Do NOT modify `prepare.py` — it is the read-only evaluation harness
-- Do NOT install packages beyond `pyproject.toml`
-- Only `train.py` is edited by the agent — everything inside is fair game
-- VRAM is a soft constraint: meaningful gains justify modest increase
+Set `SLURM_NODES=2` or more in `unityHPC/.env`. The `ml` job template then runs the
+job under `torchrun`.
+
+Before a sweep, read `MaxJobs` from the shared cluster configuration. Call
+`mcp__unity-hpc__unity_cluster_profile` to get it.
+
+## Constraints **(project-specific — replace these)**
+
+- Do NOT modify `prepare.py`. It is the read-only evaluation harness.
+- Do NOT install a package that `pyproject.toml` does not list.
+- Only `train.py` is open to edits. Everything inside it is fair game.
+- VRAM is a soft constraint. A meaningful gain justifies a modest increase.
 
 ## Results
-- `_results/<campaign>/` — gitignored; lives on `/work` on cluster, rsynced locally
-- `results.tsv` — tab-separated, NO commas in description column
-- Campaign naming: `auto_YYYY-MM-DD` or descriptive tag
-- Log every experiment: commit, val_bpb, memory_gb, status (keep/discard/crash), description
 
-## Resuming after context reset
-Run `/unity-hpc:resume` — reads results.tsv, program-unity.md, campaign DB, the shared cluster profile (`unity_cluster_profile` MCP tool / `$UNITY_HPC_DATA/cluster-profile.md`), and current queue state. Do NOT re-read all files manually.
+- `_results/<campaign>/` — gitignored. It lives on `/work` on the cluster, and
+  rsyncs back to here.
+- `results.tsv` — tab-separated. Put no tab inside a field.
+- Campaign names: `auto_YYYY-MM-DD`, or a descriptive tag.
+- Log every experiment with `/unity-hpc:log-result`.
 
-## Fair-use notes
-- Per-user SLURM limits apply under account `pi_yourlab_umass_edu` — check the shared cluster profile (`$UNITY_HPC_DATA/cluster-profile.md`)
-- Unity is shared with other users; check queue depth via `mcp__unity-hpc__unity_traffic` before large sweeps
-- cluster-intel collects usage 24/7 to `/work/pi_yourlab_umass_edu/you/cluster-intel/` (`raw_jobs.db` history + `snapshot.csv` live)
+## Resuming after a context reset
+
+Run `/unity-hpc:resume`. It reads `results.tsv`, the campaign ledger, the shared
+cluster configuration and the current queue state. Do not re-read every file by
+hand.
+
+## Fair use
+
+- Per-user SLURM limits apply under the account `pi_yourlab_umass_edu`. Read them
+  with `mcp__unity-hpc__unity_cluster_profile`.
+- Unity is shared with other users. Before a large sweep, check the queue depth
+  with `mcp__unity-hpc__unity_traffic`.
+- The cluster-intel collector is opt-in. If this project enabled it, it samples
+  the cluster every 15 minutes from a tmux session on the login node.
