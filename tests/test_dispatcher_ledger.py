@@ -19,11 +19,17 @@ STUB_SSH = r"""#!/usr/bin/env bash
 cmd="${!#}"
 echo "$cmd" >>"$STUB_LOG"
 case "$cmd" in
-    *sbatch*)  cat >/dev/null 2>&1 || true; printf '%s\n' "$STUB_SBATCH" ;;
+    *"cat >"*)
+        if [ -n "${STUB_PAYLOAD_LOG:-}" ]; then
+            cat >>"$STUB_PAYLOAD_LOG"
+        else
+            cat >/dev/null
+        fi
+        ;;
+    *sbatch*)  printf '%s\n' "$STUB_SBATCH" ;;
     *sacct*)   printf '%s\n' "$STUB_SACCT" ;;
     *"test -d"*) exit "${STUB_REMOTE_RESULTS:-1}" ;;
     *tail*)    printf 'log line one\nlog line two\n' ;;
-    *"cat >"*) cat >/dev/null ;;
     *)         exit 0 ;;
 esac
 """
@@ -33,6 +39,12 @@ printf '%s\n' "$*" >>"$STUB_LOG"
 exit 0
 """
 
+STUB_TIMEOUT = r"""#!/usr/bin/env bash
+printf 'timeout %s\n' "$*" >>"$STUB_LOG"
+shift 2
+exec "$@"
+"""
+
 
 @pytest.fixture
 def dispatcher(tmp_project, materialise, tmp_path, monkeypatch):
@@ -40,7 +52,8 @@ def dispatcher(tmp_project, materialise, tmp_path, monkeypatch):
     unity_dir = materialise(tmp_project, "cpu")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    for name, body in (("ssh", STUB_SSH), ("rsync", STUB_RSYNC)):
+    for name, body in (("ssh", STUB_SSH), ("rsync", STUB_RSYNC),
+                       ("timeout", STUB_TIMEOUT)):
         p = bin_dir / name
         p.write_text(body)
         p.chmod(0o755)
@@ -79,6 +92,16 @@ def test_submitting_records_the_job_in_the_ledger(dispatcher):
     assert rows[0]["submitted_utc"]
 
 
+def test_dispatcher_bounds_each_ssh_call(dispatcher):
+    result = dispatcher("run", "smoke", "--campaign", "c1",
+                        UNITY_SSH_TIMEOUT="17")
+    assert result.returncode == 0, result.stderr
+    timeout_calls = [line for line in dispatcher.log.read_text().splitlines()
+                     if line.startswith("timeout ")]
+    assert timeout_calls
+    assert all("--foreground 17 ssh" in line for line in timeout_calls)
+
+
 def test_the_ledger_is_where_the_mcp_server_looks(dispatcher):
     dispatcher("run", "smoke", "--campaign", "c1")
     assert (dispatcher.project / ".unity_state" / "c1.db").exists()
@@ -97,6 +120,49 @@ def test_two_submissions_share_one_campaign(dispatcher):
     dispatcher("run", "b", "--campaign", "c1", STUB_SBATCH="Submitted batch job 2")
     rows = campaign.jobs(dispatcher.project, "c1")
     assert [(r["job_id"], r["exp"]) for r in rows] == [("1", "a"), ("2", "b")]
+
+
+def test_array_submission_uses_one_sbatch_and_records_tasks(dispatcher, tmp_path):
+    manifest = tmp_path / "variants.txt"
+    manifest.write_text("trial-a\ntrial-b\ntrial-c\n")
+    payload = tmp_path / "payload.log"
+
+    result = dispatcher("array", str(manifest), "--campaign", "sweep-1",
+                        "--limit", "2", STUB_PAYLOAD_LOG=payload)
+
+    assert result.returncode == 0, result.stderr
+    rows = campaign.jobs(dispatcher.project, "sweep-1")
+    assert [(r["job_id"], r["exp"]) for r in rows] == [
+        ("12345_0", "trial-a"),
+        ("12345_1", "trial-b"),
+        ("12345_2", "trial-c"),
+    ]
+    submissions = [line for line in dispatcher.log.read_text().splitlines()
+                   if line.startswith("cd ") and "&& sbatch" in line]
+    assert len(submissions) == 1
+    assert "#SBATCH --array=0-2%2" in payload.read_text()
+
+
+def test_array_status_and_fetch_use_array_log_names(dispatcher, tmp_path):
+    manifest = tmp_path / "variants.txt"
+    manifest.write_text("trial-a\ntrial-b\n")
+    dispatcher("array", str(manifest), "--campaign", "sweep-1")
+
+    result = dispatcher(
+        "status", "--campaign", "sweep-1",
+        STUB_SACCT=("12345_0|COMPLETED|cpu|00:00:21\n"
+                    "12345_1|FAILED|cpu|00:00:22"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert {r["status"] for r in campaign.jobs(dispatcher.project, "sweep-1")} == {
+        "COMPLETED", "FAILED"
+    }
+
+    result = dispatcher("fetch", "--campaign", "sweep-1")
+    assert result.returncode == 0, result.stderr
+    rsync_calls = [line for line in dispatcher.log.read_text().splitlines()
+                   if "--include" in line]
+    assert "--include=sweep-1-12345_0.out" in rsync_calls[-1]
 
 
 def test_unparseable_sbatch_reply_warns_and_records_nothing(dispatcher):
