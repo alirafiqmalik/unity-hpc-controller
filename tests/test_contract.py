@@ -80,6 +80,23 @@ def test_every_registered_tool_is_dispatched():
     assert not missing, f"registered but never dispatched: {sorted(missing)}"
 
 
+def test_skill_named_response_fields_are_emitted_by_the_named_tool():
+    """Keep field-level skill promises aligned with structured MCP responses."""
+    required = {
+        "unity_results_tsv": {"columns", "rows", "total_rows", "offset", "limit", "next_offset"},
+        "unity_traffic": {"best_hours_utc", "worst_hours_utc", "by_hour_utc"},
+    }
+    source = SERVER.read_text()
+    for tool, fields in required.items():
+        assert tool in source, f"missing registered tool {tool}"
+        missing = [field for field in fields if f'"{field}"' not in source]
+        assert not missing, f"{tool} does not emit its documented fields: {missing}"
+
+    run = (REPO_ROOT / "skills" / "run" / "SKILL.md").read_text()
+    assert "current_pending" not in run and "current_running" not in run
+    assert "best_hours_utc" in run and "worst_hours_utc" in run
+
+
 def test_no_skill_promises_a_background_monitor():
     """v0.6.0 has no monitor process: nothing auto-fetches, auto-requeues, or
     holds a PID. Skills that claim otherwise send agents chasing state that

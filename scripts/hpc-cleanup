@@ -3,7 +3,27 @@
 # Default: 30 days. Asks for confirmation before deleting.
 set -euo pipefail
 
+usage() {
+    cat <<'EOF'
+Usage: hpc-cleanup [days]
+
+Remove local .unity_state database, log, and pid files older than days.
+Default: 30. The command lists files and asks before deleting them.
+
+Environment:
+  HPC_PROJECT_DIR  Project directory (default: current directory)
+EOF
+}
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
+
 DAYS="${1:-30}"
+if [[ ! "$DAYS" =~ ^[0-9]+$ ]]; then
+    echo "hpc-cleanup: days must be a non-negative integer" >&2
+    exit 2
+fi
 HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
 STATE_DIR="$HPC_DIR/.unity_state"
 

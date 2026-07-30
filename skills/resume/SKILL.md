@@ -25,8 +25,10 @@ silently.
 
 **3. Read the experiment history**
 
-Call `mcp__unity-hpc__unity_results_tsv`. It returns the file's own header, and
-the rows keyed by that header. The columns are whatever this project chose.
+Call `mcp__unity-hpc__unity_results_tsv` with a small `limit`. It returns the
+file's own header, page `rows`, `total_rows`, `offset`, `limit`, and
+`next_offset`. The columns are whatever this project chose. Request another
+page only when the current page does not contain enough recent history.
 Report:
 
 - the total number of rows, split by `status` if that column exists
@@ -52,8 +54,8 @@ If the tool reports no configuration yet, offer `/unity-hpc:recon`.
 
 **6. Read the queue conditions**
 
-Call `mcp__unity-hpc__unity_traffic` for the current queue depth and the
-recommendation.
+Call `mcp__unity-hpc__unity_traffic` for historical contention. It reports
+quiet and busy UTC hours, not a current queue depth or estimated wait.
 
 **7. Print a structured resume brief**
 

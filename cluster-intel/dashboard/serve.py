@@ -24,10 +24,12 @@ easy to read and edit.
 """
 
 import argparse
+import errno
 import csv
 import json
 import os
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -309,7 +311,14 @@ def main():
     ap.add_argument("--port", type=int, default=8787, help="port (default 8787)")
     args = ap.parse_args()
 
-    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    try:
+        srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(f"Dashboard cannot bind {args.host}:{args.port}: address already in use. "
+                  f"Stop the existing server or choose --port <unused-port>.", file=sys.stderr)
+            return 2
+        raise
     print(f"Unity cluster monitor → http://{args.host}:{args.port}")
     print(f"  summaries.db: {'ok' if SUMMARY_DB.exists() else 'MISSING'}  ({SUMMARY_DB})")
     print(f"  snapshot   : {'ok' if SNAPSHOT_CSV.exists() else 'MISSING'}  ({SNAPSHOT_CSV})")
@@ -318,7 +327,8 @@ def main():
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

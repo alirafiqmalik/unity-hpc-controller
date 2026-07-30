@@ -24,22 +24,23 @@ If the file is absent, run `/unity-hpc:setup` first.
 Call the MCP tool `mcp__unity-hpc__unity_traffic`. Print this block:
 
 ```
-Queue: <N> running, <M> pending
-Estimated wait: ~Xmin (<partition>)
-Recommendation: <partition>
+Historical GPU use: <best_hours_utc> is usually quiet; <worst_hours_utc> is busy
+Recommendation: submit in a quiet UTC hour when the work is not urgent
 ```
 
-If `current_pending` is more than 30, print this warning:
+`unity_traffic` reports historical GPU utilization, not live queue counts or an
+estimated wait. For a live answer, run `squeue` through `unity_ssh` before a
+large submission.
 
-> "Queue is deep (~Xmin estimated wait on `<partition>`). Options:
-> (a) Use the matching `-preempt` partition [faster when the queue is deep]
-> (b) Wait for off-peak (best hours: <best_submit_hours_utc>)
-> (c) Proceed anyway"
+If the traffic result shows no data, print this warning:
 
-Ask the user to choose. The default is the recommendation from the traffic data.
+> "No historical traffic data is available. The scheduler can still accept this
+> job, but its wait time is unknown. Run `/unity-hpc:recon` and telemetry sync
+> when shared usage data is needed."
 
-A preempt partition trades wait time for the risk of a kill mid-run. Offer one
-only for work that is short, or that writes checkpoints.
+Do not invent a partition recommendation or a wait time. Partition access comes
+from `unity_cluster_profile`; only offer a preempt partition when that profile
+shows it is available and the job is checkpoint-safe.
 
 **3. Submit the job**
 

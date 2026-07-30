@@ -14,8 +14,10 @@ columns. Read them, and impose no schema.
 
 **1. Get the current table**
 
-Call `mcp__unity-hpc__unity_results_tsv`. It returns `columns`, taken from the
-file's own header, and `rows`. Print the table formatted.
+Call `mcp__unity-hpc__unity_results_tsv` with a small `limit`. It returns
+`columns`, taken from the file's own header, `rows`, `total_rows`, `offset`,
+`limit`, and `next_offset`. Request the next page only when it is needed.
+Print the returned rows as a table.
 
 If the file does not exist, ask the user which columns they want, before you
 create it. One reasonable default is `commit  metric  value  status  description`,

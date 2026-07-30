@@ -1,41 +1,79 @@
-#!/usr/bin/env bash
-# hpc-results — pretty-print results.tsv with aligned columns and status colors
-set -euo pipefail
+#!/usr/bin/env python3
+"""Print a project's header-driven results.tsv without assuming ML metrics."""
 
-HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
-TSV="$HPC_DIR/results.tsv"
+from __future__ import annotations
 
-if [[ ! -f "$TSV" ]]; then
-    echo "No results.tsv found in $HPC_DIR" >&2
-    exit 1
-fi
+import csv
+import json
+import os
+import sys
+from pathlib import Path
 
-# ANSI colors
-GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; RESET='\033[0m'
 
-# Read and align, then colorize status column
-awk -F'\t' '
-NR == 1 {
-    printf "%-10s  %-12s  %-10s  %-8s  %s\n", $1, $2, $3, $4, $5
-    printf "%-10s  %-12s  %-10s  %-8s  %s\n", "----------", "------------", "----------", "--------", "---"
-    next
-}
-{
-    printf "%-10s  %-12s  %-10s  %-8s  %s\n", $1, $2, $3, $4, $5
-}
-' "$TSV" | while IFS= read -r line; do
-    if echo "$line" | grep -q '\bkeep\b'; then
-        echo -e "${GREEN}${line}${RESET}"
-    elif echo "$line" | grep -q '\bcrash\b'; then
-        echo -e "${RED}${line}${RESET}"
-    elif echo "$line" | grep -q '\bdiscard\b'; then
-        echo -e "${YELLOW}${line}${RESET}"
-    else
-        echo "$line"
-    fi
-done
+def _metrics(project: Path) -> tuple[str | None, str]:
+    path = project / "unityHPC" / "metrics.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, "min"
+    primary = data.get("primary")
+    goal = data.get("goal", "min")
+    return (primary if isinstance(primary, str) else None,
+            goal if goal in {"min", "max"} else "min")
 
-TOTAL=$(awk -F'\t' 'NR>1' "$TSV" | wc -l)
-BEST=$(awk -F'\t' 'NR>1 && $4=="keep" {print $2}' "$TSV" | sort -n | head -1)
-echo ""
-echo "Total: $TOTAL experiments | Best val_bpb (keep): ${BEST:-n/a}"
+
+def _display(value: str, width: int) -> str:
+    return value if len(value) <= width else value[:width - 1] + "…"
+
+
+def main() -> int:
+    project = Path(os.environ.get("HPC_PROJECT_DIR", os.getcwd()))
+    path = project / "results.tsv"
+    if not path.is_file():
+        print(f"No results.tsv found in {project}", file=sys.stderr)
+        return 1
+
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh, delimiter="\t", restkey="_extra")
+        columns = reader.fieldnames or []
+        rows = list(reader)
+    if not columns:
+        print("results.tsv is empty.")
+        return 0
+
+    widths = {name: max(len(name), *(len(str(r.get(name, ""))) for r in rows))
+              for name in columns}
+    widths = {name: min(width, 36) for name, width in widths.items()}
+    print("  ".join(f"{name:<{widths[name]}}" for name in columns))
+    print("  ".join("-" * widths[name] for name in columns))
+    for row in rows:
+        print("  ".join(f"{_display(str(row.get(name, '')), widths[name]):<{widths[name]}}"
+                        for name in columns))
+        if row.get("_extra"):
+            print(f"  extra: {', '.join(row['_extra'])}")
+
+    primary, goal = _metrics(project)
+    candidates = rows
+    if "status" in columns:
+        candidates = [row for row in rows if row.get("status") == "keep"]
+    ranked: list[tuple[float, dict]] = []
+    if primary and primary in columns:
+        for row in candidates:
+            try:
+                ranked.append((float(row.get(primary, "")), row))
+            except (TypeError, ValueError):
+                continue
+    print()
+    if ranked:
+        value, row = (min(ranked) if goal == "min" else max(ranked))
+        identity = row.get("commit") or row.get(columns[0], "?")
+        print(f"Total: {len(rows)} experiments | Best {primary} ({goal}): {identity} = {value:g}")
+    elif primary:
+        print(f"Total: {len(rows)} experiments | No numeric kept value for declared metric {primary!r}.")
+    else:
+        print(f"Total: {len(rows)} experiments | No primary metric is declared.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
