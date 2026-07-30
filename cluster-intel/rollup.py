@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import paths  # noqa: E402
+from lib.cluster_config import canonical_gpu_type  # noqa: E402
 from collector_parse import derive_hardware, is_terminal  # noqa: E402
 
 SLOT_SECONDS = 900
@@ -172,7 +173,11 @@ def _process_day(conn, day: str, src: Path) -> None:
         u = _util(rec)
         if u is None:
             continue
-        key = (rec.get("kind"), rec.get("resource_id"))
+        kind = rec.get("kind")
+        resource_id = rec.get("resource_id")
+        if kind == "gpu_type" and resource_id:
+            resource_id = canonical_gpu_type(resource_id)
+        key = (kind, resource_id)
         per_res.setdefault(key, {}).setdefault(slot, []).append(u)
 
     ev_by_res: dict[str, list[dict]] = {}

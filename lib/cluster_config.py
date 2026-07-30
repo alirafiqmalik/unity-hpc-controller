@@ -29,6 +29,57 @@ _MAX_FIELDS = frozenset({"nodes", "cpus_total", "gpus_total", "total_accessible"
 #: top-level map-of-record sections merged per resource id
 _MAP_SECTIONS = ("partitions", "gpu_fleet", "storage")
 
+# Slurm's GPU name is a resource key, not display text.  Keep the spelling that
+# `%G`, `--gres`, and sacct use, while accepting names that have appeared in
+# handwritten configuration and telemetry.  Add aliases here, rather than at
+# individual reader call sites, so every config write folds the same keys.
+GPU_ALIASES = {
+    "rtx_8000": "rtx8000",
+    "rtx-8000": "rtx8000",
+    "titan_x": "titanx",
+    "titan-x": "titanx",
+}
+
+
+def canonical_gpu_type(value: str) -> str:
+    """Return the canonical Slurm GPU resource spelling for ``value``."""
+    raw = str(value).strip().lower()
+    lookup = raw.replace(" ", "_").replace("-", "_")
+    return GPU_ALIASES.get(raw, GPU_ALIASES.get(lookup, raw))
+
+
+def canonicalize_config(data: dict) -> dict:
+    """Fold legacy GPU keys before a config merge or write.
+
+    The original spelling remains in ``source_resource_ids`` when it differs,
+    so diagnostics retain what a collector or an older config actually saw.
+    """
+    out = json.loads(json.dumps(data))
+    fleet: dict = {}
+    # Older stores used all three names below.  Fold them into gpu_fleet on
+    # every write so an old orphan cannot reappear after a later merge.
+    for section_name in ("gpu_fleet", "gpu_types", "gpu_capacity"):
+        section = out.get(section_name) or {}
+        if not isinstance(section, dict):
+            continue
+        for raw, record in section.items():
+            canonical = canonical_gpu_type(raw)
+            record = (dict(record or {}) if isinstance(record, dict)
+                      else {"total_accessible": record})
+            if canonical != raw:
+                record["source_resource_ids"] = _union_list(
+                    record.get("source_resource_ids") or [], [raw])
+            fleet[canonical] = merge_resource(fleet.get(canonical) or {}, record)
+    if any(key in out for key in ("gpu_fleet", "gpu_types", "gpu_capacity")):
+        out["gpu_fleet"] = fleet
+    out.pop("gpu_types", None)
+    out.pop("gpu_capacity", None)
+    for record in (out.get("partitions") or {}).values():
+        if isinstance(record, dict) and isinstance(record.get("gpu_types"), list):
+            record["gpu_types"] = _union_list(
+                [], [canonical_gpu_type(item) for item in record["gpu_types"]])
+    return out
+
 
 def _union_by_name(a: list, b: list) -> list:
     by_name: dict = {}
@@ -107,11 +158,14 @@ def merge_config(current: dict, observation: dict) -> dict:
     is deliberately last-write; cluster-invariant scalars (slurm_version,
     sacct_scope, cluster) are the same for every observer.
     """
-    out = json.loads(json.dumps(current))  # deep copy
+    out = canonicalize_config(current)
+    observation = canonicalize_config(observation)
     for k, v in observation.items():
         if k in _MAP_SECTIONS:
             section = dict(out.get(k) or {})
             for rid, rec in v.items():
+                if k == "gpu_fleet":
+                    rid = canonical_gpu_type(rid)
                 section[rid] = merge_resource(section.get(rid) or {}, rec)
             out[k] = section
         elif k == "account_limits":

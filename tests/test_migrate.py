@@ -51,6 +51,20 @@ def test_import_raw_jobs_reconciles(tmp_data_dir):
     assert not (paths.telemetry_dir() / "2026-07-20").exists()
 
 
+def test_migration_folds_legacy_gpu_keys_in_existing_config(tmp_data_dir):
+    paths.config_path().write_text(json.dumps({
+        "gpu_fleet": {"rtx_8000": {"total_accessible": 2}},
+        "gpu_capacity": {"rtx8000": 4},
+        "gpu_types": {"titan_x": {"total_accessible": 1}},
+    }))
+    assert migrate.normalize_config_resource_keys() is True
+    data = json.loads(paths.config_path().read_text())
+    assert set(data["gpu_fleet"]) == {"rtx8000", "titanx"}
+    assert data["gpu_fleet"]["rtx8000"]["total_accessible"] == 4
+    assert "gpu_capacity" not in data and "gpu_types" not in data
+    assert migrate.normalize_config_resource_keys() is False
+
+
 def test_import_raw_jobs_is_idempotent_on_retry(tmp_data_dir):
     db = tmp_data_dir / "raw_jobs.db"
     _make_raw_jobs(db, 5)

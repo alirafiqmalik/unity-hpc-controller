@@ -281,6 +281,16 @@ def test_parse_gpu_types_merges_repeated_type_rows_without_fabricating():
     assert by_id["a100"]["compute_capability"] == 8.0  # agrees, so kept
 
 
+def test_parse_gpu_types_folds_aliases_and_preserves_the_source_name():
+    text = (" rtx_8000     [####              ] 1/2          0         48        7.5     \n"
+            " rtx8000      [####              ] 2/2          0         48        7.5     \n")
+    recs = cp.parse_gpu_types(text)
+    assert len(recs) == 1
+    assert recs[0]["resource_id"] == "rtx8000"
+    assert recs[0]["alloc"] == 3 and recs[0]["total"] == 4
+    assert recs[0]["source_resource_ids"] == ["rtx8000", "rtx_8000"]
+
+
 def test_gpu_types_from_nodes_aggregates_measured_gres():
     recs = cp.gpu_types_from_nodes(REAL_NODES_TEXT)
     by_id = {r["resource_id"]: r for r in recs}

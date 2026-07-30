@@ -43,6 +43,28 @@ from lib import paths  # noqa: E402
 _ORIGINALS = ("cluster-profile.md", "raw_jobs.db", "snapshot.csv", "analysis")
 
 
+def normalize_config_resource_keys() -> bool:
+    """Fold legacy GPU storage sections and aliases in cluster-config.json.
+
+    This migration is idempotent.  It preserves original observed spellings in
+    ``source_resource_ids`` and writes only when canonicalization changes the
+    stored document.
+    """
+    path = paths.config_path()
+    if not path.exists():
+        return False
+    try:
+        current = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    normalized = clc.canonicalize_config(current)
+    if normalized == current:
+        return False
+    path.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return True
+
+
 def archive(stamp: str = "2026-07-22") -> list[str]:
     dst = paths.archive_dir() / stamp
     dst.mkdir(parents=True, exist_ok=True)
@@ -292,6 +314,7 @@ def run(stamp: str = "2026-07-22") -> dict:
     paths.locks_dir().mkdir(parents=True, exist_ok=True)
     with open(paths.sync_lock(), "w") as lock:
         try:
+            normalize_config_resource_keys()
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError(
