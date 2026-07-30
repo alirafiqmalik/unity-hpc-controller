@@ -7,9 +7,9 @@ description: "Submit a batch of related Unity jobs under one campaign — respec
 
 Announce: "Using unity-hpc:sweep to submit a batch of jobs to Unity."
 
-A sweep is not a separate mechanism. It is N ordinary submissions that share one
-`--campaign`. That shared campaign makes them one unit for status, fetch and
-telemetry.
+A sweep uses one manifest-driven SLURM array. The manifest contains one safe
+experiment name per line. The shared campaign makes the array one unit for
+status, fetch and telemetry.
 
 Vary the jobs the way the project already varies them: a different `JOB_COMMAND`
 for each variant, an argument that the entrypoint reads, or an env var.
@@ -46,20 +46,19 @@ A sweep is the one place where one mistake is multiplied.
 
 **5. Submit the batch**
 
-Use one campaign for the whole sweep:
+Write the experiment names to a manifest. Then submit one array for the whole
+sweep:
 
 ```bash
 CAMPAIGN=<sweep-name>
-for variant in <variants>; do
-    bash unityHPC/run.sh run "${variant}" --campaign "$CAMPAIGN"
-done
+bash unityHPC/run.sh array variants.txt --campaign "$CAMPAIGN" --limit <N>
 ```
 
-Submit the jobs in sequence. Each call is a short SSH round-trip. Serial
-submission keeps the ledger consistent and the login node unloaded.
+The `--limit` value controls the number of array tasks that can run at once.
+Omit it when the scheduler and account limits allow all tasks to run.
 
-If any submission fails, stop and print which jobs went through. Never continue
-past a rejection: the usual cause is the account limit.
+If submission fails, stop and report the scheduler error. The ledger records
+each array task as `<job-id>_<task-id>` after SLURM accepts the parent job.
 
 **6. Check what landed**
 
@@ -68,7 +67,7 @@ bash unityHPC/run.sh jobs --campaign "$CAMPAIGN"
 ```
 
 Check that the row count matches the number of variants. Then print: "Submitted
-N jobs for campaign `<name>`."
+N array tasks for campaign `<name>`."
 
 **7. Print the next steps**
 

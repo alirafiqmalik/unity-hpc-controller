@@ -4,6 +4,7 @@
 #
 # Usage:
 #   run.sh run <exp> [--campaign N] [--dry-run] [sbatch args...]  submit one job
+#   run.sh array <manifest> [--campaign N] [--limit N] [sbatch args...] submit an array
 #   run.sh render <exp>                    print the sbatch script, submit nothing
 #   run.sh sync                            rsync the project to $REMOTE_DIR
 #   run.sh status [--campaign N]           live sacct check; updates the ledger
@@ -15,6 +16,7 @@
 # ACCOUNT}, REMOTE_DIR, UNITY_HOST and CAMPAIGN may be overridden for a single
 # invocation without touching .env:
 #   JOB_COMMAND="echo smoke-test" SLURM_MEM=1G bash run.sh run smoke
+# UNITY_SSH_TIMEOUT sets the maximum wait for one SSH call, in seconds.
 #
 # Every submitted job is recorded in ../.unity_state/<campaign>.db, which is what
 # /unity-hpc:status, unity_jobs and unity_my_jobs read. The ledger writer is
@@ -88,6 +90,7 @@ unset _var _flag
 : "${SLURM_GPUS:=}"
 : "${SLURM_GPU_TYPE:=}"
 : "${CAMPAIGN:=}"
+: "${UNITY_SSH_TIMEOUT:=60}"
 
 require() {
     local name="$1"
@@ -95,6 +98,10 @@ require() {
         echo "run.sh: $name must be set in $ENV_FILE" >&2
         exit 2
     fi
+}
+
+_ssh() {
+    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$@"
 }
 
 # An experiment or campaign name becomes a SLURM job name, a local filename, a
@@ -155,7 +162,7 @@ state_dir, mode, campaign = sys.argv[1], sys.argv[2], sys.argv[3]
 path = os.path.join(state_dir, campaign + ".db")
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-if mode == "record":
+if mode in ("record", "array"):
     os.makedirs(state_dir, exist_ok=True)
 elif not os.path.exists(path):
     sys.exit(0)
@@ -180,11 +187,30 @@ if mode == "record":
             "ON CONFLICT(job_id) DO UPDATE SET exp=excluded.exp, "
             "partition=excluded.partition",
             (job_id, exp, partition, now, now))
+elif mode == "array":
+    parent, partition, manifest = sys.argv[4], sys.argv[5], sys.argv[6]
+    try:
+        with open(manifest, encoding="utf-8") as fh:
+            exps = [line.strip() for line in fh if line.strip()]
+    except OSError:
+        sys.exit(2)
+    with con:
+        for index, exp in enumerate(exps):
+            job_id = f"{parent}_{index}"
+            con.execute(
+                "INSERT INTO jobs (job_id, exp, partition, status, attempt, "
+                "submitted_utc, updated_utc) VALUES (?,?,?,'PENDING',1,?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET exp=excluded.exp, "
+                "partition=excluded.partition",
+                (job_id, exp, partition, now, now))
 elif mode == "rows":
     for r in con.execute("SELECT job_id, exp, partition, status FROM jobs ORDER BY rowid"):
         print("\t".join(str(x) for x in r))
 elif mode == "ids":
-    print(",".join(r[0] for r in con.execute("SELECT job_id FROM jobs ORDER BY rowid")))
+    print(",".join(r[0] for r in con.execute(
+        "SELECT DISTINCT CASE WHEN instr(job_id, '_') > 0 "
+        "THEN substr(job_id, 1, instr(job_id, '_') - 1) ELSE job_id END "
+        "FROM jobs ORDER BY rowid")))
 elif mode == "newest":
     for r in con.execute("SELECT job_id, exp FROM jobs ORDER BY rowid DESC LIMIT 1"):
         print("\t".join(str(x) for x in r))
@@ -196,7 +222,7 @@ elif mode == "update":
             parts = line.strip().split("|")
             if len(parts) < 2 or not parts[0]:
                 continue
-            jid = parts[0].split(".")[0].split("_")[0]
+            jid = parts[0].split(".")[0]
             if jid not in current or current[jid] in TERMINAL:
                 continue
             state = parts[1].strip()
@@ -309,11 +335,11 @@ cmd_run() {
         return 0
     fi
 
-    ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
-    printf '%s\n' "$script" | ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${exp}.sbatch"
+    _ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
+    printf '%s\n' "$script" | _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${exp}.sbatch"
 
     local out
-    out="$(ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${sbatch_args[*]-} _slurm/${exp}.sbatch")"
+    out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${sbatch_args[*]-} _slurm/${exp}.sbatch")"
     printf '%s\n' "$out"
 
     local job_id
@@ -328,6 +354,111 @@ cmd_run() {
     else
         echo "run.sh: WARNING job ${job_id} was submitted but could not be recorded" >&2
         echo "run.sh:   in ${STATE_DIR}/${campaign}.db -- status/fetch will not see it." >&2
+    fi
+}
+
+render_array() {
+    local campaign="$1" manifest_name="$2" limit="${3:-}"
+    require SLURM_ACCOUNT
+    require REMOTE_DIR
+    require JOB_COMMAND
+    _require_safe_name "campaign name" "$campaign"
+
+    echo "#!/bin/bash"
+    echo "#SBATCH --job-name=${campaign}"
+    echo "#SBATCH --account=${SLURM_ACCOUNT}"
+    echo "#SBATCH --partition=${SLURM_PARTITION}"
+    echo "#SBATCH --time=${WALLTIME}"
+    echo "#SBATCH --nodes=${SLURM_NODES}"
+    echo "#SBATCH --cpus-per-task=${SLURM_CPUS}"
+    echo "#SBATCH --mem=${SLURM_MEM}"
+    echo "#SBATCH --output=${REMOTE_DIR}/_slurm/${campaign}-%A_%a.out"
+    echo "#SBATCH --error=${REMOTE_DIR}/_slurm/${campaign}-%A_%a.err"
+    if [ -n "$SLURM_GPUS" ] && [ "$SLURM_GPUS" != "0" ]; then
+        if [ -n "$SLURM_GPU_TYPE" ]; then
+            echo "#SBATCH --gres=gpu:${SLURM_GPU_TYPE}:${SLURM_GPUS}"
+        else
+            echo "#SBATCH --gres=gpu:${SLURM_GPUS}"
+        fi
+    fi
+    if [ -n "$limit" ]; then
+        echo "#SBATCH --array=0-$((${ARRAY_COUNT} - 1))%${limit}"
+    else
+        echo "#SBATCH --array=0-$((${ARRAY_COUNT} - 1))"
+    fi
+    echo "#SBATCH --mail-type=END,FAIL,TIME_LIMIT"
+    if [ -n "${USER_EMAIL:-}" ]; then
+        echo "#SBATCH --mail-user=${USER_EMAIL}"
+    fi
+    echo ""
+    printf 'export EXP=\"\$(sed -n \"\$((SLURM_ARRAY_TASK_ID + 1))p\" %q)\"\n' \
+        "${REMOTE_DIR}/_slurm/${manifest_name}"
+    printf 'export REMOTE_DIR=%q\n' "$REMOTE_DIR"
+    printf 'export JOB_COMMAND=%q\n' "$JOB_COMMAND"
+    printf 'export VENV_PATH=%q\n' "${VENV_PATH:-}"
+    printf 'export MODULES=%q\n' "${MODULES:-}"
+    printf 'export HF_HOME=%q\n' "${HF_HOME:-}"
+    echo ""
+    cat "$HERE/job_template.sh"
+}
+
+cmd_array() {
+    local manifest="${1:-}"
+    if [ -z "$manifest" ] || [ ! -f "$manifest" ]; then
+        echo "run.sh array: manifest file is required" >&2
+        exit 2
+    fi
+    shift
+
+    local campaign limit
+    campaign="${CAMPAIGN:-}"
+    limit=""
+    local sbatch_args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --campaign) campaign="${2:-}"; shift 2 ;;
+            --campaign=*) campaign="${1#--campaign=}"; shift ;;
+            --limit) limit="${2:-}"; shift 2 ;;
+            --limit=*) limit="${1#--limit=}"; shift ;;
+            --dry-run) echo "run.sh array: --dry-run is not supported; use render" >&2; exit 2 ;;
+            *) sbatch_args+=("$1"); shift ;;
+        esac
+    done
+    [ -n "$campaign" ] || campaign="$(date -u +%Y%m%d)"
+    _require_safe_name "campaign name" "$campaign"
+
+    local normalized
+    normalized="$(mktemp)"
+    trap 'rm -f "$normalized"' RETURN
+    while IFS= read -r exp || [ -n "$exp" ]; do
+        [ -n "${exp//[[:space:]]/}" ] || continue
+        case "$exp" in \#*) continue ;; esac
+        _require_safe_name "experiment name" "$exp"
+        printf '%s\n' "$exp" >>"$normalized"
+    done <"$manifest"
+    ARRAY_COUNT="$(wc -l <"$normalized")"
+    if [ "$ARRAY_COUNT" -eq 0 ]; then
+        echo "run.sh array: manifest has no experiments" >&2
+        exit 2
+    fi
+
+    local script remote_manifest out parent
+    remote_manifest="${campaign}.manifest"
+    script="$(render_array "$campaign" "$remote_manifest" "$limit")"
+    _ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
+    _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${remote_manifest}" <"$normalized"
+    printf '%s\n' "$script" | _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${campaign}.array.sbatch"
+    out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${sbatch_args[*]-} _slurm/${campaign}.array.sbatch")"
+    printf '%s\n' "$out"
+    parent="$(printf '%s\n' "$out" | sed -n 's/^Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -1)"
+    if [ -z "$parent" ]; then
+        echo "run.sh: WARNING could not read the array job id from sbatch's reply" >&2
+        return 0
+    fi
+    if _ledger array "$campaign" "$parent" "$SLURM_PARTITION" "$normalized"; then
+        echo "Recorded ${ARRAY_COUNT} array tasks under campaign ${campaign}"
+    else
+        echo "run.sh: WARNING array job ${parent} was submitted but could not be recorded" >&2
     fi
 }
 
@@ -361,7 +492,7 @@ cmd_status() {
         echo "No jobs recorded for campaign ${campaign}."
         return 0
     fi
-    if ! sacct_out="$(ssh "$UNITY_HOST" \
+    if ! sacct_out="$(_ssh "$UNITY_HOST" \
             "sacct -j '${ids}' -X -P -n -o JobID,State,Partition,Elapsed" 2>&1)"; then
         echo "run.sh: sacct failed -- showing the last known state instead" >&2
         printf '%s\n' "$sacct_out" | sed 's/^/run.sh:   /' >&2
@@ -396,7 +527,9 @@ cmd_logs() {
     job_id="$(printf '%s' "$newest" | cut -f1)"
     exp="$(printf '%s' "$newest" | cut -f2)"
     echo "--- ${exp}-${job_id}.out (last ${lines} lines) ---"
-    ssh "$UNITY_HOST" "tail -n ${lines} ${REMOTE_DIR}/_slurm/${exp}-${job_id}.out 2>&1 || true"
+    local log_name="${exp}-${job_id}"
+    if [[ "$job_id" == *_* ]]; then log_name="${campaign}-${job_id}"; fi
+    _ssh "$UNITY_HOST" "tail -n ${lines} ${REMOTE_DIR}/_slurm/${log_name}.out 2>&1 || true"
 }
 
 cmd_fetch() {
@@ -413,7 +546,9 @@ cmd_fetch() {
     if [ -n "$rows" ]; then
         while IFS=$'\t' read -r id exp _part _status; do
             [ -n "$id" ] || continue
-            filters+=("--include=${exp}-${id}.out" "--include=${exp}-${id}.err")
+            local stem="${exp}-${id}"
+            if [[ "$id" == *_* ]]; then stem="${campaign}-${id}"; fi
+            filters+=("--include=${stem}.out" "--include=${stem}.err")
         done <<<"$rows"
         filters+=("--exclude=*")
     else
@@ -424,7 +559,7 @@ cmd_fetch() {
         "${UNITY_HOST}:${REMOTE_DIR}/_slurm/" "$dest/"
 
     local remote_results="${REMOTE_RESULTS_DIR:-${REMOTE_DIR}/_results}"
-    if ssh "$UNITY_HOST" "test -d '${remote_results}'"; then
+    if _ssh "$UNITY_HOST" "test -d '${remote_results}'"; then
         mkdir -p "$dest/artifacts"
         rsync -az "${UNITY_HOST}:${remote_results}/" "$dest/artifacts/"
         echo "Artifacts: _results/${campaign}/artifacts/"
@@ -438,6 +573,7 @@ case "${1:-}" in
             echo "unityHPC/run.sh generated by unity-hpc ${UNITY_SCAFFOLD_VERSION}"
             echo "Re-run /unity-hpc:setup (or hpc-scaffold) to regenerate it." ;;
     run)    shift; cmd_run "$@" ;;
+    array)  shift; cmd_array "$@" ;;
     render) shift; render "${1:-preview}" ;;
     sync)   cmd_sync ;;
     status) shift; cmd_status "$@" ;;
@@ -445,6 +581,7 @@ case "${1:-}" in
     logs)   shift; cmd_logs "$@" ;;
     fetch)  shift; cmd_fetch "$@" ;;
     *)      echo "usage: run.sh {run <exp> [--campaign N] [--dry-run] [sbatch args] |" >&2
+            echo "                array <manifest> [--campaign N] [--limit N] [sbatch args] |" >&2
             echo "                render <exp> | sync | status | jobs | logs | fetch}" >&2
             exit 2 ;;
 esac
