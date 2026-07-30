@@ -41,6 +41,30 @@ def test_sets_take_union():
     assert merged["partitions"]["gpu"]["gpu_types"] == ["a100", "h100", "l40s"]
 
 
+def test_gpu_aliases_fold_at_the_config_merge_boundary():
+    current = {"gpu_fleet": {"rtx_8000": {"total_accessible": 4,
+                                              "observed_utc": "2026-07-20T00:00:00Z"}}}
+    observation = {"gpu_fleet": {"rtx8000": {"total_accessible": 8,
+                                                "observed_utc": "2026-07-21T00:00:00Z"}},
+                   "partitions": {"gpu": {"gpu_types": ["rtx_8000", "titan-x"]}}}
+    merged = cc.merge_config(current, observation)
+    assert set(merged["gpu_fleet"]) == {"rtx8000"}
+    assert merged["gpu_fleet"]["rtx8000"]["total_accessible"] == 8
+    assert merged["gpu_fleet"]["rtx8000"]["source_resource_ids"] == ["rtx_8000"]
+    assert merged["partitions"]["gpu"]["gpu_types"] == ["rtx8000", "titanx"]
+
+
+def test_legacy_gpu_storage_sections_fold_order_independently():
+    a = {"gpu_capacity": {"titan_x": 4}}
+    b = {"gpu_types": {"titanx": {"total_accessible": 8}}}
+    ab = cc.merge_config(cc.merge_config({}, a), b)
+    ba = cc.merge_config(cc.merge_config({}, b), a)
+    assert ab == ba
+    assert ab["gpu_fleet"] == {
+        "titanx": {"total_accessible": 8, "source_resource_ids": ["titan_x"]}}
+    assert "gpu_capacity" not in ab and "gpu_types" not in ab
+
+
 def test_point_in_time_newest_observed_wins():
     cur = {"fairshare": {"factor": 0.4, "observed_utc": "2026-07-20T10:00:00Z"}}
     newer = {"fairshare": {"factor": 0.9, "observed_utc": "2026-07-22T14:00:00Z"}}

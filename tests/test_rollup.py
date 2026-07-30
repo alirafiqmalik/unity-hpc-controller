@@ -59,6 +59,17 @@ def test_rollup_is_deterministic(tmp_data_dir):
     assert _dump("hourly_resource") == first, "same raw -> byte-identical rows"
 
 
+def test_rollup_folds_legacy_gpu_aliases_at_ingest(tmp_data_dir):
+    recs = _slots_for_day("2026-07-20", 4, rid="rtx_8000")
+    recs += _slots_for_day("2026-07-20", 4, rid="rtx8000")
+    _write_day(paths.telemetry_dir(), "2026-07-20", resource=recs)
+    rollup.run()
+    con = sqlite3.connect(paths.summaries_db())
+    ids = {row[0] for row in con.execute("SELECT DISTINCT resource_id FROM hourly_resource")}
+    con.close()
+    assert ids == {"rtx8000"}
+
+
 def test_rollup_is_deterministic_via_copy_base_and_upsert(tmp_data_dir):
     # Production path: roll up once (creates the DB), then roll up the SAME
     # raw again WITHOUT deleting the DB, exercising the copy-base +

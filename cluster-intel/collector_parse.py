@@ -61,11 +61,20 @@ _GPU_ENTRY = re.compile(
 _VRAM = re.compile(r"(\d+)\s*GB", re.I)
 _CC = re.compile(r"cc\s*([0-9.]+)", re.I)
 _PSEUDO_TYPES = frozenset({"any", "unknown"})
+_GPU_ALIASES = {"rtx_8000": "rtx8000", "rtx-8000": "rtx8000",
+                "titan_x": "titanx", "titan-x": "titanx"}
 _TRES_GPU = re.compile(r"gres/gpu:([a-z0-9_]+)=(\d+)", re.I)
 _TRES_GPU_PLAIN = re.compile(r"gres/gpu=(\d+)", re.I)
 _TRES_CPU = re.compile(r"(?:^|,)cpu=(\d+)")
 _TRES_MEM = re.compile(r"(?:^|,)mem=(\d+(?:\.\d+)?)([KMGT]?)")
 _MEM_MB = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024, "": 1.0}
+
+
+def canonical_gpu_type(value: str) -> str:
+    """Canonical Slurm GPU resource spelling, kept self-contained for Unity."""
+    raw = str(value).strip().lower()
+    lookup = raw.replace(" ", "_").replace("-", "_")
+    return _GPU_ALIASES.get(raw, _GPU_ALIASES.get(lookup, raw))
 
 
 def _cpu_fields(c: str) -> tuple[int, int]:
@@ -80,7 +89,7 @@ def _cpu_fields(c: str) -> tuple[int, int]:
 
 
 def _gpu_types_from_gres(gres: str) -> list[str]:
-    return sorted({m.group(1).lower() for m in _GPU_IN_GRES.finditer(gres or "")})
+    return sorted({canonical_gpu_type(m.group(1)) for m in _GPU_IN_GRES.finditer(gres or "")})
 
 
 def _gpu_count_from_gres(gres: str) -> int:
@@ -125,7 +134,7 @@ def _gpu_counts_by_type(gres: str) -> dict[str, int]:
     {'a100': 4, 'l40s': 2}."""
     out: dict[str, int] = {}
     for m in _GPU_IN_GRES.finditer(gres or ""):
-        t = m.group(1).lower()
+        t = canonical_gpu_type(m.group(1))
         out[t] = out.get(t, 0) + int(m.group(2))
     return out
 
@@ -155,9 +164,11 @@ def parse_gpu_types(text: str) -> list[dict]:
     """
     acc: dict[str, dict] = {}
 
-    def add(rid, alloc, total, pending=None, vram_values=(), cc=None):
+    def add(raw_rid, alloc, total, pending=None, vram_values=(), cc=None):
+        rid = canonical_gpu_type(raw_rid)
         a = acc.setdefault(rid, {"alloc": 0, "total": 0, "pending": None,
-                                 "vram": set(), "cc": set()})
+                                 "vram": set(), "cc": set(), "raw": set()})
+        a["raw"].add(raw_rid.lower())
         a["alloc"] += alloc
         a["total"] += total
         if pending is not None:
@@ -197,6 +208,8 @@ def parse_gpu_types(text: str) -> list[dict]:
         a = acc[rid]
         rec = {"kind": "gpu_type", "resource_id": rid,
                "alloc": a["alloc"], "total": a["total"], "source": "gpu_usage"}
+        if a["raw"] != {rid}:
+            rec["source_resource_ids"] = sorted(a["raw"])
         if a["pending"] is not None:
             rec["pending"] = a["pending"]
         if len(a["vram"]) == 1:
@@ -328,7 +341,7 @@ def _parse_tres(tres: str) -> tuple[str | None, dict]:
     tres = tres or ""
     gt = _TRES_GPU.search(tres)
     if gt:
-        gpu_type, gpus = gt.group(1).lower(), int(gt.group(2))
+        gpu_type, gpus = canonical_gpu_type(gt.group(1)), int(gt.group(2))
     else:
         p = _TRES_GPU_PLAIN.search(tres)
         gpu_type, gpus = (None, int(p.group(1))) if p else (None, 0)
@@ -393,7 +406,7 @@ def derive_hardware(gpu_type, req) -> str:
     keeping, in its own column.
     """
     if gpu_type:
-        return str(gpu_type).lower()
+        return canonical_gpu_type(gpu_type)
     gpus = (req or {}).get("gpus") or 0
     return GPU_UNSPECIFIED if gpus else "cpu"
 
