@@ -214,8 +214,9 @@ def test_documented_env_keys_are_actually_consumed(ptype):
     env = (REPO_ROOT / "templates" / "scaffold" / ptype / "env.example").read_text()
     body = (REPO_ROOT / "templates" / "scaffold" / ptype / "job_template.sh").read_text()
     runner = RUN_SH.read_text()
+    telemetry = (REPO_ROOT / "cluster-intel" / "sync-telemetry.sh").read_text()
     declared = set(re.findall(r"^([A-Z][A-Z0-9_]*)=", env, re.M))
-    ignored = {k for k in declared if k not in body and k not in runner}
+    ignored = {k for k in declared if k not in body and k not in runner and k not in telemetry}
     assert not ignored, f"{ptype}/env.example advertises unused keys: {sorted(ignored)}"
 
 

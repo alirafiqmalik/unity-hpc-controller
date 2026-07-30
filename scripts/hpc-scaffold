@@ -3,6 +3,8 @@
 
 Usage:
   hpc-scaffold --type {cpu,gpu,ml} [--project-dir DIR] [--dry-run]
+  UNITY_HPC_NONINTERACTIVE=1 hpc-scaffold --type cpu --account ACCOUNT \
+    --remote-dir /work/ACCOUNT/user/project --job-command 'python run.py'
 
 Invoked by /unity-hpc:setup. Existing files that differ from the canonical
 template are moved into unityHPC/.pre-redesign/ rather than being overwritten
@@ -10,6 +12,10 @@ in place; an existing .env is always left alone.
 """
 
 import argparse
+import getpass
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -18,12 +24,80 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import scaffold  # noqa: E402
 
 
+_REQUIRED = ("SLURM_ACCOUNT", "REMOTE_DIR", "JOB_COMMAND")
+
+
+def _read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, raw = line.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "").isalnum():
+            continue
+        try:
+            tokens = shlex.split(raw, comments=True, posix=True)
+        except ValueError:
+            continue
+        values[key] = " ".join(tokens) if tokens else ""
+    return values
+
+
+def _append_env(path: Path, values: dict[str, str]) -> None:
+    lines = ["", "# --- hpc-scaffold non-interactive settings ---"]
+    lines.extend(f"{key}={shlex.quote(value)}" for key, value in values.items())
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _write_guidance(project_dir: Path) -> bool:
+    path = project_dir / "CLAUDE.md"
+    if path.exists():
+        return False
+    source = scaffold.plugin_root() / "templates" / "CLAUDE.md.template"
+    path.write_text(scaffold.render(source.read_text(encoding="utf-8")), encoding="utf-8")
+    return True
+
+
+def _deploy_collector(values: dict[str, str]) -> None:
+    """Deploy only after the caller explicitly requested --collector deploy."""
+    host = values.get("UNITY_HOST") or "unity"
+    account = values["SLURM_ACCOUNT"]
+    cid = values.get("UNITY_CID") or f"/work/{account}/{getpass.getuser()}/cluster-intel"
+    timeout = values.get("UNITY_SSH_TIMEOUT") or "60"
+    quoted_cid = shlex.quote(cid)
+    root = scaffold.plugin_root()
+    subprocess.run(["timeout", "--foreground", timeout, "ssh", host,
+                    f"mkdir -p -- {quoted_cid}/telemetry"], check=True)
+    subprocess.run(["scp", str(root / "cluster-intel" / "collector.sh"),
+                    str(root / "cluster-intel" / "collector_parse.py"),
+                    f"{host}:{cid}/"], check=True)
+    remote = ("tmux has-session -t unity-collector 2>/dev/null || "
+              f"tmux new-session -d -s unity-collector 'UNITY_CID={quoted_cid} "
+              f"bash {quoted_cid}/collector.sh loop'")
+    subprocess.run(["timeout", "--foreground", timeout, "ssh", host, remote], check=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="hpc-scaffold")
     parser.add_argument("--type", dest="ptype", required=True, choices=scaffold.TYPES)
     parser.add_argument("--project-dir", default=".")
     parser.add_argument("--dry-run", action="store_true",
                         help="print what would change and exit without writing")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="require complete explicit configuration; never prompt")
+    parser.add_argument("--account", dest="SLURM_ACCOUNT")
+    parser.add_argument("--remote-dir", dest="REMOTE_DIR")
+    parser.add_argument("--job-command", dest="JOB_COMMAND")
+    parser.add_argument("--host", dest="UNITY_HOST")
+    parser.add_argument("--constraint", dest="SLURM_CONSTRAINT")
+    parser.add_argument("--collector", choices=("skip", "deploy"), default="skip",
+                        help="collector action (default: skip; deploy is explicit)")
+    parser.add_argument("--write-guidance", action="store_true",
+                        help="create a version-marked CLAUDE.md only if it is absent")
     args = parser.parse_args()
 
     project_dir = Path(args.project_dir).expanduser().resolve()
@@ -37,21 +111,56 @@ def main() -> int:
         print(f"hpc-scaffold: {exc}", file=sys.stderr)
         return 2
 
+    env_path = project_dir / "unityHPC" / ".env"
+    existing = _read_env(env_path)
+    supplied = {key: getattr(args, key) for key in
+                ("SLURM_ACCOUNT", "REMOTE_DIR", "JOB_COMMAND", "UNITY_HOST", "SLURM_CONSTRAINT")
+                if getattr(args, key) is not None}
+    values = {**existing, **supplied}
+    noninteractive = args.non_interactive or os.environ.get("UNITY_HPC_NONINTERACTIVE") == "1"
+    if noninteractive or args.collector == "deploy":
+        missing = [key for key in _REQUIRED if not values.get(key)]
+        if missing:
+            mode = "collector deployment" if args.collector == "deploy" and not noninteractive else "non-interactive setup"
+            print(f"hpc-scaffold: {mode} requires " + ", ".join(missing) +
+                  " (use flags or provide non-empty values in unityHPC/.env)", file=sys.stderr)
+            return 2
+
     if args.dry_run:
         print(f"Would generate the {args.ptype} scaffold in {project_dir}/unityHPC:")
         for action in actions:
             print(f"  {action.kind:<8} unityHPC/{action.path.name}")
+        if supplied:
+            print("  configure unityHPC/.env: " + ", ".join(sorted(supplied)))
+        if args.write_guidance:
+            print("  create CLAUDE.md" if not (project_dir / "CLAUDE.md").exists()
+                  else "  skip CLAUDE.md (already exists)")
+        if args.collector == "deploy":
+            print("  deploy collector (explicit request)")
         return 0
 
     print(f"Generating the {args.ptype} scaffold in {project_dir}/unityHPC:")
     for line in scaffold.apply(actions):
         print(line)
 
+    if supplied:
+        _append_env(env_path, supplied)
+        print("  configured unityHPC/.env: " + ", ".join(sorted(supplied)))
+    if args.write_guidance:
+        print("  created CLAUDE.md" if _write_guidance(project_dir)
+              else "  skip     CLAUDE.md (already exists)")
+    if args.collector == "deploy":
+        _deploy_collector(values)
+        print("  deployed collector")
+
     if any(a.kind == "replace" for a in actions):
         print(f"\nDisplaced files are preserved in "
               f"unityHPC/{scaffold.BACKUP_DIRNAME}/ — review them if you had "
               f"local changes.")
-    print("\nNext: fill in SLURM_ACCOUNT, REMOTE_DIR and JOB_COMMAND in unityHPC/.env")
+    if noninteractive:
+        print("\nNon-interactive scaffold complete.")
+    else:
+        print("\nNext: fill in SLURM_ACCOUNT, REMOTE_DIR and JOB_COMMAND in unityHPC/.env")
     return 0
 
 

@@ -253,3 +253,24 @@ def test_a_project_with_no_scaffold_is_not_called_stale(server, tmp_project,
     monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
     report = _doctor(server)
     assert "scaffold_stale" not in [p["issue"] for p in report["problems"]]
+
+
+def test_doctor_reports_unmarked_unity_guidance_as_stale(server, tmp_project,
+                                                         tmp_data_dir, monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    path = tmp_project / "CLAUDE.md"
+    path.write_text("# Unity Cluster\nUse unityHPC/run.sh run job.\n")
+    report = _doctor(server)
+    stale = [p for p in report["problems"] if p["issue"] == "claude_guidance_stale"]
+    assert stale and str(path) in stale[0]["detail"]
+    assert "write-guidance" in stale[0]["fix"]
+
+
+def test_doctor_accepts_current_version_marked_guidance(server, tmp_project,
+                                                        tmp_data_dir, monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    version = server._plugin_version(REPO_ROOT)
+    (tmp_project / "CLAUDE.md").write_text(
+        f"# Unity Cluster\n<!-- unity-hpc-guidance: {version} -->\nunityHPC\n")
+    report = _doctor(server)
+    assert "claude_guidance_stale" not in [p["issue"] for p in report["problems"]]

@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,3 +54,38 @@ def test_project_dir_that_is_a_file_exits_two(tmp_path):
     a_file.write_text("x")
     result = run_cli("--type", "cpu", "--project-dir", str(a_file))
     assert result.returncode == 2
+
+
+def test_noninteractive_setup_requires_complete_config(tmp_project):
+    env = dict(os.environ, UNITY_HPC_NONINTERACTIVE="1")
+    result = subprocess.run(
+        [sys.executable, str(CLI), "--type", "cpu", "--project-dir", str(tmp_project)],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 2
+    assert "SLURM_ACCOUNT" in result.stderr and "JOB_COMMAND" in result.stderr
+
+
+def test_noninteractive_setup_writes_quoted_explicit_values(tmp_project):
+    result = run_cli(
+        "--type", "cpu", "--project-dir", str(tmp_project), "--non-interactive",
+        "--account", "pi_test", "--remote-dir", "/work/pi_test/user/project",
+        "--job-command", 'python run.py --name "a b"', "--constraint", "avx512",
+        "--write-guidance",
+    )
+    assert result.returncode == 0, result.stderr
+    env = (tmp_project / "unityHPC" / ".env").read_text()
+    assert "SLURM_ACCOUNT=pi_test" in env
+    assert "REMOTE_DIR=/work/pi_test/user/project" in env
+    assert "SLURM_CONSTRAINT=avx512" in env
+    assert 'unity-hpc-guidance:' in (tmp_project / "CLAUDE.md").read_text()
+
+
+def test_noninteractive_setup_accepts_existing_quoted_config(tmp_project):
+    unity = tmp_project / "unityHPC"
+    unity.mkdir()
+    (unity / ".env").write_text(
+        'SLURM_ACCOUNT="pi_test"\nREMOTE_DIR="/work/pi_test/project"\n'
+        'JOB_COMMAND="python run.py --flag value"\n')
+    result = run_cli("--type", "cpu", "--project-dir", str(tmp_project), "--non-interactive")
+    assert result.returncode == 0, result.stderr

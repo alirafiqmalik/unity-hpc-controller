@@ -119,6 +119,14 @@ def test_broken_source_aborts_without_wiping_mirror(tmp_path):
     assert mirror_file.read_bytes() == before, "mirror must be byte-identical (not touched)"
 
 
+def test_missing_telemetry_source_fails_before_sync(tmp_path):
+    env = dict(os.environ, UNITY_HPC_DATA=str(tmp_path / "data"))
+    env.pop("UNITY_TELEMETRY_SRC", None)
+    result = subprocess.run(["bash", str(SYNC)], capture_output=True, text=True, env=env)
+    assert result.returncode == 2
+    assert "UNITY_TELEMETRY_SRC" in result.stderr
+
+
 def test_concurrent_syncs_serialise(tmp_path):
     src = tmp_path / "cluster"
     data = tmp_path / "data"

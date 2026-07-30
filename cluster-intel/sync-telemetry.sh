@@ -13,10 +13,14 @@ ROLLUP="$HERE/rollup.py"
 
 DATA_DIR="${UNITY_HPC_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/unity-hpc}"
 DEST="$DATA_DIR/telemetry/"
-# UNITY_TELEMETRY_SRC is a host:path remote spec by default; when it contains
-# no ":" it is treated as a local directory (the test seam — local rsync
-# fixtures stand in for the cluster in §11).
-SRC="${UNITY_TELEMETRY_SRC:-${UNITY_HPC_CLUSTER:-cluster}:/work/${SLURM_ACCOUNT:-}/${USER:-}/cluster-intel/telemetry/}"
+# The source is intentionally explicit.  Falling back to a local account/user
+# could silently build /work//... or pull telemetry from the wrong cluster.
+# A path with no ':' remains a supported local test fixture.
+SRC="${UNITY_TELEMETRY_SRC:-}"
+if [ -z "$SRC" ]; then
+    echo "sync: UNITY_TELEMETRY_SRC must name the telemetry source; set it from a validated project .env or the environment." >&2
+    exit 2
+fi
 LOCK="$DATA_DIR/locks/sync.lock"
 
 mkdir -p "$DATA_DIR/locks" "$DEST"
