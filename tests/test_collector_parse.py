@@ -130,6 +130,33 @@ def test_parse_task_runs_reads_alloctres_and_exit():
     assert r["state"] == "COMPLETED" and r["exit_code"] == 0
 
 
+def test_parse_task_runs_reads_job_provenance(tmp_path):
+    (tmp_path / "62009039.json").write_text(
+        '{"campaign":"c1","experiment":"smoke","git_revision":"abc",'
+        '"job_id":"62009039","project":"trace-project"}\n'
+    )
+    text = ("62009039|acct|gpu|COMPLETED|2026-07-22T10:00:00|"
+            "2026-07-22T10:05:00|2026-07-22T10:45:50|00:40:50|"
+            "cpu=8|0:0|1002M|01:00:00\n")
+    run = cp.parse_task_runs(text, str(tmp_path))[0]
+    assert run["project"] == "trace-project"
+    assert run["campaign"] == "c1"
+    assert run["experiment"] == "smoke"
+    assert run["git_revision"] == "abc"
+
+
+def test_parse_task_runs_ignores_missing_or_conflicting_provenance(tmp_path):
+    (tmp_path / "62009039.json").write_text(
+        '{"job_id":"other","project":"wrong"}\n'
+    )
+    text = ("62009039|acct|gpu|COMPLETED|2026-07-22T10:00:00|"
+            "2026-07-22T10:05:00|2026-07-22T10:45:50|00:40:50|"
+            "cpu=8|0:0|1002M|01:00:00\n")
+    run = cp.parse_task_runs(text, str(tmp_path))[0]
+    assert run["project"] is None
+    assert run["campaign"] is None
+
+
 def test_parse_task_runs_normalizes_uid_suffixed_cancelled_state():
     # sacct emits `CANCELLED by <uid>` (the cancelling user's uid). Collapse
     # it to a bare `CANCELLED` so state aggregation is not fragmented into

@@ -16,6 +16,7 @@
 # ACCOUNT}, REMOTE_DIR, UNITY_HOST and CAMPAIGN may be overridden for a single
 # invocation without touching .env:
 #   JOB_COMMAND="echo smoke-test" SLURM_MEM=1G bash run.sh run smoke
+# PROJECT_NAME, MODEL, DATASET, SEED and CONFIG_HASH are optional provenance.
 # UNITY_SSH_TIMEOUT sets the maximum wait for one SSH call, in seconds.
 #
 # Every submitted job is recorded in ../.unity_state/<campaign>.db, which is what
@@ -56,7 +57,8 @@ fi
 UNITY_OVERRIDABLE="JOB_COMMAND WALLTIME SLURM_PARTITION SLURM_CPUS SLURM_MEM
                    SLURM_NODES SLURM_GPUS SLURM_GPU_TYPE SLURM_ACCOUNT
                    REMOTE_DIR UNITY_HOST CAMPAIGN
-                   MODULES VENV_PATH HF_HOME USER_EMAIL"
+                   MODULES VENV_PATH HF_HOME USER_EMAIL
+                   UNITY_CID PROJECT_NAME MODEL DATASET SEED CONFIG_HASH"
 # `${!var+x}` tests whether the variable is SET, not whether it is non-empty.
 # That distinction matters: `SLURM_GPUS= run.sh run x` is how you turn a GPU
 # request off for one invocation, and treating empty as "not supplied" made that
@@ -90,6 +92,13 @@ unset _var _flag
 : "${SLURM_GPUS:=}"
 : "${SLURM_GPU_TYPE:=}"
 : "${CAMPAIGN:=}"
+: "${UNITY_CID:=/work/${SLURM_ACCOUNT:-unknown-account}/${USER:-unknown-user}/cluster-intel}"
+: "${PROJECT_NAME:=$(basename "$PROJECT_DIR")}"
+: "${MODEL:=}"
+: "${DATASET:=}"
+: "${SEED:=}"
+: "${CONFIG_HASH:=}"
+: "${GIT_REVISION:=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || true)}"
 : "${UNITY_SSH_TIMEOUT:=60}"
 
 require() {
@@ -98,6 +107,40 @@ require() {
         echo "run.sh: $name must be set in $ENV_FILE" >&2
         exit 2
     fi
+}
+
+_write_provenance() {
+    local job_id="$1" exp="$2" campaign="$3" tmp target qmanifest qtarget
+    tmp="$(mktemp)"
+    python3 - "$tmp" "$job_id" "$exp" "$campaign" "$PROJECT_NAME" \
+        "$GIT_REVISION" "$MODEL" "$DATASET" "$SEED" "$CONFIG_HASH" <<'PY'
+import json
+import sys
+
+path, job_id, exp, campaign, project, revision, model, dataset, seed, config_hash = sys.argv[1:]
+record = {
+    "job_id": job_id,
+    "experiment": exp,
+    "campaign": campaign,
+    "project": project,
+    "git_revision": revision,
+    "model": model,
+    "dataset": dataset,
+    "seed": seed,
+    "config_hash": config_hash,
+}
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(record, fh, sort_keys=True)
+    fh.write("\n")
+PY
+    target="${UNITY_CID}/manifests/${job_id}.json"
+    printf -v qmanifest '%q' "${UNITY_CID}/manifests"
+    printf -v qtarget '%q' "$target"
+    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" \
+        "mkdir -p -- ${qmanifest}"
+    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" \
+        "cat > ${qtarget}" <"$tmp"
+    rm -f "$tmp"
 }
 
 _ssh() {
@@ -348,6 +391,9 @@ cmd_run() {
         echo "run.sh: WARNING could not read a job id from sbatch's reply --" >&2
         echo "run.sh:   the job is NOT in the ledger and status/fetch will not see it." >&2
         return 0
+    fi
+    if ! _write_provenance "$job_id" "$exp" "$campaign"; then
+        echo "run.sh: WARNING job ${job_id} was submitted without provenance" >&2
     fi
     if _ledger record "$campaign" "$job_id" "$exp" "$SLURM_PARTITION"; then
         echo "Recorded job ${job_id} in campaign ${campaign} (.unity_state/${campaign}.db)"

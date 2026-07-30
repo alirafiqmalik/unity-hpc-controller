@@ -398,7 +398,22 @@ def derive_hardware(gpu_type, req) -> str:
     return GPU_UNSPECIFIED if gpus else "cpu"
 
 
-def parse_task_runs(text: str) -> list[dict]:
+def _provenance(provenance_dir: str | None, job_id: str) -> dict:
+    if not provenance_dir:
+        return {}
+    path = Path(provenance_dir) / f"{job_id}.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or data.get("job_id") != job_id:
+        return {}
+    allowed = {"project", "skill", "campaign", "experiment", "model",
+               "dataset", "seed", "git_revision", "config_hash"}
+    return {k: data[k] for k in allowed if k in data and data[k] != ""}
+
+
+def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
     """Parse sacct rows: JobID|Account|Partition|State|Submit|Start|End|
     Elapsed|AllocTRES|ExitCode|MaxRSS|Timelimit (12 pipe fields — Timelimit
     added to feed req.walltime_s, reusing the elapsed DD-HH:MM:SS parser)."""
@@ -419,8 +434,15 @@ def parse_task_runs(text: str) -> list[dict]:
             rc = int(exit_code.split(":", 1)[0])
         except (ValueError, AttributeError):
             rc = None
+        provenance = _provenance(provenance_dir, job_id)
         out.append({
-            "job_id": job_id, "project": None, "skill": None, "campaign": None,
+            "job_id": job_id, "project": provenance.get("project"),
+            "skill": provenance.get("skill"), "campaign": provenance.get("campaign"),
+            "experiment": provenance.get("experiment"),
+            "model": provenance.get("model"), "dataset": provenance.get("dataset"),
+            "seed": provenance.get("seed"),
+            "git_revision": provenance.get("git_revision"),
+            "config_hash": provenance.get("config_hash"),
             "submit": submit or None, "start": start or None, "end": end or None,
             "partition": part, "gpu_type": gpu_type, "req": req,
             "used": {"elapsed_s": _parse_elapsed(elapsed),
@@ -496,6 +518,7 @@ def main() -> int:
     ap.add_argument("--pending", default="")
     ap.add_argument("--gpu", default="")
     ap.add_argument("--sacct", default="")
+    ap.add_argument("--provenance-dir", default="")
     ap.add_argument("--prev", required=True, help="prev node-state json (read+rewrite)")
     ap.add_argument("--out-dir", required=True)
     args = ap.parse_args()
@@ -511,7 +534,7 @@ def main() -> int:
     prev_path = Path(args.prev)
     prev = json.loads(prev_path.read_text()) if prev_path.exists() else {}
     events = diff_node_events(prev, cur_states, args.ts)
-    task_runs = parse_task_runs(_read(args.sacct))
+    task_runs = parse_task_runs(_read(args.sacct), args.provenance_dir)
 
     def append(name, rows):
         with open(out_dir / name, "a", encoding="utf-8") as fh:
