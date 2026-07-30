@@ -159,7 +159,7 @@ function barChart(mount, rows) {
 
     const hit = el("rect", { x: m.l + i * bw, y: m.t, width: bw, height: ih, fill: "transparent" });
     hit.addEventListener("mousemove", (e) => showTip(
-      `<b>${r.gpu_type}</b><br>avg <b>${r.avg}</b> · median ${r.median}<br>peak <b>${r.peak}</b> GPUs`,
+      `<b>${r.gpu_type}</b><br>avg <b>${r.avg}%</b> · median ${r.median}%<br>peak <b>${r.peak}%</b>`,
       e.clientX, e.clientY));
     hit.addEventListener("mouseleave", hideTip);
     svg.appendChild(hit);
@@ -195,7 +195,7 @@ function heatmap(mount, cells) {
         cell.style.background = SEQ[idx];
       }
       cell.addEventListener("mousemove", (e) => showTip(
-        `<b>${DOW[d]} ${String(h).padStart(2, "0")}:00 UTC</b><br>avg <b>${v == null ? "—" : v}</b> GPUs`,
+        `<b>${DOW[d]} ${String(h).padStart(2, "0")}:00 UTC</b><br>avg <b>${v == null ? "—" : v}%</b> GPU usage`,
         e.clientX, e.clientY));
       cell.addEventListener("mouseleave", hideTip);
       wrap.appendChild(cell);
@@ -312,7 +312,7 @@ async function load() {
   const allocSeries = gpuTypes.map((name, i) => ({
     name, color: seriesColor(i), values: H.series[name],
   }));
-  lineChart(document.getElementById("chart-alloc"), H.slots || [], allocSeries, "GPUs");
+  lineChart(document.getElementById("chart-alloc"), H.slots || [], allocSeries, "GPU usage %");
   legend(document.getElementById("legend-alloc"), allocSeries);
 
   // per-type bars
@@ -340,7 +340,8 @@ async function load() {
 
   // header + footer meta
   const span = H.span ? `${shortTime(H.span.from)} → ${shortTime(H.span.to)}` : "no history";
-  meta.textContent = `${span} · ${(H.span && H.span.count) || 0} slots`;
+  meta.textContent = `${span} · ${(H.span && H.span.count) || 0} hours` +
+    (H.freshness_utc ? ` · fresh through ${shortTime(H.freshness_utc)}` : "");
   const s = data.summary || {};
   const prof = data.profile && data.profile.present ? ` · profile ${data.profile.updated || "present"}` : "";
   document.getElementById("footer").innerHTML =

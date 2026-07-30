@@ -20,18 +20,16 @@ the versioned plugin, so it survives a plugin update.
 | Panel | Source | Reads as |
 |---|---|---|
 | KPI tiles (running / pending / free nodes / GPU types free) | `snapshot.csv` (live poller) | current state |
-| GPU allocation over time, by type | archived usage snapshot | trend |
+| GPU usage over time, by type | `summaries.db` | trend |
 | Queue trend (running against pending) | `snapshot.csv` | live movement |
-| Demand per GPU type (average and peak) | archived usage snapshot | magnitude |
-| Hour by day-of-week heatmap | archived usage snapshot | when it is busy |
+| Usage per GPU type (average and peak) | `summaries.db` | magnitude |
+| Hour by day-of-week heatmap | `summaries.db` | when it is busy |
 
 Each panel degrades to an empty state when its source is absent, so you can run the
 page before the full pipeline has data.
 
-**Note:** the historical panels still read the pre-redesign snapshot, archived under
-`$UNITY_HPC_DATA/archive/`. The live pipeline now writes `summaries.db` instead. To
-rewire these panels to `summaries.db` is a later task. Until then, they show the
-archived data, which no longer updates.
+Historical panels read `$UNITY_HPC_DATA/summaries.db`. Run `hpc-sync-telemetry` to
+pull new telemetry and update the rollup.
 
 ## Run it
 
@@ -45,7 +43,7 @@ a 7d/30d/all window switch and a light/dark toggle.
 
 ## Serve it over Tailscale
 
-Run the server on the machine that holds the synced `usage.db` and `snapshot.csv`.
+Run the server on the machine that holds the synced `summaries.db` and `snapshot.csv`.
 That is your laptop, or wherever you run the cluster-intel sync. You can then view
 the page from any device on your tailnet.
 
@@ -75,9 +73,8 @@ public internet, and this dashboard is meant to stay private.
 
 The server reads the files on every request, so it needs no restart.
 
-The live panels read `snapshot.csv`, and stay current on their own. The historical
-panels read the archived snapshot, described in the note above. They do not update
-until somebody rewires the dashboard to `summaries.db`.
+The live panels read `snapshot.csv`. Historical panels read `summaries.db` and show
+the last rollup time. Use `?project=<name>&campaign=<name>` to filter task metrics.
 
 ## Editing
 
