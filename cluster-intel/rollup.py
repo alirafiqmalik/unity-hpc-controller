@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS daily_resource(
   outage_count INTEGER, preemption_count INTEGER, samples INTEGER,
   PRIMARY KEY(resource_kind, resource_id, day_utc));
 CREATE TABLE IF NOT EXISTS task_run(
-  job_id TEXT PRIMARY KEY, project TEXT, skill TEXT, hardware TEXT,
+  job_id TEXT PRIMARY KEY, project TEXT, campaign TEXT, skill TEXT, hardware TEXT,
   submit TEXT, start TEXT, "end" TEXT, elapsed_s REAL, wait_s REAL,
   cpu_eff REAL, mem_eff REAL, max_rss_mb REAL, state TEXT,
   exit_code INTEGER, day_utc TEXT, partition TEXT);
@@ -283,9 +283,13 @@ def _process_day(conn, day: str, src: Path) -> None:
         wait = (start - submit).total_seconds() if submit and start else None
         hardware = derive_hardware(t.get("gpu_type"), t.get("req"))
         conn.execute(
-            'INSERT INTO task_run VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+            'INSERT INTO task_run '
+            '(job_id, project, campaign, skill, hardware, submit, start, "end", '
+            'elapsed_s, wait_s, cpu_eff, mem_eff, max_rss_mb, state, exit_code, '
+            'day_utc, partition) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
             'ON CONFLICT(job_id) DO UPDATE SET '
-            'project=excluded.project, skill=excluded.skill, '
+            'project=excluded.project, campaign=excluded.campaign, '
+            'skill=excluded.skill, '
             'hardware=excluded.hardware, partition=excluded.partition, '
             'submit=excluded.submit, '
             'start=excluded.start, "end"=excluded."end", '
@@ -294,7 +298,8 @@ def _process_day(conn, day: str, src: Path) -> None:
             'max_rss_mb=excluded.max_rss_mb, state=excluded.state, '
             'exit_code=excluded.exit_code '
             'WHERE is_terminal(task_run.state)=0 OR is_terminal(excluded.state)=1',
-            (t.get("job_id"), t.get("project") or "unknown", t.get("skill") or "unknown",
+            (t.get("job_id"), t.get("project") or "unknown", t.get("campaign") or "",
+             t.get("skill") or "unknown",
              hardware, t.get("submit"), t.get("start"), t.get("end"),
              used.get("elapsed_s"), wait, used.get("cpu_eff_pct"),
              used.get("mem_eff_pct"), used.get("max_rss_mb"),
@@ -357,6 +362,8 @@ def _ensure_task_run_columns(conn) -> None:
     have = {r[1] for r in conn.execute("PRAGMA table_info(task_run)")}
     if "partition" not in have:
         conn.execute("ALTER TABLE task_run ADD COLUMN partition TEXT")
+    if "campaign" not in have:
+        conn.execute("ALTER TABLE task_run ADD COLUMN campaign TEXT")
 
 
 def _rebuild_task_profile(conn) -> None:

@@ -14,7 +14,7 @@ viewed from your laptop/phone over Tailscale.
 Data sources live in the shared, version-independent data dir $UNITY_HPC_DATA
 (default ~/.local/share/unity-hpc). The historical panels currently read the
 pre-redesign snapshot archived under archive/ (see dashboard/README.md);
-rewiring them to the live summaries.db is a follow-up task.
+the live summaries.db rollup.
     snapshot.csv               live queue signal (15-min poller)
     cluster-profile.md         shared cluster profile (header context)
 
@@ -49,7 +49,7 @@ def data_dir() -> Path:
 
 
 DATA = data_dir()
-USAGE_DB = DATA / "analysis" / "usage.db"
+SUMMARY_DB = DATA / "summaries.db"
 SNAPSHOT_CSV = DATA / "snapshot.csv"
 SUMMARY_JSON = DATA / "analysis" / "usage_summary.json"
 PROFILE_MD = DATA / "cluster-profile.md"
@@ -67,30 +67,33 @@ def _parse_slot(s: str) -> datetime | None:
         return None
 
 
-def historical(hours: int) -> dict:
-    """Time series + heatmap + per-type summary from usage.db."""
+def historical(hours: int, project: str | None = None,
+               campaign: str | None = None) -> dict:
+    """Read GPU usage and task metrics from the live summaries database."""
     empty = {"available": False, "series": {}, "slots": [],
-             "heatmap": [], "by_type": [], "span": None}
-    if not USAGE_DB.exists():
+             "heatmap": [], "by_type": [], "task_stats": {},
+             "freshness_utc": None, "span": None}
+    if not SUMMARY_DB.exists():
         return empty
 
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    con = sqlite3.connect(USAGE_DB)
+    con = sqlite3.connect(SUMMARY_DB)
     con.row_factory = sqlite3.Row
     try:
         rows = con.execute(
-            "SELECT slot_start_utc, gpu_type, "
-            "SUM(gpus_alloc) AS gpus, SUM(jobs_running) AS jobs "
-            "FROM usage_slots WHERE slot_start_utc >= ? "
-            "GROUP BY slot_start_utc, gpu_type ORDER BY slot_start_utc",
+            "SELECT hour_utc AS slot_start_utc, resource_id AS gpu_type, "
+            "ROUND(util_mean * 100.0, 1) AS gpus "
+            "FROM hourly_resource "
+            "WHERE resource_kind = 'gpu_type' AND hour_utc >= ? "
+            "ORDER BY hour_utc, resource_id",
             (cutoff,),
         ).fetchall()
     except sqlite3.OperationalError:
-        return empty
-    finally:
         con.close()
+        return empty
 
     if not rows:
+        con.close()
         return empty
 
     # ── time series: one line per gpu_type, aligned on a shared slot axis ──
@@ -113,7 +116,7 @@ def historical(hours: int) -> dict:
         gtype = r["gpu_type"] or "cpu-only"
         series[gtype][slot_index[r["slot_start_utc"]]] = r["gpus"] or 0
 
-    # ── heatmap: avg total GPUs allocated per (day-of-week × hour) ──
+    # ── heatmap: average total GPU usage per (day-of-week × hour) ──
     cells: dict[tuple, list] = {}
     for slot, total in per_slot_total.items():
         dt = _parse_slot(slot)
@@ -125,7 +128,7 @@ def historical(hours: int) -> dict:
         for (d, h), v in cells.items()
     ]
 
-    # ── per-type summary: avg / peak / median GPUs over the window ──
+    # ── per-type summary: avg / peak / median GPU usage over the window ──
     by_type = []
     for gtype, vals_full in series.items():
         vals = [v for v in vals_full if v is not None]
@@ -141,12 +144,40 @@ def historical(hours: int) -> dict:
         })
     by_type.sort(key=lambda x: x["avg"], reverse=True)
 
+    task_stats = {}
+    try:
+        clauses = ["submit >= ?"]
+        params: list[str] = [cutoff]
+        if project:
+            clauses.append("project = ?")
+            params.append(project)
+        if campaign:
+            clauses.append("campaign = ?")
+            params.append(campaign)
+        task = con.execute(
+            "SELECT COUNT(*) AS n, AVG(wait_s) AS wait_s, "
+            "AVG(CASE WHEN state = 'COMPLETED' THEN 1.0 ELSE 0.0 END) AS success_rate "
+            "FROM task_run WHERE " + " AND ".join(clauses), params
+        ).fetchone()
+        if task and task["n"]:
+            task_stats = {
+                "runs": task["n"],
+                "wait_s_avg": round(task["wait_s"], 1) if task["wait_s"] is not None else None,
+                "success_rate": round(task["success_rate"] or 0, 3),
+            }
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        con.close()
+
     return {
         "available": True,
         "slots": slots,
         "series": series,
         "heatmap": heatmap,
         "by_type": by_type,
+        "task_stats": task_stats,
+        "freshness_utc": slots[-1],
         "span": {"from": slots[0], "to": slots[-1], "count": len(slots)},
     }
 
@@ -218,11 +249,12 @@ def profile_meta() -> dict:
     return {"present": True, "updated": updated, "markdown": text[:20000]}
 
 
-def build_payload(hours: int) -> dict:
+def build_payload(hours: int, project: str | None = None,
+                  campaign: str | None = None) -> dict:
     return {
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "window_hours": hours,
-        "historical": historical(hours),
+        "historical": historical(hours, project, campaign),
         "live": live(),
         "summary": summary(),
         "profile": profile_meta(),
@@ -257,7 +289,9 @@ class Handler(BaseHTTPRequestHandler):
                 hours = max(1, min(int(qs.get("hours", ["168"])[0]), 24 * 3650))
             except ValueError:
                 hours = 168
-            body = json.dumps(build_payload(hours)).encode()
+            body = json.dumps(build_payload(
+                hours, qs.get("project", [None])[0], qs.get("campaign", [None])[0]
+            )).encode()
             return self._send(200, body, "application/json")
 
         # static files, restricted to this directory
@@ -277,7 +311,7 @@ def main():
 
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Unity cluster monitor → http://{args.host}:{args.port}")
-    print(f"  usage.db   : {'ok' if USAGE_DB.exists() else 'MISSING'}  ({USAGE_DB})")
+    print(f"  summaries.db: {'ok' if SUMMARY_DB.exists() else 'MISSING'}  ({SUMMARY_DB})")
     print(f"  snapshot   : {'ok' if SNAPSHOT_CSV.exists() else 'MISSING'}  ({SNAPSHOT_CSV})")
     print("  Ctrl-C to stop.")
     try:
