@@ -9,8 +9,11 @@ PROJECT_DIR="$(cd "$HERE/.." && pwd)"
 if [ -f "$HERE/.env" ]; then . "$HERE/.env"; elif [ -f "$PROJECT_DIR/.env" ]; then . "$PROJECT_DIR/.env"; fi
 : "${UNITY_HOST:=unity}"
 : "${REMOTE_DIR:?REMOTE_DIR must be set in .env}"
+: "${UNITY_SSH_TIMEOUT:=60}"
 
-ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}"
+printf -v QREMOTE '%q' "$REMOTE_DIR"
+
+timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" "mkdir -p -- $QREMOTE"
 rsync -az --delete \
     --exclude '.git/' --exclude '__pycache__/' --exclude '.venv/' \
     --exclude '_results/' --exclude '.unity_state/' --exclude '_slurm/' \
