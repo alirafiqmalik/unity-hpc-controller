@@ -50,3 +50,19 @@ def test_historical_reads_live_summaries(tmp_path, monkeypatch):
 def test_historical_is_empty_without_live_database(tmp_path, monkeypatch):
     serve = _serve(tmp_path, monkeypatch)
     assert serve.historical(24)["available"] is False
+
+
+def test_main_explains_an_in_use_port(tmp_path, monkeypatch, capsys):
+    import errno
+    import sys
+
+    serve = _serve(tmp_path, monkeypatch)
+
+    def occupied(*_args, **_kwargs):
+        raise OSError(errno.EADDRINUSE, "address already in use")
+
+    monkeypatch.setattr(serve, "ThreadingHTTPServer", occupied)
+    monkeypatch.setattr(sys, "argv", ["serve.py", "--port", "8899"])
+    assert serve.main() == 2
+    err = capsys.readouterr().err
+    assert "8899" in err and "already in use" in err

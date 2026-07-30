@@ -254,6 +254,30 @@ def test_results_tsv_keeps_rows_a_fixed_schema_would_have_dropped(
     assert len(out["rows"]) == 1
 
 
+def test_results_tsv_is_bounded_and_paginates(server, tmp_project, monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    (tmp_project / "results.tsv").write_text(
+        "commit\tmetric\n"
+        "a\t1\n"
+        "b\t2\n"
+        "c\t3\n")
+    out = json.loads(server._unity_results_tsv(limit=2, offset=1))
+    assert [row["commit"] for row in out["rows"]] == ["b", "c"]
+    assert out["total_rows"] == 3
+    assert out["offset"] == 1
+    assert out["limit"] == 2
+    assert out["next_offset"] is None
+
+
+def test_results_tsv_clamps_an_invalid_page(server, tmp_project, monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    (tmp_project / "results.tsv").write_text("commit\na\n")
+    out = json.loads(server._unity_results_tsv(limit=0, offset=-4))
+    assert out["limit"] == 1
+    assert out["offset"] == 0
+    assert out["rows"] == [{"commit": "a"}]
+
+
 def test_logs_reads_the_job_output_not_a_monitor_log(server, tmp_project,
                                                      tmp_data_dir, monkeypatch):
     monkeypatch.setenv("PROJECT_DIR", str(tmp_project))

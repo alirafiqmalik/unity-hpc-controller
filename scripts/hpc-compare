@@ -1,62 +1,72 @@
-#!/usr/bin/env bash
-# hpc-compare <commit-a> <commit-b> — diff two experiments
-# Shows val_bpb delta, memory delta, and train.py diff
-set -euo pipefail
+#!/usr/bin/env python3
+"""Compare two rows in a project's header-driven results.tsv."""
 
-if [[ $# -lt 2 ]]; then
-    echo "Usage: hpc-compare <commit-a> <commit-b>" >&2
-    exit 1
-fi
+from __future__ import annotations
 
-A="$1"; B="$2"
-HPC_DIR="${HPC_PROJECT_DIR:-$PWD}"
-TSV="$HPC_DIR/results.tsv"
+import csv
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
-if [[ ! -f "$TSV" ]]; then
-    echo "No results.tsv found in $HPC_DIR" >&2
-    exit 1
-fi
 
-# Find rows matching commit prefix
-ROW_A=$(awk -F'\t' -v c="$A" 'NR>1 && index($1, c)==1 {print; exit}' "$TSV")
-ROW_B=$(awk -F'\t' -v c="$B" 'NR>1 && index($1, c)==1 {print; exit}' "$TSV")
+def _metrics(project: Path) -> tuple[str | None, str]:
+    try:
+        data = json.loads((project / "unityHPC" / "metrics.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, "min"
+    return data.get("primary"), data.get("goal", "min")
 
-echo "=== Experiment Comparison ==="
-echo ""
-if [[ -n "$ROW_A" ]]; then
-    BPB_A=$(echo "$ROW_A" | cut -f2)
-    MEM_A=$(echo "$ROW_A" | cut -f3)
-    DESC_A=$(echo "$ROW_A" | cut -f5)
-    echo "A ($A): val_bpb=$BPB_A  memory=${MEM_A}GB  \"$DESC_A\""
-else
-    echo "A ($A): not found in results.tsv"
-    BPB_A=""
-fi
 
-if [[ -n "$ROW_B" ]]; then
-    BPB_B=$(echo "$ROW_B" | cut -f2)
-    MEM_B=$(echo "$ROW_B" | cut -f3)
-    DESC_B=$(echo "$ROW_B" | cut -f5)
-    echo "B ($B): val_bpb=$BPB_B  memory=${MEM_B}GB  \"$DESC_B\""
-else
-    echo "B ($B): not found in results.tsv"
-    BPB_B=""
-fi
+def _find(rows: list[dict], key: str, value: str) -> dict | None:
+    return next((row for row in rows if row.get(key, "").startswith(value)), None)
 
-if [[ -n "$BPB_A" && -n "$BPB_B" ]]; then
-    echo ""
-    python3 -c "
-a, b = float('$BPB_A'), float('$BPB_B')
-delta = b - a
-pct = (delta / a) * 100
-arrow = '▼' if delta < 0 else '▲'
-print(f'val_bpb delta: {arrow} {abs(delta):.6f} ({abs(pct):.2f}% {\"improvement\" if delta < 0 else \"regression\"})')
-ma, mb = float('$MEM_A'), float('$MEM_B')
-print(f'memory delta:  {mb-ma:+.1f} GB')
-"
-fi
 
-echo ""
-echo "=== train.py diff ($A → $B) ==="
-git -C "$HPC_DIR" diff "$A" "$B" -- train.py 2>/dev/null || \
-    echo "(git diff not available — not in a git repo or commits not found)"
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        print("Usage: hpc-compare <row-a> <row-b>", file=sys.stderr)
+        return 2
+    project = Path(os.environ.get("HPC_PROJECT_DIR", os.getcwd()))
+    path = project / "results.tsv"
+    if not path.is_file():
+        print(f"No results.tsv found in {project}", file=sys.stderr)
+        return 1
+    with path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh, delimiter="\t", restkey="_extra")
+        columns = reader.fieldnames or []
+        rows = list(reader)
+    if not columns:
+        print("results.tsv is empty.", file=sys.stderr)
+        return 1
+    key = "commit" if "commit" in columns else columns[0]
+    a, b = _find(rows, key, argv[1]), _find(rows, key, argv[2])
+    print("=== Experiment Comparison ===\n")
+    for label, requested, row in (("A", argv[1], a), ("B", argv[2], b)):
+        if row is None:
+            print(f"{label} ({requested}): not found in results.tsv")
+            continue
+        values = "  ".join(f"{column}={row.get(column, '')}" for column in columns)
+        print(f"{label} ({requested}): {values}")
+
+    primary, goal = _metrics(project)
+    if a and b and primary in columns:
+        try:
+            before, after = float(a[primary]), float(b[primary])
+        except (KeyError, TypeError, ValueError):
+            pass
+        else:
+            delta = after - before
+            improved = delta < 0 if goal == "min" else delta > 0
+            verdict = "improvement" if improved else "regression"
+            print(f"\n{primary} delta: {delta:+.6g} ({verdict}; goal={goal})")
+
+    print(f"\n=== Git diff ({argv[1]} → {argv[2]}) ===")
+    proc = subprocess.run(["git", "-C", str(project), "diff", argv[1], argv[2]], text=True)
+    if proc.returncode:
+        print("(git diff not available — not in a git repo or revisions not found)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

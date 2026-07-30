@@ -171,8 +171,17 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="unity_results_tsv",
-            description="Read local results.tsv and return all rows as structured data.",
-            inputSchema={"type": "object", "properties": {}}
+            description=("Read one bounded page of local results.tsv as structured data. "
+                         "Rows use the file's own header."),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500,
+                              "description": "Maximum rows to return (default 100)."},
+                    "offset": {"type": "integer", "minimum": 0,
+                               "description": "Zero-based row offset (default 0)."},
+                },
+            },
         ),
         types.Tool(
             name="unity_submit",
@@ -268,7 +277,7 @@ async def _dispatch(name: str, args: dict) -> str:
     elif name == "unity_results":
         return _unity_results(args.get("campaign"))
     elif name == "unity_results_tsv":
-        return _unity_results_tsv()
+        return _unity_results_tsv(args.get("limit"), args.get("offset"))
     elif name == "unity_submit":
         return _unity_submit(args["exp"], args.get("extra_args", ""),
                              args.get("campaign"))
@@ -467,11 +476,23 @@ def _unity_results(campaign: str | None) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _unity_results_tsv() -> str:
+def _unity_results_tsv(limit: int | None = None, offset: int | None = None) -> str:
     """Return results.tsv keyed by its own header row.
 
     Header-driven on purpose: every project chooses its own columns, and a
-    hardcoded schema silently dropped rows that did not match it."""
+    hardcoded schema silently dropped rows that did not match it.  The page is
+    bounded so a long-running project cannot exhaust an MCP response."""
+    try:
+        page_limit = 100 if limit is None else int(limit)
+    except (TypeError, ValueError):
+        page_limit = 100
+    try:
+        page_offset = 0 if offset is None else int(offset)
+    except (TypeError, ValueError):
+        page_offset = 0
+    page_limit = max(1, min(page_limit, 500))
+    page_offset = max(0, page_offset)
+
     tsv = _project_dir() / "results.tsv"
     if not tsv.exists():
         return "results.tsv not found. Run /unity-hpc:setup to initialise it."
@@ -480,16 +501,24 @@ def _unity_results_tsv() -> str:
         return "results.tsv is empty."
     columns = lines[0].split("\t")
     if len(lines) == 1:
-        return json.dumps({"columns": columns, "rows": []}, indent=2)
-    rows = []
+        return json.dumps({"columns": columns, "rows": [], "total_rows": 0,
+                           "offset": page_offset, "limit": page_limit,
+                           "next_offset": None})
+    all_rows = []
     for line in lines[1:]:
         parts = line.split("\t")
         row = {columns[i]: (parts[i] if i < len(parts) else "")
                for i in range(len(columns))}
         if len(parts) > len(columns):
             row["_extra"] = parts[len(columns):]
-        rows.append(row)
-    return json.dumps({"columns": columns, "rows": rows}, indent=2)
+        all_rows.append(row)
+    rows = all_rows[page_offset:page_offset + page_limit]
+    next_offset = page_offset + len(rows)
+    if next_offset >= len(all_rows):
+        next_offset = None
+    return json.dumps({"columns": columns, "rows": rows,
+                       "total_rows": len(all_rows), "offset": page_offset,
+                       "limit": page_limit, "next_offset": next_offset})
 
 
 def _unity_submit(exp: str, extra_args: str, campaign: str | None = None) -> str:

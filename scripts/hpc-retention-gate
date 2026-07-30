@@ -9,6 +9,7 @@ UNITY_HPC_FORCE_PRUNE=1 forces exit 0.
 
 import os
 import sys
+import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -17,6 +18,11 @@ from lib import retention  # noqa: E402
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Allow or withhold telemetry pruning from rsync itemized output.",
+        epilog="Set UNITY_HPC_FORCE_PRUNE=1 to allow pruning despite retention warnings.",
+    )
+    parser.parse_args()
     days = retention.parse_deletions(sys.stdin.read().splitlines())
     force = os.environ.get("UNITY_HPC_FORCE_PRUNE") == "1"
     allow, warnings = retention.retention_decision(days, force=force)
