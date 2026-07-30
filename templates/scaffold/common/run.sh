@@ -108,7 +108,7 @@ require() {
 }
 
 _write_provenance() {
-    local job_id="$1" exp="$2" campaign="$3" tmp target
+    local job_id="$1" exp="$2" campaign="$3" tmp target qmanifest qtarget
     tmp="$(mktemp)"
     python3 - "$tmp" "$job_id" "$exp" "$campaign" "$PROJECT_NAME" \
         "$GIT_REVISION" "$MODEL" "$DATASET" "$SEED" "$CONFIG_HASH" <<'PY'
@@ -132,10 +132,12 @@ with open(path, "w", encoding="utf-8") as fh:
     fh.write("\n")
 PY
     target="${UNITY_CID}/manifests/${job_id}.json"
+    printf -v qmanifest '%q' "${UNITY_CID}/manifests"
+    printf -v qtarget '%q' "$target"
     timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" \
-        "mkdir -p ${UNITY_CID}/manifests"
+        "mkdir -p -- ${qmanifest}"
     timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" \
-        "cat > ${target}" <"$tmp"
+        "cat > ${qtarget}" <"$tmp"
     rm -f "$tmp"
 }
 
