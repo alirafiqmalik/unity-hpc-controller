@@ -62,6 +62,19 @@ def test_plan_renders_all_four_files_for_every_type(tmp_project, ptype):
 def test_gpu_template_requests_a_gpu_but_does_not_use_torchrun():
     body = (scaffold.template_root() / "gpu" / "job_template.sh").read_text()
     assert "nvidia-smi" in body
+
+
+def test_gpu_and_ml_templates_have_opt_in_sampling():
+    for ptype in ("gpu", "ml"):
+        body = (scaffold.template_root() / ptype / "job_template.sh").read_text()
+        assert "GPU_SAMPLE_INTERVAL" in body
+        assert "memory.used" in body
+        assert "GPU_SAMPLE_FILE" in body
+
+
+def test_cpu_template_has_no_gpu_sampling():
+    body = (scaffold.template_root() / "cpu" / "job_template.sh").read_text()
+    assert "GPU_SAMPLE_INTERVAL" not in body
     assert "torchrun" not in body
 
 

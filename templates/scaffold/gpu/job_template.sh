@@ -23,9 +23,35 @@ fi
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
 echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) | exp=${EXP} | host=$(hostname) | gpu=${GPU_NAME} ==="
 
+run_training() {
+    eval "$JOB_COMMAND"
+}
+
 set +e
-eval "$JOB_COMMAND"
+run_training &
+TRAIN_PID=$!
+SAMPLER_PID=""
+if [ "${GPU_SAMPLE_INTERVAL:-0}" -gt 0 ] && command -v nvidia-smi >/dev/null 2>&1; then
+    SAMPLE_FILE="${GPU_SAMPLE_FILE:-${REMOTE_RESULTS_DIR:-${REMOTE_DIR}/_results}/${EXP}-${SLURM_JOB_ID}.gpu.tsv}"
+    mkdir -p "$(dirname "$SAMPLE_FILE")"
+    printf 'timestamp_utc,gpu_index,utilization_gpu,memory_used,memory_total,power_draw,temperature_gpu\n' >"$SAMPLE_FILE"
+    (
+        while kill -0 "$TRAIN_PID" 2>/dev/null; do
+            timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu \
+                --format=csv,noheader,nounits 2>/dev/null \
+                | sed "s/^/${timestamp},/" >>"$SAMPLE_FILE" || true
+            sleep "$GPU_SAMPLE_INTERVAL"
+        done
+    ) &
+    SAMPLER_PID=$!
+fi
+wait "$TRAIN_PID"
 RC=$?
+if [ -n "$SAMPLER_PID" ]; then
+    kill "$SAMPLER_PID" 2>/dev/null || true
+    wait "$SAMPLER_PID" 2>/dev/null || true
+fi
 set -e
 echo "=== done $(date -u +%Y-%m-%dT%H:%M:%SZ) rc=${RC} ==="
 exit "$RC"
