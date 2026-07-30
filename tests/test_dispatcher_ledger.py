@@ -23,7 +23,13 @@ case "$cmd" in
     *sacct*)   printf '%s\n' "$STUB_SACCT" ;;
     *"test -d"*) exit "${STUB_REMOTE_RESULTS:-1}" ;;
     *tail*)    printf 'log line one\nlog line two\n' ;;
-    *"cat >"*) cat >/dev/null ;;
+    *"cat >"*)
+        if [ -n "${STUB_PAYLOAD_LOG:-}" ]; then
+            cat >>"$STUB_PAYLOAD_LOG"
+        else
+            cat >/dev/null
+        fi
+        ;;
     *)         exit 0 ;;
 esac
 """
@@ -77,6 +83,27 @@ def test_submitting_records_the_job_in_the_ledger(dispatcher):
     assert rows[0]["status"] == "PENDING"
     assert rows[0]["partition"] == "cpu"
     assert rows[0]["submitted_utc"]
+
+
+def test_submission_writes_provenance_manifest(dispatcher, tmp_path):
+    payload = tmp_path / "provenance.json"
+    result = dispatcher(
+        "run", "smoke", "--campaign", "c1",
+        STUB_PAYLOAD_LOG=payload,
+        UNITY_CID="/work/tester/cluster-intel",
+        PROJECT_NAME="trace-project",
+        MODEL="model-a",
+        DATASET="data-a",
+        SEED="7",
+        CONFIG_HASH="abc123",
+    )
+    assert result.returncode == 0, result.stderr
+    text = payload.read_text()
+    assert '"job_id": "12345"' in text
+    assert '"experiment": "smoke"' in text
+    assert '"campaign": "c1"' in text
+    assert '"project": "trace-project"' in text
+    assert '"model": "model-a"' in text
 
 
 def test_the_ledger_is_where_the_mcp_server_looks(dispatcher):

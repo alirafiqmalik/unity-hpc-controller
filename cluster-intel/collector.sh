@@ -280,6 +280,7 @@ sample() {
     python3 "$HERE/collector_parse.py" --ts "$ts" \
         --partitions "$tmp/partitions.raw" --nodes "$tmp/nodes.raw" \
         --pending "$tmp/pending.raw" --gpu "$tmp/gpu.raw" --sacct "$tmp/sacct.raw" \
+        --provenance-dir "$WORK_DIR/manifests" \
         --prev "$WORK_DIR/prev_nodes.json" --out-dir "$out"
 
     # Advance the high-water mark ONLY when both sacct and the parse pipeline
@@ -336,7 +337,8 @@ catchup() {
     # Same parser as `sample`, sacct-only (catchup is a task_runs backfill).
     # The parser insists on --prev/--out-dir; give it throwaway ones in tmp.
     python3 "$HERE/collector_parse.py" --ts "$ts" \
-        --sacct "$tmp/sacct.raw" --prev "$tmp/prev.json" --out-dir "$pout"
+        --sacct "$tmp/sacct.raw" --provenance-dir "$WORK_DIR/manifests" \
+        --prev "$tmp/prev.json" --out-dir "$pout"
 
     enrich_seff "$pout" "$tmp"
 
