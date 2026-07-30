@@ -58,3 +58,8 @@ def test_setup_is_rerunnable(text):
     lowered = text.lower()
     assert "re-run" in lowered or "rerun" in lowered
     assert ".pre-redesign" in text
+
+
+def test_setup_documents_the_noninteractive_path(text):
+    assert "UNITY_HPC_NONINTERACTIVE=1" in text
+    assert "--collector" in text

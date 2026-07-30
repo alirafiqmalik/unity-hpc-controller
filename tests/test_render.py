@@ -60,6 +60,19 @@ def test_gpu_type_is_honoured(tmp_project, materialise):
     assert "--gres=gpu:a100:1" in render(unity_dir)
 
 
+def test_constraint_is_emitted_when_configured(tmp_project, materialise):
+    unity_dir = materialise(tmp_project, "gpu", SLURM_CONSTRAINT="nvlink&hbm")
+    assert "#SBATCH --constraint=nvlink&hbm" in render(unity_dir)
+
+
+def test_unsafe_constraint_is_rejected(tmp_project, materialise):
+    unity_dir = materialise(tmp_project, "gpu", SLURM_CONSTRAINT="a100; touch bad")
+    result = subprocess.run(["bash", str(unity_dir / "run.sh"), "render", "x"],
+                            capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "invalid SLURM_CONSTRAINT" in result.stderr
+
+
 def test_render_fails_clearly_when_required_env_missing(tmp_project, materialise):
     unity_dir = materialise(tmp_project, "cpu")
     (unity_dir / ".env").write_text('SLURM_ACCOUNT=""\n')

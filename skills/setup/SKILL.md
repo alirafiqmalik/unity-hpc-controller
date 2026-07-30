@@ -21,6 +21,27 @@ single-node GPU jobs, or **ml** for multi-node training with `torchrun`.
 Do not guess. The answer selects the job template. If the user is not sure, use
 `cpu`. It is the safe default, and you can generate a new scaffold later.
 
+### Non-interactive setup
+
+For an agent or CI workflow, use the explicit path below. It asks no questions,
+uses only the supplied values, and fails if any required value is missing.
+
+```bash
+UNITY_HPC_NONINTERACTIVE=1 \
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" \
+  --type <cpu|gpu|ml> \
+  --account <slurm-account> \
+  --remote-dir <remote-project-dir> \
+  --job-command '<command>' \
+  --collector skip \
+  --write-guidance
+```
+
+Use `--collector deploy` only when the caller explicitly authorizes a
+long-lived collector. Add `--dry-run` to review the files and actions without
+writing or connecting to the cluster. The project `.env` remains the source of
+truth after setup; flags append validated values to that file.
+
 **2. Generate the unityHPC/ scaffold**
 
 ```bash
@@ -42,7 +63,9 @@ Also tell the user that the generated dispatcher now owns that contract.
 
 `unityHPC/.env` needs three values before any job can run: `SLURM_ACCOUNT`,
 `REMOTE_DIR` and `JOB_COMMAND`. Ask the user for the three values, or ask the
-user to edit the file. Stop here until the user approves.
+user to edit the file. Stop here until the user approves. Set
+`SLURM_CONSTRAINT` only when the cluster requires a node feature; the dispatcher
+renders it as `#SBATCH --constraint=...`.
 
 **4. Check SSH**
 

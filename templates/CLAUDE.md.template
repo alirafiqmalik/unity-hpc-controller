@@ -1,5 +1,7 @@
 # HPC Project — Unity Cluster
 
+<!-- unity-hpc-guidance: @@UNITY_HPC_VERSION@@ -->
+
 > Template. Replace every `your...` placeholder, and delete the sections that do
 > not apply to this project. The lines marked **project-specific** are examples of
 > a machine-learning project. A CPU project must replace or delete them.

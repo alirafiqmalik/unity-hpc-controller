@@ -55,7 +55,7 @@ fi
 # way their siblings could -- and a caller passing MODULES=gcc silently got
 # .env's empty value instead, which looks exactly like a broken module system.
 UNITY_OVERRIDABLE="JOB_COMMAND WALLTIME SLURM_PARTITION SLURM_CPUS SLURM_MEM
-                   SLURM_NODES SLURM_GPUS SLURM_GPU_TYPE SLURM_ACCOUNT
+                   SLURM_NODES SLURM_GPUS SLURM_GPU_TYPE SLURM_CONSTRAINT SLURM_ACCOUNT
                    REMOTE_DIR UNITY_HOST CAMPAIGN
                    MODULES VENV_PATH HF_HOME USER_EMAIL
                    UNITY_CID PROJECT_NAME MODEL DATASET SEED CONFIG_HASH"
@@ -91,6 +91,7 @@ unset _var _flag
 : "${SLURM_NODES:=1}"
 : "${SLURM_GPUS:=}"
 : "${SLURM_GPU_TYPE:=}"
+: "${SLURM_CONSTRAINT:=}"
 : "${CAMPAIGN:=}"
 : "${UNITY_CID:=/work/${SLURM_ACCOUNT:-unknown-account}/${USER:-unknown-user}/cluster-intel}"
 : "${PROJECT_NAME:=$(basename "$PROJECT_DIR")}"
@@ -167,6 +168,15 @@ _require_safe_name() {
     if [ "${#value}" -gt 64 ]; then
         echo "run.sh: $what is too long (max 64 characters): '$value'" >&2; exit 2
     fi
+}
+
+_require_safe_constraint() {
+    case "$1" in
+        *[!A-Za-z0-9_.\&\|\(\)-]*)
+            echo "run.sh: invalid SLURM_CONSTRAINT: '$1'" >&2
+            echo "run.sh: use only resource names plus '.', '_', '-', '&', '|', '(' and ')'" >&2
+            exit 2 ;;
+    esac
 }
 
 # ─── job ledger ──────────────────────────────────────────────────────────────
@@ -310,6 +320,7 @@ render() {
     require SLURM_ACCOUNT
     require REMOTE_DIR
     require JOB_COMMAND
+    [ -z "$SLURM_CONSTRAINT" ] || _require_safe_constraint "$SLURM_CONSTRAINT"
 
     echo "#!/bin/bash"
     echo "#SBATCH --job-name=${exp}"
@@ -329,6 +340,9 @@ render() {
         else
             echo "#SBATCH --gres=gpu:${SLURM_GPUS}"
         fi
+    fi
+    if [ -n "$SLURM_CONSTRAINT" ]; then
+        echo "#SBATCH --constraint=${SLURM_CONSTRAINT}"
     fi
     echo "#SBATCH --mail-type=END,FAIL,TIME_LIMIT"
     if [ -n "${USER_EMAIL:-}" ]; then
@@ -408,6 +422,7 @@ render_array() {
     require SLURM_ACCOUNT
     require REMOTE_DIR
     require JOB_COMMAND
+    [ -z "$SLURM_CONSTRAINT" ] || _require_safe_constraint "$SLURM_CONSTRAINT"
     _require_safe_name "campaign name" "$campaign"
 
     echo "#!/bin/bash"
@@ -426,6 +441,9 @@ render_array() {
         else
             echo "#SBATCH --gres=gpu:${SLURM_GPUS}"
         fi
+    fi
+    if [ -n "$SLURM_CONSTRAINT" ]; then
+        echo "#SBATCH --constraint=${SLURM_CONSTRAINT}"
     fi
     if [ -n "$limit" ]; then
         echo "#SBATCH --array=0-$((${ARRAY_COUNT} - 1))%${limit}"

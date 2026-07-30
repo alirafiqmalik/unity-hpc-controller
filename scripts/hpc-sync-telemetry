@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
 # hpc-sync-telemetry — exposed entry point for the retention-aware telemetry pull.
-# Thin wrapper so the script is callable by name from any project.
+# Load the active project's .env when present.  The lower-level synchronizer
+# still requires an explicit source, so a missing or blank value fails safely.
+set -euo pipefail
+
+PROJECT_DIR="${PROJECT_DIR:-$PWD}"
+ENV_FILE="$PROJECT_DIR/unityHPC/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
+
 exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cluster-intel/sync-telemetry.sh" "$@"

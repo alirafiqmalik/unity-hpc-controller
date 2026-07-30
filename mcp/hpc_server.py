@@ -29,6 +29,7 @@ import sqlite3
 import sys
 import time
 import glob
+import re
 from pathlib import Path
 from typing import Any
 
@@ -915,6 +916,36 @@ def _dispatcher_differs(project: Path) -> bool | None:
         return None
 
 
+_GUIDANCE_MARKER = re.compile(r"<!--\s*unity-hpc-guidance:\s*([^\s>]+)\s*-->")
+
+
+def _claude_guidance_problem(project: Path, running_version: str | None) -> dict | None:
+    """Return an actionable stale-guidance finding for a Unity project."""
+    path = project / "CLAUDE.md"
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    if "unityHPC" not in text and "Unity Cluster" not in text:
+        return None
+    marker = _GUIDANCE_MARKER.search(text)
+    observed = marker.group(1) if marker else None
+    if observed == running_version:
+        return None
+    why = ("its unity-hpc guidance marker is missing" if observed is None else
+           f"its guidance marker is {observed}, but the running plugin is {running_version}")
+    return {
+        "issue": "claude_guidance_stale",
+        "detail": f"{path}: {why}. The file may describe an older scaffold or workflow.",
+        "fix": ("Review the project-specific instructions, then run "
+                "hpc-scaffold --type <type> --write-guidance to create a fresh "
+                "version-marked template when no CLAUDE.md exists. Existing guidance "
+                "is never overwritten automatically."),
+    }
+
+
 def _unity_doctor() -> str:
     """Report what this server is actually running, and whether it is stale.
 
@@ -964,6 +995,10 @@ def _unity_doctor() -> str:
                    "Your .env is preserved; the old run.sh is kept in "
                    "unityHPC/.pre-redesign/.",
         })
+
+    guidance_problem = _claude_guidance_problem(project, running)
+    if guidance_problem:
+        problems.append(guidance_problem)
 
     campaigns = _campaign.campaigns(project)
     spec, spec_error = _metrics.load_with_error(project)
