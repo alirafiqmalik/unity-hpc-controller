@@ -1,0 +1,30 @@
+{
+  "name": "unity-hpc",
+  "version": "0.10.1",
+  "description": "Unity HPC workflow for any SLURM job (CPU or GPU) — typed job scaffolding, queue-aware submission, sweeps, result fetching, cluster reconnaissance, and structured usage telemetry. Skills invoke as /unity-hpc:<skill>.",
+  "author": {
+    "name": "Ali Hamza Malik",
+    "email": "ahmalik@umass.edu",
+    "url": "https://github.com/alirafiqmalik"
+  },
+  "homepage": "https://github.com/alirafiqmalik/phd-agentic-tool/tree/main/plugins/unity-hpc",
+  "repository": "https://github.com/alirafiqmalik/phd-agentic-tool",
+  "license": "MIT",
+  "keywords": [
+    "hpc",
+    "slurm",
+    "unity",
+    "gpu",
+    "ml-research",
+    "cluster"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.codex-plugin/mcp.json",
+  "interface": {
+    "displayName": "Unity HPC",
+    "shortDescription": "SLURM job scaffolding, submission, sweeps, and cluster telemetry",
+    "longDescription": "Unity HPC workflow for any SLURM job (CPU or GPU) — typed job scaffolding, queue-aware submission, sweeps, result fetching, cluster reconnaissance, and structured usage telemetry.",
+    "developerName": "Ali Hamza Malik",
+    "category": "Development"
+  }
+}
