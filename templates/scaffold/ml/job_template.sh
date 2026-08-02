@@ -21,7 +21,16 @@ if [ -n "${VENV_PATH:-}" ] && [ -f "${VENV_PATH}/bin/activate" ]; then
     . "${VENV_PATH}/bin/activate"
 fi
 
-GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
+# Not `... | head -1 || echo unknown`: on a CPU node nvidia-smi writes
+# "No devices were found" to STDOUT and exits non-zero, so under `set -o
+# pipefail` head emits that text AND the fallback fires, and the banner ends up
+# split over two lines with the error in the middle of it. Ask separately, then
+# default.
+GPU_NAME=""
+if command -v nvidia-smi >/dev/null 2>&1; then
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+fi
+case "$GPU_NAME" in ""|*"No devices"*) GPU_NAME="unknown" ;; esac
 NODES="${SLURM_NNODES:-1}"
 echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) | exp=${EXP} | nodes=${NODES} | gpu=${GPU_NAME} ==="
 
@@ -48,7 +57,7 @@ run_training &
 TRAIN_PID=$!
 SAMPLER_PID=""
 if [ "${GPU_SAMPLE_INTERVAL:-0}" -gt 0 ] && command -v nvidia-smi >/dev/null 2>&1; then
-    SAMPLE_FILE="${GPU_SAMPLE_FILE:-${REMOTE_RESULTS_DIR:-${REMOTE_DIR}/_results}/${EXP}-${SLURM_JOB_ID}.gpu.tsv}"
+    SAMPLE_FILE="${GPU_SAMPLE_FILE:-${REMOTE_RESULTS_DIR:-${REMOTE_DIR}/_results}/${EXP}-${SLURM_JOB_ID}.gpu.csv}"
     mkdir -p "$(dirname "$SAMPLE_FILE")"
     printf 'timestamp_utc,gpu_index,utilization_gpu,memory_used,memory_total,power_draw,temperature_gpu\n' >"$SAMPLE_FILE"
     (

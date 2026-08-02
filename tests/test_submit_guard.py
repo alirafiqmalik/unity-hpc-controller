@@ -98,6 +98,46 @@ def test_extra_args_are_forwarded(server, tmp_project, materialise, monkeypatch)
     assert "--hold" in out and "--qos" in out and "short" in out
 
 
+def test_env_overrides_reach_the_dispatcher(server, tmp_project, materialise,
+                                            monkeypatch):
+    """Per-invocation overrides worked from a shell but not from this tool, so a
+    CPU smoke test inside a GPU-scaffolded project could not be run through the
+    plugin at all -- and shelling out is how a job escapes the ledger."""
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    unity = materialise(tmp_project, "gpu")
+    unity.joinpath("run.sh").write_text(
+        '#!/usr/bin/env bash\n'
+        'UNITY_OVERRIDABLE="JOB_COMMAND SLURM_GPUS SLURM_PARTITION"\n'
+        'echo "GPUS=[${SLURM_GPUS-unset}] PART=[${SLURM_PARTITION-unset}]"\n')
+    out = server._unity_submit("smoke", "", None,
+                               {"SLURM_GPUS": "", "SLURM_PARTITION": "cpu"})
+    assert "GPUS=[] PART=[cpu]" in out, out
+
+
+def test_a_dispatcher_that_predates_overrides_says_so(server, tmp_project,
+                                                      materialise, monkeypatch):
+    """run.sh is a copy inside the project, so an old one is a live case.
+    Refusing with 'does not accept SLURM_GPUS' would be a misleading answer to
+    'this dispatcher is too old to know what SLURM_GPUS is'."""
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    unity = materialise(tmp_project, "cpu")
+    unity.joinpath("run.sh").write_text('#!/usr/bin/env bash\necho old\n')
+    out = server._unity_submit("smoke", "", None, {"SLURM_GPUS": ""})
+    assert "/unity-hpc:setup" in out
+    assert "predates" in out
+
+
+def test_an_override_the_dispatcher_does_not_accept_is_refused(
+        server, tmp_project, materialise, monkeypatch):
+    """The list is read from the project's own run.sh, which is a copy: a list
+    kept in the server would claim support this project may not have."""
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    materialise(tmp_project, "cpu")
+    out = server._unity_submit("smoke", "", None, {"PATH": "/tmp"})
+    assert "does not accept PATH" in out
+    assert "JOB_COMMAND" in out, "the message must name what is accepted"
+
+
 def test_submit_tool_is_not_ml_specific(server):
     tools = asyncio.run(server.list_tools())
     submit = next(t for t in tools if t.name == "unity_submit")

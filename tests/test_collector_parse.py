@@ -291,6 +291,46 @@ def test_parse_gpu_types_folds_aliases_and_preserves_the_source_name():
     assert recs[0]["source_resource_ids"] == ["rtx8000", "rtx_8000"]
 
 
+def test_the_two_canonicalisers_agree():
+    """collector_parse carries its own copy because the collector runs on the
+    cluster with no access to the plugin's lib/. Two copies can drift, and a
+    drift here splits one GPU type into two rows in the shared profile."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from lib.cluster_config import canonical_gpu_type as shared
+
+    names = ["1080_ti", "2080_ti", "2080-ti", "rtx_8000", "RTX-8000", "titan_x",
+             "titan x", "a100", "l40s", "h100", " v100 ", "gpu:unspecified",
+             "any", "unknown", "h200_nvl", "h200-nvl", "a100_80gb"]
+    assert [cp.canonical_gpu_type(n) for n in names] == [shared(n) for n in names]
+
+
+def test_every_name_the_real_wrapper_prints_is_already_canonical():
+    """The fixture is captured `unity-slurm-gpu-usage` output, so every type it
+    names is spelled the way the cluster spells it. Canonicalising one of those
+    into something else would invent a GPU type that cannot be requested --
+    which is how a blanket separator strip breaks h200_nvl. This guard is the
+    safety net under whatever folding rule is in force."""
+    text = (REPO_ROOT / "tests" / "fixtures" / "gpu_usage_wrapper.txt").read_text()
+    printed = [r["resource_id"] for r in cp.parse_gpu_types(text)]
+    assert "h200_nvl" in printed, "fixture must still cover the underscore case"
+    assert "1080ti" in printed and "rtx8000" in printed
+    for name in printed:
+        assert cp.canonical_gpu_type(name) == name, name
+
+
+def test_the_alias_fold_covers_every_ti_spelling():
+    """1080_ti and 2080_ti were absent from the enumerated table that covered
+    rtx8000 and titanx, so a live profile double-counted 655 GPUs."""
+    text = (" 1080_ti      [####              ] 1/2          0         11        6.1     \n"
+            " 1080ti       [####              ] 2/2          0         11        6.1     \n"
+            " 2080_ti      [####              ] 1/1          0         11        7.5     \n")
+    recs = cp.parse_gpu_types(text)
+    by_id = {r["resource_id"]: r for r in recs}
+    assert set(by_id) == {"1080ti", "2080ti"}
+    assert by_id["1080ti"]["total"] == 4 and by_id["1080ti"]["alloc"] == 3
+    assert by_id["1080ti"]["source_resource_ids"] == ["1080_ti", "1080ti"]
+
+
 def test_gpu_types_from_nodes_aggregates_measured_gres():
     recs = cp.gpu_types_from_nodes(REAL_NODES_TEXT)
     by_id = {r["resource_id"]: r for r in recs}

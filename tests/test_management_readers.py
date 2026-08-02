@@ -348,22 +348,103 @@ def test_env_value_falls_back_to_the_default(server, tmp_project, monkeypatch):
     assert server._env_value("UNITY_HOST", "unity") == "unity"
 
 
-def test_logs_uses_the_live_path_when_remote_dir_is_set(server, tmp_project,
-                                                        tmp_data_dir, monkeypatch):
+def _logs_project(tmp_project, monkeypatch, job_id="111", exp="sim"):
+    """A project with one recorded job and a stubbed SSH that logs every call."""
     monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
-    campaign.record(tmp_project, "c1", "111", "sim", "cpu")
+    campaign.record(tmp_project, "c1", job_id, exp, "cpu")
     (tmp_project / "unityHPC").mkdir()
     (tmp_project / "unityHPC" / ".env").write_text(
         'REMOTE_DIR=""\nREMOTE_DIR="/work/real"\n')
-    seen = {}
+    return []
+
+
+def test_logs_uses_the_live_path_when_remote_dir_is_set(server, tmp_project,
+                                                        tmp_data_dir, monkeypatch):
+    seen = _logs_project(tmp_project, monkeypatch)
 
     def fake_ssh(cmd, timeout=30):
-        seen["cmd"] = cmd
-        return ("live output", "", 0)
+        seen.append(cmd)
+        return (f"live output for {cmd[-3:]}", "", 0)
     monkeypatch.setattr(server, "_ssh", fake_ssh)
     out = server._unity_logs(None, 5)
-    assert "/work/real/_slurm/sim-111.out" in seen["cmd"]
+    assert "/work/real/_slurm/sim-111.out" in seen[0]
     assert "live" in out
+
+
+def test_logs_reads_stderr_as_well_as_stdout(server, tmp_project, tmp_data_dir,
+                                             monkeypatch):
+    """The failure reason lives in .err. A tool that reads only .out can say
+    that a job failed but never why -- one field test lost a session to a
+    ModuleNotFoundError this tool structurally could not show."""
+    seen = _logs_project(tmp_project, monkeypatch)
+
+    def fake_ssh(cmd, timeout=30):
+        seen.append(cmd)
+        if cmd.endswith(".err"):
+            return ("ModuleNotFoundError: No module named 'harness'", "", 0)
+        return ("=== done rc=1 ===", "", 0)
+    monkeypatch.setattr(server, "_ssh", fake_ssh)
+
+    out = server._unity_logs(None, 5)
+    assert "--- sim-111.out" in out
+    assert "--- sim-111.err" in out
+    assert "ModuleNotFoundError" in out
+    assert [c.split("/")[-1] for c in seen] == ["sim-111.out", "sim-111.err"]
+
+
+@pytest.mark.parametrize("stream,expected", [
+    ("out", ["sim-111.out"]),
+    ("err", ["sim-111.err"]),
+    ("both", ["sim-111.out", "sim-111.err"]),
+])
+def test_logs_stream_selects_which_files_are_read(server, tmp_project, tmp_data_dir,
+                                                  monkeypatch, stream, expected):
+    seen = _logs_project(tmp_project, monkeypatch)
+    monkeypatch.setattr(server, "_ssh",
+                        lambda cmd, timeout=30: (seen.append(cmd), ("text", "", 0))[1])
+    server._unity_logs(None, 5, stream)
+    assert [c.split("/")[-1] for c in seen] == expected
+
+
+def test_logs_rejects_an_unknown_stream(server, tmp_project, tmp_data_dir, monkeypatch):
+    _logs_project(tmp_project, monkeypatch)
+    assert "unknown stream" in server._unity_logs(None, 5, "stdout")
+
+
+def test_logs_uses_the_array_log_name_for_an_array_task(server, tmp_project,
+                                                        tmp_data_dir, monkeypatch):
+    """One array script serves every task, so SLURM writes <campaign>-%A_%a --
+    not <exp>-<job id>. run.sh's fetch and logs paths already knew this; the
+    MCP tool asked for a file that never exists for a sweep."""
+    seen = _logs_project(tmp_project, monkeypatch, job_id="12345_0", exp="trial-a")
+    monkeypatch.setattr(server, "_ssh",
+                        lambda cmd, timeout=30: (seen.append(cmd), ("text", "", 0))[1])
+    server._unity_logs(None, 5, "out")
+    assert seen == ["tail -n 5 /work/real/_slurm/c1-12345_0.out"]
+
+
+def test_logs_falls_back_to_the_fetched_copy_per_stream(server, tmp_project,
+                                                        tmp_data_dir, monkeypatch):
+    _logs_project(tmp_project, monkeypatch)
+    fetched = tmp_project / "_results" / "c1"
+    fetched.mkdir(parents=True)
+    (fetched / "sim-111.err").write_text("Traceback (most recent call last):\n")
+
+    def fake_ssh(cmd, timeout=30):
+        return ("", "ssh: connect failed", 255)
+    monkeypatch.setattr(server, "_ssh", fake_ssh)
+
+    out = server._unity_logs(None, 5)
+    assert "fetched copy" in out
+    assert "Traceback" in out
+
+
+def test_logs_says_nothing_is_there_rather_than_naming_one_stream(
+        server, tmp_project, tmp_data_dir, monkeypatch):
+    _logs_project(tmp_project, monkeypatch)
+    monkeypatch.setattr(server, "_ssh", lambda cmd, timeout=30: ("", "", 1))
+    out = server._unity_logs(None, 5)
+    assert "sim-111.out" in out and "sim-111.err" in out
 
 
 @pytest.mark.parametrize("raw,expected", [

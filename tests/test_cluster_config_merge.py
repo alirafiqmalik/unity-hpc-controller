@@ -1,3 +1,5 @@
+import pytest
+
 from lib import cluster_config as cc
 
 
@@ -52,6 +54,64 @@ def test_gpu_aliases_fold_at_the_config_merge_boundary():
     assert merged["gpu_fleet"]["rtx8000"]["total_accessible"] == 8
     assert merged["gpu_fleet"]["rtx8000"]["source_resource_ids"] == ["rtx_8000"]
     assert merged["partitions"]["gpu"]["gpu_types"] == ["rtx8000", "titanx"]
+
+
+@pytest.mark.parametrize("spelling,canonical", [
+    ("1080_ti", "1080ti"),
+    ("2080_ti", "2080ti"),
+    ("2080-ti", "2080ti"),
+    ("RTX_8000", "rtx8000"),
+    ("titan_x", "titanx"),
+    ("titan x", "titanx"),
+    (" a100 ", "a100"),
+    ("l40s", "l40s"),
+    ("gpu:unspecified", "gpu:unspecified"),
+])
+def test_a_separator_before_digits_or_a_model_suffix_folds(spelling, canonical):
+    """An enumerated alias table covered rtx8000 and titanx but missed 1080_ti
+    and 2080_ti, so a live profile carried both spellings of each as separate
+    rows: 655 GPUs double-counted, the orphan halves never refreshed. Fold by
+    rule so a card nobody thought of is covered too."""
+    assert cc.canonical_gpu_type(spelling) == canonical
+
+
+@pytest.mark.parametrize("name", ["h200_nvl", "a100_80gb", "gtx_aa"])
+def test_a_separator_before_a_word_is_part_of_the_name(name):
+    """h200_nvl is a real gres name -- tests/fixtures/gpu_usage_wrapper.txt is
+    captured Unity output and lists it beside 1080ti and rtx8000. Deleting every
+    separator would rewrite it to h200nvl, which --gres does not accept, so the
+    fold has to stop at anything that is not digits or a model suffix."""
+    assert cc.canonical_gpu_type(name) == name
+
+
+def test_a_dash_spelling_normalises_to_the_underscore_one():
+    """One device must not arrive under two punctuations even when the tail is
+    a word the fold leaves alone."""
+    assert cc.canonical_gpu_type("h200-nvl") == "h200_nvl"
+
+
+def test_folding_leaves_a_partition_style_name_alone():
+    """Partition names legitimately carry a dash and are keyed separately. This
+    guards the one way separator folding could corrupt data if it were ever
+    pointed at the wrong column."""
+    assert "gpu-preempt" not in cc._MAP_SECTIONS
+    obs = {"partitions": {"gpu-preempt": {"nodes": 3,
+                                          "observed_utc": "2026-07-22T14:00:00Z"}}}
+    merged = cc.merge_config({}, obs)
+    assert set(merged["partitions"]) == {"gpu-preempt"}
+
+
+def test_orphan_underscore_rows_fold_into_their_canonical_row():
+    """The repair path for a profile already carrying both spellings: the next
+    merge folds them, because canonicalize_config runs on every write."""
+    current = {"gpu_fleet": {
+        "1080_ti": {"total_accessible": 303, "observed_utc": "2026-07-30T07:06:44Z"},
+        "1080ti": {"total_accessible": 303, "allocated": 170,
+                   "observed_utc": "2026-07-30T21:14:12Z"}}}
+    merged = cc.merge_config(current, {})
+    assert set(merged["gpu_fleet"]) == {"1080ti"}
+    assert merged["gpu_fleet"]["1080ti"]["total_accessible"] == 303
+    assert merged["gpu_fleet"]["1080ti"]["allocated"] == 170
 
 
 def test_legacy_gpu_storage_sections_fold_order_independently():
@@ -153,3 +213,26 @@ def test_account_limits_merge_is_order_independent():
     assert ab == ba
     assert ab["account_limits"]["max_jobs"] == 250
     assert ba["account_limits"]["max_jobs"] == 250
+
+
+def test_a_probed_null_limit_is_recorded_not_dropped():
+    """`max_submit_jobs: null` means the probe ran and found no cap. Dropping it
+    made that indistinguishable from never probing, and the sweep skill tells an
+    agent to size a batch against that number before submitting."""
+    merged = cc.merge_config({}, {"account_limits": {
+        "account": "${SLURM_ACCOUNT}", "max_submit_jobs": None,
+        "observed_utc": "2026-07-22T14:00:00Z"}})
+    limits = merged["account_limits"]
+    assert "max_submit_jobs" in limits and limits["max_submit_jobs"] is None
+    assert "max_jobs" not in limits, "an unprobed field must stay absent"
+
+
+def test_a_null_never_erases_a_measured_limit():
+    """A partial observation must not turn another project's real number into
+    'no limit' -- that is the a100=157 -> a100=40 failure in a different column."""
+    cur = {"account_limits": {"max_submit_jobs": 500,
+                              "observed_utc": "2026-07-20T10:00:00Z"}}
+    obs = {"account_limits": {"max_submit_jobs": None,
+                              "observed_utc": "2026-07-22T14:00:00Z"}}
+    merged = cc.merge_config(cur, obs)
+    assert merged["account_limits"]["max_submit_jobs"] == 500
