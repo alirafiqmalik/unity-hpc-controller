@@ -195,20 +195,31 @@ async def list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "exp": {"type": "string", "description": "Job name — used for the SLURM job name and log filenames"},
-                    "extra_args": {"type": "string", "description": "Extra flags passed to sbatch, e.g. '--qos=short'. Use '--dry-run' to preview without submitting."},
-                    "campaign": {"type": "string", "description": "Group this job with others under one campaign. Omit for today's UTC date."}
+                    "extra_args": {"type": "string", "description": "Extra flags passed to sbatch, e.g. '--qos=short'. Use '--dry-run' to preview without submitting. Use '--export=ALL,MODEL=x' to pass values into JOB_COMMAND."},
+                    "campaign": {"type": "string", "description": "Group this job with others under one campaign. Omit for today's UTC date."},
+                    "env": {"type": "object",
+                            "description": ("Override .env values for this one job without editing the file, "
+                                            "e.g. {\"JOB_COMMAND\": \"echo smoke\", \"SLURM_MEM\": \"1G\"}. "
+                                            "An empty string is a deliberate override: {\"SLURM_GPUS\": \"\"} "
+                                            "runs one CPU job in a GPU project. Rejected if run.sh does not "
+                                            "list the name as overridable.")}
                 },
                 "required": ["exp"]
             }
         ),
         types.Tool(
             name="unity_logs",
-            description="Tail the newest recorded job's SLURM output — live over SSH, falling back to a fetched copy.",
+            description=("Tail the newest recorded job's SLURM output AND error files "
+                         "— live over SSH, falling back to a fetched copy. Reads both "
+                         "streams by default, because most failures print to stderr."),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "campaign": {"type": "string", "description": "Campaign name. Omit for the latest."},
-                    "lines": {"type": "integer", "description": "Lines to tail (default 20)"}
+                    "lines": {"type": "integer", "description": "Lines to tail (default 20)"},
+                    "stream": {"type": "string", "enum": ["out", "err", "both"],
+                               "description": ("Which stream to read (default both). "
+                                               "'err' is where a failing job says why.")}
                 }
             }
         ),
@@ -244,10 +255,11 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="unity_doctor",
             description=("Report which plugin version this server process is actually "
-                         "running and whether it is stale (code upgraded since the "
-                         "session started), plus project scaffold, ledger, metric "
-                         "declaration and shared-data health. Call this first when "
-                         "behaviour disagrees with the source."),
+                         "running, plus project scaffold, ledger, metric declaration "
+                         "and shared-data health. Call this first when behaviour "
+                         "disagrees with the source. status is 'stale' only when this "
+                         "process is running code that is no longer on disk (see "
+                         "code_stale) — every other finding reports 'degraded'."),
             inputSchema={"type": "object", "properties": {}}
         ),
         types.Tool(
@@ -281,9 +293,10 @@ async def _dispatch(name: str, args: dict) -> str:
         return _unity_results_tsv(args.get("limit"), args.get("offset"))
     elif name == "unity_submit":
         return _unity_submit(args["exp"], args.get("extra_args", ""),
-                             args.get("campaign"))
+                             args.get("campaign"), args.get("env"))
     elif name == "unity_logs":
-        return _unity_logs(args.get("campaign"), args.get("lines", 20))
+        return _unity_logs(args.get("campaign"), args.get("lines", 20),
+                           args.get("stream", "both"))
     elif name == "unity_ssh":
         return _unity_ssh(args["cmd"], args.get("timeout"))
     elif name == "unity_cluster_profile":
@@ -522,7 +535,21 @@ def _unity_results_tsv(limit: int | None = None, offset: int | None = None) -> s
                        "limit": page_limit, "next_offset": next_offset})
 
 
-def _unity_submit(exp: str, extra_args: str, campaign: str | None = None) -> str:
+def _overridable(runner: Path) -> set[str]:
+    """The names run.sh accepts as a per-invocation override.
+
+    Read from the project's own dispatcher, not from a list kept here: run.sh is
+    a COPY inside the project, so a list in the server would claim support the
+    project's actual script may not have."""
+    try:
+        text = runner.read_text(errors="replace")
+        return set(text.split("UNITY_OVERRIDABLE=", 1)[1].split('"', 2)[1].split())
+    except (OSError, IndexError):
+        return set()
+
+
+def _unity_submit(exp: str, extra_args: str, campaign: str | None = None,
+                  env: dict | None = None) -> str:
     runner = _project_dir() / "unityHPC" / "run.sh"
     if not runner.exists():
         return (
@@ -534,12 +561,36 @@ def _unity_submit(exp: str, extra_args: str, campaign: str | None = None) -> str
             "directory that contains unityHPC/."
         )
 
+    # Per-invocation overrides were reachable from a shell but not from this
+    # tool, so a CPU smoke test inside a GPU-scaffolded project could not be run
+    # through the plugin at all -- the caller had to drop to raw ssh, which is
+    # also how a job escapes the ledger.
+    call_env = dict(os.environ)
+    if env:
+        allowed = _overridable(runner)
+        if not allowed:
+            return ("unity_submit: this project's unityHPC/run.sh does not declare "
+                    "which values can be overridden per invocation, so it probably "
+                    "predates the feature.\nRe-run /unity-hpc:setup to regenerate "
+                    "the dispatcher (your .env is preserved), or submit from a "
+                    "shell: NAME=value bash unityHPC/run.sh run <exp>")
+        unknown = sorted(k for k in env if k not in allowed)
+        if unknown:
+            return (f"unity_submit: run.sh does not accept {', '.join(unknown)} "
+                    f"as a per-invocation override.\nIt accepts: "
+                    f"{', '.join(sorted(allowed))}.")
+        # str(), not a bare value: an empty string is a deliberate override --
+        # SLURM_GPUS="" is how one job in a GPU project runs on cpu -- and
+        # run.sh tests whether the name is SET, not whether it is non-empty.
+        call_env.update({k: str(v) for k, v in env.items()})
+
     cmd = ["bash", str(runner), "run", exp]
     if campaign:
         cmd += ["--campaign", campaign]
     if extra_args:
         cmd += extra_args.split()
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(_project_dir()))
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          cwd=str(_project_dir()), env=call_env)
     output = (proc.stdout + proc.stderr).strip()
     if not output:
         return f"run.sh exited {proc.returncode} with no output."
@@ -550,12 +601,59 @@ def _unity_submit(exp: str, extra_args: str, campaign: str | None = None) -> str
     return output
 
 
-def _unity_logs(campaign: str | None, lines: int) -> str:
-    """Tail the newest recorded job's stdout on the cluster.
+def log_stem(campaign: str, job_id: str, exp: str) -> str:
+    """The SLURM log file stem for one recorded job.
+
+    A plain job writes `<exp>-<job id>`, because run.sh renders
+    `--output=.../<exp>-%j.out`. An array writes `<campaign>-<job id>`, because
+    one array script covers every task and `%A_%a` carries the task apart. The
+    ledger stores array ids as `12345_0`, which is what tells the two cases
+    apart. run.sh's own fetch and logs paths use the same rule."""
+    return f"{campaign}-{job_id}" if "_" in job_id else f"{exp}-{job_id}"
+
+
+#: what `stream` accepts, and the order sections are printed in
+_LOG_STREAMS = ("out", "err")
+
+
+def _read_stream(name: str, stem: str, suffix: str, lines: int,
+                 remote_dir: str | None) -> str | None:
+    """One log section, read live and falling back to a fetched copy."""
+    if remote_dir:
+        try:
+            stdout, _stderr, rc = _ssh(
+                f"tail -n {int(lines)} {remote_dir}/_slurm/{stem}.{suffix}", timeout=30)
+            if rc == 0 and stdout.strip():
+                return (f"--- {stem}.{suffix} (last {lines} lines, live) ---\n"
+                        f"{stdout.strip()}")
+        except subprocess.TimeoutExpired:
+            pass  # fall through to the fetched copy
+        except Exception:
+            pass
+
+    local = _project_dir() / "_results" / name / f"{stem}.{suffix}"
+    if local.exists():
+        tail = local.read_text(errors="replace").splitlines()[-int(lines):]
+        if any(line.strip() for line in tail):
+            return (f"--- {stem}.{suffix} (last {lines} lines, fetched copy) ---\n"
+                    + "\n".join(tail))
+    return None
+
+
+def _unity_logs(campaign: str | None, lines: int, stream: str = "both") -> str:
+    """Tail the newest recorded job's output on the cluster.
 
     There is no background monitor and no monitor log — that machinery was
     removed. The useful answer to "what is my job printing" is the job's own
-    SLURM output file, read live over SSH, falling back to a fetched copy."""
+    SLURM files, read live over SSH, falling back to a fetched copy.
+
+    Both streams are read by default. A tool that reads only stdout can report
+    that a job failed but never why: most failures — an import error, a stack
+    trace, an OOM kill — reach stderr and nothing else. A field test lost a
+    session to `ModuleNotFoundError` that this tool structurally could not
+    show, and had to leave the plugin for raw ssh to find it."""
+    if stream not in ("out", "err", "both"):
+        return f"unity_logs: unknown stream {stream!r}; expected out, err or both."
     name = campaign or _campaign.latest_campaign(_project_dir())
     if name is None:
         return _NO_LEDGER
@@ -563,30 +661,20 @@ def _unity_logs(campaign: str | None, lines: int) -> str:
     if not rows:
         return f"Campaign {name} has no recorded jobs."
     job = rows[-1]
-    stem = f"{job['exp']}-{job['job_id']}"
+    stem = log_stem(name, job["job_id"], job["exp"])
+    wanted = _LOG_STREAMS if stream == "both" else (stream,)
 
-    local = _project_dir() / "_results" / name / f"{stem}.out"
     remote_dir = _env_value("REMOTE_DIR")
-    if remote_dir:
-        try:
-            stdout, stderr, rc = _ssh(
-                f"tail -n {int(lines)} {remote_dir}/_slurm/{stem}.out", timeout=30)
-            if rc == 0 and stdout.strip():
-                return f"--- {stem}.out (last {lines} lines, live) ---\n{stdout.strip()}"
-            if not local.exists():
-                return (f"No output yet for job {job['job_id']} ({job['status']}).\n"
-                        f"{stderr.strip()}" if stderr.strip() else
-                        f"No output yet for job {job['job_id']} ({job['status']}).")
-        except subprocess.TimeoutExpired:
-            pass  # fall through to the fetched copy
-        except Exception:
-            pass
+    sections = [section for section in
+                (_read_stream(name, stem, suffix, lines, remote_dir) for suffix in wanted)
+                if section]
+    if sections:
+        return "\n\n".join(sections)
 
-    if local.exists():
-        tail = local.read_text(errors="replace").splitlines()[-int(lines):]
-        return f"--- {stem}.out (last {lines} lines, fetched copy) ---\n" + "\n".join(tail)
-    return (f"Could not read output for job {job['job_id']}. "
-            f"Check SSH, or fetch it: bash unityHPC/run.sh fetch --campaign {name}")
+    empty = " or ".join(f"{stem}.{suffix}" for suffix in wanted)
+    return (f"Nothing in {empty} for job {job['job_id']} ({job['status']}).\n"
+            f"If the job has not started, that is expected. Otherwise check SSH, "
+            f"or fetch the files: bash unityHPC/run.sh fetch --campaign {name}")
 
 
 
@@ -694,11 +782,20 @@ def _render_cluster_config(data: dict) -> str:
 
     al = data.get("account_limits") or {}
     if al:
+        # "no limit" and "nobody probed this" are different answers, and the
+        # sweep skill branches on them: an agent sizing a batch against a cap
+        # must not read an unmeasured field as unlimited. A key that is present
+        # and null was measured; a key that is absent was not.
+        def _limit(key: str) -> str:
+            if key not in al:
+                return "not probed"
+            return "no limit" if al[key] is None else str(al[key])
+
         lines += ["## Account limits",
                   f"- account: {al.get('account', '?')}",
-                  f"- max_submit_jobs: {al.get('max_submit_jobs')}",
-                  f"- max_jobs: {al.get('max_jobs')}",
-                  f"- max_wall: {al.get('max_wall')}"]
+                  f"- max_submit_jobs: {_limit('max_submit_jobs')}",
+                  f"- max_jobs: {_limit('max_jobs')}",
+                  f"- max_wall: {_limit('max_wall')}"]
         for q in al.get("qos") or []:
             lines.append(f"- qos {q.get('name')}: max_wall={q.get('max_wall')} "
                          f"priority={q.get('priority')}")
@@ -939,11 +1036,20 @@ def _claude_guidance_problem(project: Path, running_version: str | None) -> dict
     return {
         "issue": "claude_guidance_stale",
         "detail": f"{path}: {why}. The file may describe an older scaffold or workflow.",
-        "fix": ("Review the project-specific instructions, then run "
-                "hpc-scaffold --type <type> --write-guidance to create a fresh "
-                "version-marked template when no CLAUDE.md exists. Existing guidance "
-                "is never overwritten automatically."),
+        # --write-guidance only acts when CLAUDE.md is ABSENT, and this finding
+        # only fires when it EXISTS, so naming it here sent an agent into a loop
+        # against a command that reported "already exists" and changed nothing.
+        "fix": ("Review the project-specific instructions against the current "
+                "scaffold, then run hpc-scaffold --type <type> "
+                "--refresh-guidance-marker to stamp this file with the running "
+                "version. That touches the marker only; your prose is not "
+                "rewritten."),
     }
+
+
+#: the findings that mean this process is running code other than what is on
+#: disk -- the only ones that make status "stale"
+_CODE_STALE_ISSUES = frozenset({"server_code_changed_after_start", "version_mismatch"})
 
 
 def _unity_doctor() -> str:
@@ -1005,8 +1111,16 @@ def _unity_doctor() -> str:
     data_dir = _data_dir()
     summaries = _summaries_db()
 
+    # "stale" is reserved for the one condition this tool exists to catch: the
+    # server process is running code that is no longer what is on disk. Letting
+    # a cosmetic finding raise the same headline meant a missing marker in
+    # CLAUDE.md and "your MCP server is running dead code" read identically, and
+    # an agent told to call unity_doctor first could not tell them apart without
+    # walking problems[]. Anything else that is wrong reports "degraded".
+    code_stale = any(p["issue"] in _CODE_STALE_ISSUES for p in problems)
     report = {
-        "status": "stale" if problems else "ok",
+        "status": "stale" if code_stale else ("degraded" if problems else "ok"),
+        "code_stale": code_stale,
         "running": {"version": running, "source": str(_SOURCE), "root": str(root)},
         "installed": {"version": installed, "path": install_path},
         "project": {

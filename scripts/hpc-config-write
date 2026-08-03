@@ -8,6 +8,11 @@ Reads a JSON observation (a partial config), acquires locks/config.lock, merges
 with the deterministic union/max/newest-wins rules, and atomically rewrites
 cluster-config.json. Invoked by the unity-hpc:recon skill. Cluster-neutral:
 never write project commentary into the observation.
+
+Prints `written` or `skipped`, and exits 0 for both: a TTL-fresh skip is a
+normal outcome, not a failure, and a caller running under `set -e` must not
+abort on it. Pass --require-write to exit 3 on a skip instead, for a caller that
+needs the write to have happened.
 """
 
 import argparse
@@ -28,6 +33,8 @@ def main() -> int:
     ap.add_argument("--ttl", type=int,
                     default=int(os.environ.get("UNITY_HPC_RECON_TTL", cc.DEFAULT_TTL_SECONDS)))
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--require-write", action="store_true",
+                    help="exit 3 when the TTL guard skips the write")
     args = ap.parse_args()
 
     raw = sys.stdin.read() if args.obs_file == "-" else Path(args.obs_file).read_text()
@@ -43,6 +50,10 @@ def main() -> int:
     status, _ = cc.write_config(observation, writer=args.writer,
                                 force=args.force, ttl_seconds=args.ttl)
     print(status)
+    # 3, not 1: a skip is a distinct outcome, not an error. A wrapper can tell
+    # "the configuration is fresh" from "the merge failed" without parsing text.
+    if args.require_write and status != "written":
+        return 3
     return 0
 
 

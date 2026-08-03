@@ -37,10 +37,26 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" \
   --write-guidance
 ```
 
+Every `.env` key has a flag. Give the environment flags for any job that needs
+more than the system python:
+
+| Flag | Sets | Use it for |
+|---|---|---|
+| `--venv PATH` | `VENV_PATH` | the virtualenv the node activates |
+| `--modules 'cuda/12.8'` | `MODULES` | modules the node loads |
+| `--hf-home PATH` | `HF_HOME` | a shared model cache |
+| `--constraint 'sm_80&vram48'` | `SLURM_CONSTRAINT` | a node feature, rendered as `#SBATCH --constraint` |
+| `--host NAME` | `UNITY_HOST` | an SSH alias other than `unity` |
+| `--results-dir PATH` | `REMOTE_RESULTS_DIR` | where fetch pulls artifacts from |
+
+A GPU job with no `--venv` runs the system python, which has no framework
+installed. The job then fails on the node for a reason no plugin tool can
+report.
+
 Use `--collector deploy` only when the caller explicitly authorizes a
 long-lived collector. Add `--dry-run` to review the files and actions without
 writing or connecting to the cluster. The project `.env` remains the source of
-truth after setup; flags append validated values to that file.
+truth after setup; each flag fills its key in that file, in place.
 
 **2. Generate the unityHPC/ scaffold**
 

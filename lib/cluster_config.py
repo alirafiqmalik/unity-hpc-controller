@@ -16,6 +16,7 @@ import copy
 import fcntl
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 from lib import paths
@@ -29,23 +30,43 @@ _MAX_FIELDS = frozenset({"nodes", "cpus_total", "gpus_total", "total_accessible"
 #: top-level map-of-record sections merged per resource id
 _MAP_SECTIONS = ("partitions", "gpu_fleet", "storage")
 
-# Slurm's GPU name is a resource key, not display text.  Keep the spelling that
-# `%G`, `--gres`, and sacct use, while accepting names that have appeared in
-# handwritten configuration and telemetry.  Add aliases here, rather than at
-# individual reader call sites, so every config write folds the same keys.
-GPU_ALIASES = {
-    "rtx_8000": "rtx8000",
-    "rtx-8000": "rtx8000",
-    "titan_x": "titanx",
-    "titan-x": "titanx",
-}
+# Slurm's GPU name is a resource key, not display text.  The canonical spelling
+# is the one `--gres` accepts and `%G` prints: `a100`, `1080ti`, `rtx8000`,
+# `titanx`.  Wrappers, handwritten configuration and older telemetry write the
+# same devices with a separator (`1080_ti`, `rtx_8000`, `titan-x`), so fold by
+# rule rather than by enumeration -- an enumerated map covered rtx8000 and
+# titanx but missed 1080_ti and 2080_ti, and the shared profile then carried
+# both spellings of each as separate rows: 655 GPUs double-counted, with the
+# orphan halves frozen at their first-seen timestamp because nothing ever wrote
+# to them again.
+#
+# Fold a separator ONLY when what follows is a model part Slurm writes attached:
+# a run of digits (`rtx_8000` -> `rtx8000`) or a short model suffix (`1080_ti`
+# -> `1080ti`, `titan_x` -> `titanx`).  Deleting every separator is wrong:
+# `h200_nvl` is a real gres name, and `h200nvl` is not a thing you can request.
+# Anything that does not match the rule keeps its parts, with `-` normalised to
+# `_` so one device cannot arrive under two punctuations.
+#
+# Only GPU type names reach this function.  Partition names, which legitimately
+# contain a dash (`gpu-preempt`), are keyed separately and never folded here.
+_GPU_SEPARATOR = re.compile(r"[ _-]+")
+
+#: model suffixes Slurm writes with no separator
+_GPU_SUFFIXES = frozenset({"ti", "x"})
+
+#: genuine renames, for a device the rule above cannot reach.  Applied after
+#: folding, so an entry here is keyed by the already-folded spelling.
+GPU_ALIASES: dict[str, str] = {}
 
 
 def canonical_gpu_type(value: str) -> str:
     """Return the canonical Slurm GPU resource spelling for ``value``."""
-    raw = str(value).strip().lower()
-    lookup = raw.replace(" ", "_").replace("-", "_")
-    return GPU_ALIASES.get(raw, GPU_ALIASES.get(lookup, raw))
+    parts = _GPU_SEPARATOR.split(str(value).strip().lower())
+    folded = parts[0]
+    for part in parts[1:]:
+        joiner = "" if (part.isdigit() or part in _GPU_SUFFIXES) else "_"
+        folded += joiner + part
+    return GPU_ALIASES.get(folded, folded)
 
 
 def canonicalize_config(data: dict) -> dict:
@@ -121,7 +142,15 @@ def merge_resource(cur: dict, obs: dict) -> dict:
 def _merge_account_limits(cur: dict, obs: dict) -> dict:
     """Newest-observed_utc-wins for the scalar fields (max_submit_jobs, max_jobs,
     max_wall, grp_tres, ...), the same mechanism merge_resource uses for resources.
-    The qos list always unions by name, regardless of which side is newer."""
+    The qos list always unions by name, regardless of which side is newer.
+
+    A null is recorded when the key is new, and ignored when it is not. That is
+    what separates "probed, and this account has no cap" from "nobody has looked
+    yet": dropping nulls outright left both cases looking identical, and the
+    sweep skill tells an agent to read max_submit_jobs before submitting a batch
+    -- it has to be able to tell a missing answer from an unlimited one. A null
+    still never overwrites a real number, so a partial observation cannot erase
+    a limit another project measured."""
     out = dict(cur)
     obs_utc = obs.get("observed_utc")
     cur_utc = cur.get("observed_utc")
@@ -131,7 +160,9 @@ def _merge_account_limits(cur: dict, obs: dict) -> dict:
             out["qos"] = _union_by_name(cur.get("qos") or [], v)
         elif k == "observed_utc":
             out[k] = obs_utc if newer else cur_utc
-        elif v is not None and (newer or k not in out):
+        elif v is None:
+            out.setdefault(k, None)
+        elif newer or k not in out:
             out[k] = copy.deepcopy(v)
     return out
 

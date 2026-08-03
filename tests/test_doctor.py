@@ -45,8 +45,21 @@ def server(monkeypatch):
     return module
 
 
+@pytest.fixture(autouse=True)
+def isolated_registry(tmp_path, monkeypatch):
+    """Keep the developer's own installed plugins out of these assertions.
+
+    Without this, every test here reads the real
+    ~/.claude/plugins/installed_plugins.json, so the whole file passes or fails
+    depending on which version happens to be installed on the machine running
+    it. Bumping the plugin version turned that latent coupling into three
+    failures that had nothing to do with the change. A missing registry is
+    already a supported state: unknown installed version is not staleness."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-claude"))
+
+
 @pytest.fixture
-def registry(tmp_path, monkeypatch):
+def registry(tmp_path, monkeypatch, isolated_registry):
     """A stand-in ~/.claude/plugins/installed_plugins.json."""
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     path = tmp_path / "claude" / "plugins" / "installed_plugins.json"
@@ -200,7 +213,10 @@ def test_an_unstamped_scaffold_is_reported_stale(server, tmp_project,
     unity.mkdir()
     (unity / "run.sh").write_text("#!/usr/bin/env bash\nset -a; . .env; set +a\n")
     report = _doctor(server)
-    assert report["status"] == "stale"
+    # A stale dispatcher is a real problem, but it is not this process running
+    # code that is no longer on disk -- which is what "stale" is reserved for.
+    assert report["status"] == "degraded"
+    assert report["code_stale"] is False
     stale = [p for p in report["problems"] if p["issue"] == "scaffold_stale"]
     assert stale, report["problems"]
     assert "unstamped" in stale[0]["detail"]
@@ -263,7 +279,30 @@ def test_doctor_reports_unmarked_unity_guidance_as_stale(server, tmp_project,
     report = _doctor(server)
     stale = [p for p in report["problems"] if p["issue"] == "claude_guidance_stale"]
     assert stale and str(path) in stale[0]["detail"]
-    assert "write-guidance" in stale[0]["fix"]
+    # The fix must name a command that can actually resolve this finding.
+    # --write-guidance only acts when CLAUDE.md is absent, and this finding only
+    # fires when it exists, so the old advice was a provable no-op.
+    assert "--refresh-guidance-marker" in stale[0]["fix"]
+    assert "--write-guidance" not in stale[0]["fix"]
+    # Missing prose in a project file is not the server running dead code.
+    assert report["status"] == "degraded" and report["code_stale"] is False
+
+
+def test_a_cosmetic_finding_does_not_read_as_code_staleness(server, tmp_project,
+                                                            tmp_data_dir, monkeypatch):
+    """Both conditions produced the identical headline string, so an agent told
+    to call unity_doctor first could not tell "your server is running dead code"
+    from "your CLAUDE.md lacks a marker" without walking problems[]."""
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    (tmp_project / "CLAUDE.md").write_text("# Unity Cluster\nunityHPC/run.sh\n")
+    cosmetic = _doctor(server)
+
+    monkeypatch.setattr(server, "_LOADED_AT", 0.0)
+    real = _doctor(server)
+
+    assert cosmetic["status"] == "degraded" and real["status"] == "stale"
+    assert cosmetic["status"] != real["status"]
+    assert cosmetic["code_stale"] is False and real["code_stale"] is True
 
 
 def test_doctor_accepts_current_version_marked_guidance(server, tmp_project,

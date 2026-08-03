@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,38 @@ def test_gpu_and_ml_templates_have_opt_in_sampling():
         assert "GPU_SAMPLE_INTERVAL" in body
         assert "memory.used" in body
         assert "GPU_SAMPLE_FILE" in body
+
+
+def test_the_sample_file_extension_matches_what_it_writes():
+    """The sampler writes a comma-separated header and comma-separated rows into
+    a file named .tsv, so anything reading it by extension parsed one column."""
+    for ptype in ("gpu", "ml"):
+        body = (scaffold.template_root() / ptype / "job_template.sh").read_text()
+        assert ".gpu.csv" in body, ptype
+        assert ".gpu.tsv" not in body, ptype
+        assert "timestamp_utc,gpu_index" in body, ptype
+
+
+@pytest.mark.parametrize("ptype", ["gpu", "ml"])
+def test_the_banner_survives_a_node_without_a_gpu(ptype, tmp_path):
+    """nvidia-smi writes "No devices were found" to STDOUT and exits non-zero.
+    Under `set -o pipefail` the old one-liner emitted that text AND its own
+    fallback, so a real run printed `gpu=No devices were found\\nunknown ===`
+    and split the banner across two lines."""
+    body = (scaffold.template_root() / ptype / "job_template.sh").read_text()
+    start = body.index("GPU_NAME=")
+    snippet = body[start:body.index("echo \"===", start)]
+
+    stub = tmp_path / "nvidia-smi"
+    stub.write_text("#!/usr/bin/env bash\necho 'No devices were found'\nexit 9\n")
+    stub.chmod(0o755)
+    script = tmp_path / "probe.sh"
+    script.write_text("set -euo pipefail\n" + snippet + '\nprintf "gpu=%s|\\n" "$GPU_NAME"\n')
+
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
+    result = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "gpu=unknown|\n", result.stdout
 
 
 def test_cpu_template_has_no_gpu_sampling():

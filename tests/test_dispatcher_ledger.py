@@ -164,6 +164,81 @@ def test_array_submission_uses_one_sbatch_and_records_tasks(dispatcher, tmp_path
     assert "#SBATCH --array=0-2%2" in payload.read_text()
 
 
+def test_the_rendered_array_script_is_valid_bash(dispatcher, tmp_path):
+    """A released array script escaped its manifest lookup with backslashes that
+    bash's printf does not interpret, so every task died on line 14 with a
+    syntax error while sbatch reported success and the ledger recorded a healthy
+    campaign. No test that only matched strings could see it. Parse the script."""
+    manifest = tmp_path / "variants.txt"
+    manifest.write_text("trial-a\ntrial-b\n")
+    payload = tmp_path / "payload.log"
+
+    dispatcher("array", str(manifest), "--campaign", "sweep-1",
+               STUB_PAYLOAD_LOG=payload)
+    script = payload.read_text()
+
+    check = subprocess.run(["bash", "-n"], input=script, capture_output=True, text=True)
+    assert check.returncode == 0, f"rendered array script does not parse:\n{check.stderr}"
+    assert "export EXP=\"$(sed -n " in script, script
+
+
+def test_a_plain_job_script_is_valid_bash(dispatcher, tmp_path):
+    payload = tmp_path / "payload.log"
+    dispatcher("run", "smoke", "--campaign", "c1", STUB_PAYLOAD_LOG=payload)
+    check = subprocess.run(["bash", "-n"], input=payload.read_text(),
+                           capture_output=True, text=True)
+    assert check.returncode == 0, check.stderr
+
+
+def _break_job_template(dispatcher):
+    """Corrupt the one part of the script that reaches the cluster verbatim.
+
+    JOB_COMMAND cannot be used for this: render() emits it with printf %q, so
+    even an unbalanced quote there produces valid bash. job_template.sh is
+    cat'ed in unchanged, which is what makes it the honest test subject -- and
+    it is a file users do hand-edit."""
+    template = dispatcher.project / "unityHPC" / "job_template.sh"
+    template.write_text(template.read_text() + '\nif [ -z "$EXP" ]\n')
+
+
+def test_a_script_that_does_not_parse_is_never_submitted(dispatcher, tmp_path):
+    """The syntax check is the guard that turns a silent 100% failure into an
+    immediate, actionable error."""
+    manifest = tmp_path / "variants.txt"
+    manifest.write_text("trial-a\n")
+    _break_job_template(dispatcher)
+
+    result = dispatcher("array", str(manifest), "--campaign", "sweep-1")
+    assert result.returncode == 2, result.stdout
+    assert "not valid bash" in result.stderr
+    assert "Nothing was submitted" in result.stderr
+    # The check runs before the first SSH call, so nothing reached the cluster
+    # at all -- not even the mkdir that would normally create the stub log.
+    assert not dispatcher.log.exists(), dispatcher.log.read_text()
+    assert campaign.jobs(dispatcher.project, "sweep-1") == []
+
+
+def test_a_plain_job_that_does_not_parse_is_never_submitted(dispatcher):
+    _break_job_template(dispatcher)
+    result = dispatcher("run", "smoke", "--campaign", "c1")
+    assert result.returncode == 2, result.stdout
+    assert "not valid bash" in result.stderr
+    assert campaign.jobs(dispatcher.project, "c1") == []
+
+
+def test_the_syntax_check_can_be_bypassed(dispatcher, tmp_path):
+    """The local bash and the cluster's bash can differ, so the check must not
+    be the only opinion that counts."""
+    manifest = tmp_path / "variants.txt"
+    manifest.write_text("trial-a\n")
+    _break_job_template(dispatcher)
+
+    result = dispatcher("array", str(manifest), "--campaign", "sweep-2",
+                        UNITY_SKIP_SYNTAX_CHECK="1")
+    assert result.returncode == 0, result.stderr
+    assert len(campaign.jobs(dispatcher.project, "sweep-2")) == 1
+
+
 def test_array_status_and_fetch_use_array_log_names(dispatcher, tmp_path):
     manifest = tmp_path / "variants.txt"
     manifest.write_text("trial-a\ntrial-b\n")

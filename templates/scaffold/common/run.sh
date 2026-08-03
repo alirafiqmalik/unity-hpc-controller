@@ -9,7 +9,7 @@
 #   run.sh sync                            rsync the project to $REMOTE_DIR
 #   run.sh status [--campaign N]           live sacct check; updates the ledger
 #   run.sh jobs [--campaign N]             print the ledger (local, no SSH)
-#   run.sh logs [--campaign N] [-n LINES]  tail the newest job's output
+#   run.sh logs [--campaign N] [-n LINES]  tail the newest job's stdout and stderr
 #   run.sh fetch [--campaign N]            rsync this campaign's output locally
 #
 # Any of JOB_COMMAND, WALLTIME, SLURM_{PARTITION,CPUS,MEM,NODES,GPUS,GPU_TYPE,
@@ -314,6 +314,29 @@ _take_campaign() {
     done
 }
 
+# A rendered script that does not parse is a guaranteed failure that the
+# scheduler accepts without complaint: sbatch replies with a job id, the ledger
+# records a healthy submission, and every task dies on its first line. One
+# release shipped an array script in exactly that state, and the only visible
+# symptom was a 100% failure rate that no plugin tool could explain. Parse the
+# script here, before it reaches the cluster.
+#
+# The local bash and the cluster's bash can differ. Set UNITY_SKIP_SYNTAX_CHECK=1
+# to submit a script that this check rejects.
+_check_syntax() {
+    local label="$1" script="$2" errors
+    if [ -n "${UNITY_SKIP_SYNTAX_CHECK:-}" ]; then
+        return 0
+    fi
+    if errors="$(printf '%s\n' "$script" | bash -n 2>&1)"; then
+        return 0
+    fi
+    echo "run.sh: the rendered ${label} is not valid bash. Nothing was submitted." >&2
+    printf '%s\n' "$errors" | sed 's/^/run.sh:   /' >&2
+    echo "run.sh:   Set UNITY_SKIP_SYNTAX_CHECK=1 to submit it anyway." >&2
+    exit 2
+}
+
 render() {
     local exp="$1"
     _require_safe_name "experiment name" "$exp"
@@ -384,6 +407,7 @@ cmd_run() {
     local campaign script
     campaign="$(_campaign)"
     script="$(render "$exp")"
+    _check_syntax "job script" "$script"
 
     if [ "$dry_run" -eq 1 ]; then
         echo "[dry-run] campaign=${campaign} exp=${exp} partition=${SLURM_PARTITION}"
@@ -455,7 +479,12 @@ render_array() {
         echo "#SBATCH --mail-user=${USER_EMAIL}"
     fi
     echo ""
-    printf 'export EXP=\"\$(sed -n \"\$((SLURM_ARRAY_TASK_ID + 1))p\" %q)\"\n' \
+    # No backslashes in this format string. bash's printf leaves `\$` as a
+    # literal backslash-dollar and drops the backslash from `\"`, so an escaped
+    # version of this line reaches the cluster as unparseable bash. The nested
+    # double quotes are already valid inside `$( )`, and the single-quoted
+    # format string is what stops the local shell expanding $(...) here.
+    printf 'export EXP="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" %q)"\n' \
         "${REMOTE_DIR}/_slurm/${manifest_name}"
     printf 'export REMOTE_DIR=%q\n' "$REMOTE_DIR"
     printf 'export JOB_COMMAND=%q\n' "$JOB_COMMAND"
@@ -509,6 +538,7 @@ cmd_array() {
     local script remote_manifest out parent
     remote_manifest="${campaign}.manifest"
     script="$(render_array "$campaign" "$remote_manifest" "$limit")"
+    _check_syntax "array script" "$script"
     _ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
     _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${remote_manifest}" <"$normalized"
     printf '%s\n' "$script" | _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${campaign}.array.sbatch"
@@ -590,10 +620,15 @@ cmd_logs() {
     fi
     job_id="$(printf '%s' "$newest" | cut -f1)"
     exp="$(printf '%s' "$newest" | cut -f2)"
-    echo "--- ${exp}-${job_id}.out (last ${lines} lines) ---"
     local log_name="${exp}-${job_id}"
     if [[ "$job_id" == *_* ]]; then log_name="${campaign}-${job_id}"; fi
-    _ssh "$UNITY_HOST" "tail -n ${lines} ${REMOTE_DIR}/_slurm/${log_name}.out 2>&1 || true"
+    # Both streams, always. Most jobs fail through stderr, and a tool that reads
+    # only .out can report that a job failed but never why.
+    local stream
+    for stream in out err; do
+        echo "--- ${log_name}.${stream} (last ${lines} lines) ---"
+        _ssh "$UNITY_HOST" "tail -n ${lines} ${REMOTE_DIR}/_slurm/${log_name}.${stream} 2>&1 || true"
+    done
 }
 
 cmd_fetch() {

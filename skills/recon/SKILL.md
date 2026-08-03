@@ -44,7 +44,11 @@ PY
 ```
 
 If it prints `fresh`, and the user did not ask to force a probe, stop. Then print
-that the configuration is current. In every other case, continue.
+that the configuration is current.
+
+A plain request such as "run recon" is not a request to force a probe. Respect
+the TTL, print that the configuration is current, and stop. Continue only when
+the guard prints `probe`, or when the user asks for a new probe.
 
 ## Steps
 
@@ -62,16 +66,33 @@ All probes run in one remote shell, with the wrapper PATH and the pager fix. The
 `unity-slurm-*` wrappers live in `/modules/user-resources/bin`, which is not on
 the non-interactive PATH. They also block on a pager until you set `PAGER=NONE`.
 
+The account comes from the project `.env`. It is not set in a remote shell, and
+the storage probe needs the real value. Read it first:
+
 ```bash
-ssh unity 'export PATH=/modules/user-resources/bin:$PATH; export PAGER=NONE
-  echo "### slurm_version"; sinfo --version
-  echo "### partitions_raw";   sinfo -h -o "%R|%a|%D|%C|%G|%l"
-  echo "### gpu_usage";        timeout 60 unity-slurm-gpu-usage
-  echo "### assoc";            sacctmgr -n show assoc user=$(whoami) format=Account,QOS,MaxSubmitJobs,MaxJobs,GrpTRES,MaxWallDurationPerJob -P
-  echo "### qos";               sacctmgr -n show qos format=Name,Priority,MaxWall -P
-  echo "### fairshare";        sshare -U -n -P -o FairShare,EffectvUsage
-  echo "### storage";          df -P "/work/${SLURM_ACCOUNT:-$(whoami)}" 2>/dev/null | tail -1'
+[ -f unityHPC/.env ] && set -a && . unityHPC/.env && set +a
+echo "account: ${SLURM_ACCOUNT:-<unset>}"
 ```
+
+```bash
+ssh unity "export PATH=/modules/user-resources/bin:\$PATH; export PAGER=NONE
+  export SLURM_ACCOUNT='${SLURM_ACCOUNT:-}'
+  echo '### slurm_version'; sinfo --version
+  echo '### partitions_raw';   sinfo -h -o '%R|%a|%D|%C|%G|%l'
+  echo '### gpu_usage';        timeout 60 unity-slurm-gpu-usage
+  echo '### assoc';            sacctmgr -n show assoc user=\$(whoami) format=Account,QOS,MaxSubmitJobs,MaxJobs,GrpTRES,MaxWallDurationPerJob -P
+  echo '### qos';              sacctmgr -n show qos format=Name,Priority,MaxWall -P
+  echo '### fairshare';        sshare -U -n -P -o FairShare,EffectvUsage
+  echo '### storage';          if [ -n \"\$SLURM_ACCOUNT\" ]; then df -P \"/work/\$SLURM_ACCOUNT\"; else echo 'no account; storage not probed'; fi"
+```
+
+The storage probe prints its own errors. Do not send them to `/dev/null`: a
+probe that reads nothing must look different from a probe that read an empty
+volume. When the probe fails, or the account is unset, emit no `storage` key at
+all. The merge then keeps what another project measured.
+
+Late output from `unity-slurm-gpu-usage` can arrive under a later heading. Read
+the storage line as `df` output, or discard it.
 
 **3. Build a cluster-neutral observation**
 

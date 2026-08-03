@@ -61,8 +61,12 @@ _GPU_ENTRY = re.compile(
 _VRAM = re.compile(r"(\d+)\s*GB", re.I)
 _CC = re.compile(r"cc\s*([0-9.]+)", re.I)
 _PSEUDO_TYPES = frozenset({"any", "unknown"})
-_GPU_ALIASES = {"rtx_8000": "rtx8000", "rtx-8000": "rtx8000",
-                "titan_x": "titanx", "titan-x": "titanx"}
+# Kept in step with lib/cluster_config.canonical_gpu_type by
+# tests/test_collector_parse.py. This copy exists because the collector runs on
+# the cluster with no access to the plugin's lib/.
+_GPU_SEPARATOR = re.compile(r"[ _-]+")
+_GPU_SUFFIXES = frozenset({"ti", "x"})
+_GPU_ALIASES: dict[str, str] = {}
 _TRES_GPU = re.compile(r"gres/gpu:([a-z0-9_]+)=(\d+)", re.I)
 _TRES_GPU_PLAIN = re.compile(r"gres/gpu=(\d+)", re.I)
 _TRES_CPU = re.compile(r"(?:^|,)cpu=(\d+)")
@@ -71,10 +75,17 @@ _MEM_MB = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024, "": 1.0}
 
 
 def canonical_gpu_type(value: str) -> str:
-    """Canonical Slurm GPU resource spelling, kept self-contained for Unity."""
-    raw = str(value).strip().lower()
-    lookup = raw.replace(" ", "_").replace("-", "_")
-    return _GPU_ALIASES.get(raw, _GPU_ALIASES.get(lookup, raw))
+    """Canonical Slurm GPU resource spelling, kept self-contained for Unity.
+
+    Folds a separator only before digits or a short model suffix, so `1080_ti`
+    and `rtx_8000` reach their gres spelling while `h200_nvl`, which is a real
+    gres name, keeps its own. Partition names never reach this function."""
+    parts = _GPU_SEPARATOR.split(str(value).strip().lower())
+    folded = parts[0]
+    for part in parts[1:]:
+        joiner = "" if (part.isdigit() or part in _GPU_SUFFIXES) else "_"
+        folded += joiner + part
+    return _GPU_ALIASES.get(folded, folded)
 
 
 def _cpu_fields(c: str) -> tuple[int, int]:

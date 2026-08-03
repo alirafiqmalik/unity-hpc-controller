@@ -210,13 +210,15 @@ def test_seed_config_reads_heading_style_gpu_capacity(tmp_data_dir):
 
     seeded = migrate.seed_config(profile)
     fleet = seeded["gpu_fleet"]
-    assert set(fleet) == {"gtx_aa", "gtx_bb", "3080_ti", "gtx_dd", "4090_ti", "gtx_ee"}
+    # `_ti` folds to the gres spelling; `_aa` is a word and stays part of the
+    # name, the same rule that keeps the real h200_nvl intact.
+    assert set(fleet) == {"gtx_aa", "gtx_bb", "3080ti", "gtx_dd", "4090ti", "gtx_ee"}
     assert fleet["gtx_aa"]["total_accessible"] == 157
     assert fleet["gtx_dd"]["total_accessible"] == 64, "wrapped payload line must be read"
     assert fleet["gtx_ee"]["total_accessible"] == 2
-    # digit-leading names must stay whole, not collapse to a shared "_ti" key
-    assert fleet["3080_ti"]["total_accessible"] == 88
-    assert fleet["4090_ti"]["total_accessible"] == 303
+    # digit-leading names must stay whole, not collapse to a shared "ti" key
+    assert fleet["3080ti"]["total_accessible"] == 88
+    assert fleet["4090ti"]["total_accessible"] == 303
 
 
 def test_seed_config_still_reads_single_line_gpu_capacity(tmp_data_dir):
