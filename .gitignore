@@ -1,0 +1,8 @@
+# Python caches. These were tracked once, which made
+# test_release_tree_has_no_tracked_cache_files fail on every test run.
+__pycache__/
+*.py[cod]
+
+# pytest / coverage scratch
+.pytest_cache/
+.coverage
