@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -21,3 +23,8 @@ jobs:
         run: pip install pytest
       - name: Run tests
         run: python -m pytest tests/ -q
+      - name: Release check (version bump guard)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          scripts/release-check --base origin/${{ github.base_ref }}

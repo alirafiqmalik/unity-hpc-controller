@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Fail when the plugin's code changed but its version string did not.
+
+Usage:
+  scripts/release-check [--base REF]      # default base: origin/main
+
+`claude plugin update` compares version strings and nothing else. A plugin that
+ships new code under the version already in a user's cache reports "already at
+the latest version" and installs nothing, so the user runs old code while being
+told they are current.
+
+This check makes that unshippable. Run it in CI, or before cutting a release.
+
+Ported from the phd-agentic-tools marketplace when the plugin moved into its
+own repository: the plugin root is now the repo root.
+
+Exit codes: 0 nothing to report, 1 a version bump is needed, 2 usage error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+MANIFEST = ".claude-plugin/plugin.json"
+
+#: paths whose change cannot affect what a user runs
+_IGNORED = ("tests/", ".github/", "scripts/release-check")
+
+
+def _git(*args: str) -> str:
+    result = subprocess.run(["git", "-C", str(ROOT), *args],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or " ".join(args))
+    return result.stdout
+
+
+def _version_at(ref: str) -> str | None:
+    try:
+        raw = _git("show", f"{ref}:{MANIFEST}")
+    except RuntimeError:
+        return None  # manifest absent at `ref`: new plugin, not stale
+    try:
+        return json.loads(raw).get("version")
+    except ValueError:
+        return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="release-check")
+    parser.add_argument("--base", default="origin/main",
+                        help="ref to compare against (default: origin/main)")
+    args = parser.parse_args()
+
+    try:
+        base = _git("merge-base", args.base, "HEAD").strip()
+        changed = _git("diff", "--name-only", base, "HEAD").splitlines()
+    except RuntimeError as exc:
+        print(f"release-check: {exc}", file=sys.stderr)
+        print(f"release-check: is {args.base} fetched? try git fetch origin",
+              file=sys.stderr)
+        return 2
+
+    touched = [p for p in changed
+               if not any(p.startswith(i) for i in _IGNORED)]
+    if not touched:
+        print("release-check: no shipped file changed.")
+        return 0
+
+    current = json.loads((ROOT / MANIFEST).read_text())["version"]
+    previous = _version_at(base)
+    if previous is not None and current == previous:
+        print("release-check: version bump needed before release:", file=sys.stderr)
+        print(f"  {len(touched)} shipped file(s) changed, still {current}",
+              file=sys.stderr)
+        print("\nWithout a bump, `claude plugin update` reports the plugin is "
+              "already current and installs nothing.", file=sys.stderr)
+        return 1
+
+    print("release-check: changed plugin carries a new version.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
