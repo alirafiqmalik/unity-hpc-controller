@@ -6,3 +6,6 @@ __pycache__/
 # pytest / coverage scratch
 .pytest_cache/
 .coverage
+
+# Local agent guidance. Machine-local, not shipped with the plugin.
+/AGENTS.md
