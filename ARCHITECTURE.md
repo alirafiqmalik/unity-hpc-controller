@@ -1,6 +1,6 @@
 # unity-hpc — architecture
 
-Version 0.11.0. This plugin is an abstraction layer between a project's
+Version 0.11.1. This plugin is an abstraction layer between a project's
 experiments and Unity's SLURM cluster. It does plumbing only: submit, record,
 observe, fetch. It stays generic, so nothing in the core knows what a project's
 metrics mean.

@@ -230,6 +230,7 @@ def test_everything_render_bakes_in_can_be_overridden():
     exported = set(re.findall(r"printf 'export ([A-Z_]+)=%q", text))
     block = text.split("UNITY_OVERRIDABLE=", 1)[1].split('"', 2)[1]
     overridable = set(block.split())
-    # EXP is the subcommand argument, not an .env setting
-    missing = exported - overridable - {"EXP"}
+    # EXP is the subcommand argument, and UNITY_MANIFEST is the array's own
+    # per-job manifest path -- neither is an .env setting.
+    missing = exported - overridable - {"EXP", "UNITY_MANIFEST"}
     assert not missing, f"exported into the job but not overridable: {sorted(missing)}"

@@ -442,7 +442,7 @@ cmd_run() {
 }
 
 render_array() {
-    local campaign="$1" manifest_name="$2" limit="${3:-}"
+    local campaign="$1" limit="${2:-}"
     require SLURM_ACCOUNT
     require REMOTE_DIR
     require JOB_COMMAND
@@ -479,13 +479,41 @@ render_array() {
         echo "#SBATCH --mail-user=${USER_EMAIL}"
     fi
     echo ""
+    # Each task reads its own line out of the manifest AT RUNTIME, not at submit
+    # time, so the path it reads must belong to THIS array alone. Keyed by
+    # campaign name, a second `run.sh array` under the same campaign overwrote
+    # the file while this array's tasks were still queued, and they then ran the
+    # other array's units under this job id with no error anywhere. The parent
+    # job id only exists once sbatch has replied, so the path is spelled with
+    # the runtime variable and cmd_array uploads the file immediately after
+    # submitting; the wait below covers the seconds in between.
+    cat <<'ARRAY_MANIFEST_GUARD'
+if [ -z "${SLURM_ARRAY_JOB_ID:-}" ]; then
+    echo "run.sh array task: SLURM_ARRAY_JOB_ID is unset -- this script only" >&2
+    echo "run.sh array task:   runs as a SLURM array job." >&2
+    exit 1
+fi
+ARRAY_MANIFEST_GUARD
+    printf 'export UNITY_MANIFEST=%q"${SLURM_ARRAY_JOB_ID}.manifest"\n' \
+        "${REMOTE_DIR}/_slurm/${campaign}-"
+    cat <<'ARRAY_MANIFEST_WAIT'
+_unity_wait=0
+while [ ! -f "$UNITY_MANIFEST" ] && [ "$_unity_wait" -lt 60 ]; do
+    sleep 2
+    _unity_wait=$((_unity_wait + 1))
+done
+if [ ! -f "$UNITY_MANIFEST" ]; then
+    echo "run.sh array task: ${UNITY_MANIFEST} never appeared -- the submitting" >&2
+    echo "run.sh array task:   run.sh could not upload it. Nothing was run." >&2
+    exit 1
+fi
+ARRAY_MANIFEST_WAIT
     # No backslashes in this format string. bash's printf leaves `\$` as a
     # literal backslash-dollar and drops the backslash from `\"`, so an escaped
     # version of this line reaches the cluster as unparseable bash. The nested
     # double quotes are already valid inside `$( )`, and the single-quoted
     # format string is what stops the local shell expanding $(...) here.
-    printf 'export EXP="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" %q)"\n' \
-        "${REMOTE_DIR}/_slurm/${manifest_name}"
+    printf 'export EXP="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$UNITY_MANIFEST")"\n'
     printf 'export REMOTE_DIR=%q\n' "$REMOTE_DIR"
     printf 'export JOB_COMMAND=%q\n' "$JOB_COMMAND"
     printf 'export VENV_PATH=%q\n' "${VENV_PATH:-}"
@@ -535,19 +563,26 @@ cmd_array() {
         exit 2
     fi
 
-    local script remote_manifest out parent
-    remote_manifest="${campaign}.manifest"
-    script="$(render_array "$campaign" "$remote_manifest" "$limit")"
+    local script out parent
+    script="$(render_array "$campaign" "$limit")"
     _check_syntax "array script" "$script"
     _ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
-    _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${remote_manifest}" <"$normalized"
     printf '%s\n' "$script" | _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${campaign}.array.sbatch"
     out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${sbatch_args[*]-} _slurm/${campaign}.array.sbatch")"
     printf '%s\n' "$out"
     parent="$(printf '%s\n' "$out" | sed -n 's/^Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -1)"
     if [ -z "$parent" ]; then
         echo "run.sh: WARNING could not read the array job id from sbatch's reply" >&2
+        echo "run.sh:   the manifest is keyed by that id, so it was NOT uploaded and" >&2
+        echo "run.sh:   every task will exit with a missing-manifest error. Check squeue." >&2
         return 0
+    fi
+    # The tasks are queued and reading for this file already; upload it now,
+    # under a name no other array can write to.
+    if ! _ssh "$UNITY_HOST" \
+            "cat > ${REMOTE_DIR}/_slurm/${campaign}-${parent}.manifest" <"$normalized"; then
+        echo "run.sh: WARNING array ${parent}'s manifest could not be uploaded --" >&2
+        echo "run.sh:   its tasks will exit with a missing-manifest error." >&2
     fi
     if _ledger array "$campaign" "$parent" "$SLURM_PARTITION" "$normalized"; then
         echo "Recorded ${ARRAY_COUNT} array tasks under campaign ${campaign}"

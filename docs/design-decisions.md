@@ -7,7 +7,7 @@ settled question, or repeat a fault the current design exists to prevent.
 It replaces three executed implementation plans, two dated design specs and a v0.3
 build plan. Git history holds those originals.
 
-Current at plugin version 0.11.0.
+Current at plugin version 0.11.1.
 
 ---
 
@@ -69,6 +69,7 @@ scheduling, cross-cluster portability, and a GUI.
 | D5 | **Query tools plus a skill that decides.** The scheduling policy lives in the skill, not in the tool | It keeps the data layer deterministic and testable, and it keeps the policy inspectable and adjustable per project | A turnkey advisor MCP tool, which bakes policy into code and is harder to check |
 | D6 | **Partition raw telemetry by `date/kind`, not by `date/resource_id`** | 544 nodes with one file per resource is about 544 files per day. `resource_id` is a field, and a rollup scans by day | The literal `date/resource_id` layout. It matches the original sketch, and it is operationally unwieldy |
 | D7 | **A one-time break of hand-written scaffolds was accepted** | Two projects worked only because they hand-wrote the scaffold the plugin never shipped. To support those bespoke layouts forever would freeze the coupling this redesign removes. The owner of all three projects accepted the disruption | Treating a hand-written scaffold as a supported configuration, which freezes the contract. An opt-in converter, which is more to build for a two-project blast radius |
+| D8 | **The array manifest is keyed by the parent job id — `_slurm/<campaign>-<jobid>.manifest`, uploaded once `sbatch` has replied** | An array task reads its own line at runtime, not at submit time. Keyed by campaign name, a second `run.sh array` under the same campaign overwrote the file the first array's queued tasks had not read yet, and those tasks then ran the second array's units under the first job id, with no error anywhere. A job id no other array can hold removes the shared name itself | Refusing the second submission while one is live: it detects the collision instead of removing it, and one forgotten rule brings it back. Snapshotting the manifest into the sbatch script: race-free, but it embeds thousands of lines in every script |
 
 ### 3.2 Per-project scheduling reader
 

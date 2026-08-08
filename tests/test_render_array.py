@@ -34,7 +34,7 @@ exit 0
 @pytest.fixture
 def captured_array_script(tmp_project, materialise, tmp_path):
     """Run `run.sh array` against the fake ssh; return the captured sbatch script."""
-    unity_dir = materialise(tmp_project, "cpu")
+    unity_dir = materialise(tmp_project, "cpu", REMOTE_DIR=str(tmp_path / "remote"))
 
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -72,23 +72,27 @@ def test_array_script_is_valid_bash(captured_array_script, tmp_path):
 
 
 def test_array_task_reads_its_own_manifest_line(captured_array_script, tmp_path):
-    exp_line = next(
-        line for line in captured_array_script.splitlines()
-        if line.startswith("export EXP=")
-    )
-    # Reproduce what task N does at runtime, against a local manifest copy.
-    manifest = tmp_path / "m.manifest"
+    """Replay the script's preamble, the part that resolves $EXP, as a task would.
+
+    The manifest path is keyed by the parent job id, so this puts the file
+    where task N of job 4242 will look for it -- see
+    test_array_manifest_collision.py for why that key is not the campaign name.
+    """
+    lines = captured_array_script.splitlines()
+    end = next(i for i, line in enumerate(lines) if line.startswith("export EXP="))
+    preamble = "\n".join(lines[: end + 1])
+
+    manifest = tmp_path / "remote" / "_slurm" / "camp-4242.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text("alpha\nbeta\ngamma\n")
-    remote_path = next(
-        tok for tok in exp_line.replace(")", " ").split()
-        if tok.endswith(".manifest")
-    )
-    line = exp_line.replace(remote_path, str(manifest))
+
     for task_id, expected in [(0, "alpha"), (1, "beta"), (2, "gamma")]:
         out = subprocess.run(
-            ["bash", "-c", f'{line}; printf %s "$EXP"'],
-            capture_output=True, text=True,
-            env={**os.environ, "SLURM_ARRAY_TASK_ID": str(task_id)},
+            ["bash", "-c", f'{preamble}\nprintf %s "$EXP"'],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ,
+                 "SLURM_ARRAY_TASK_ID": str(task_id),
+                 "SLURM_ARRAY_JOB_ID": "4242"},
         )
         assert out.returncode == 0, out.stderr
         assert out.stdout == expected

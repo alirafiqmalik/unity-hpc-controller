@@ -80,6 +80,13 @@ If the command reads a name that nobody exported, the job stops with
 If submission fails, stop and report the scheduler error. The ledger records
 each array task as `<job-id>_<task-id>` after SLURM accepts the parent job.
 
+Each array gets its own manifest on the cluster, at
+`_slurm/<campaign>-<parent-job-id>.manifest`. Two arrays can therefore share one
+campaign name safely: neither can overwrite the file the other's queued tasks
+still have to read. The dispatcher uploads that file immediately after `sbatch`
+replies, and a task that does not find it stops with an error instead of running
+somebody else's unit.
+
 The dispatcher parses the rendered array script before it submits it. If the
 script does not parse, the dispatcher submits nothing and records nothing.
 Report that error. Do not retry it: each task fails on its first line.
