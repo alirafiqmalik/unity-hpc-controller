@@ -19,7 +19,7 @@ edits then take effect on `/reload-plugins`, and there is no cache copy to keep 
 step:
 
 ```bash
-claude --plugin-dir /home/ahm/Desktop/project/Research/tools/hpc-experiment-workflow/plugins/unity-hpc
+claude --plugin-dir .
 ```
 
 A `--plugin-dir` copy takes precedence over the installed copy for that session,
