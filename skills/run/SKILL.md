@@ -72,8 +72,45 @@ SLURM_GPUS= SLURM_PARTITION=cpu bash unityHPC/run.sh run smoke
 
 Settable this way: `JOB_COMMAND`, `WALLTIME`, `SLURM_PARTITION`, `SLURM_CPUS`,
 `SLURM_MEM`, `SLURM_NODES`, `SLURM_GPUS`, `SLURM_GPU_TYPE`, `SLURM_CONSTRAINT`,
-`SLURM_ACCOUNT`, `REMOTE_DIR`, `UNITY_HOST`, `CAMPAIGN`, `MODULES`,
-`VENV_PATH`, `HF_HOME`, `USER_EMAIL`.
+`SLURM_ACCOUNT`, `SLURM_PARTITION_FALLBACK`, `SLURM_PARTITION_WALLTIME_CAP`,
+`REMOTE_DIR`, `UNITY_HOST`, `CAMPAIGN`, `MODULES`, `VENV_PATH`, `HF_HOME`,
+`USER_EMAIL`.
+
+### Try more than one partition
+
+A full partition, or one closed to the account, makes `sbatch` refuse the job.
+Give the dispatcher an ordered list and it retries down it. The first entry is
+the primary:
+
+```bash
+SLURM_PARTITION_FALLBACK="cpu cpu-preempt ood-shared" bash unityHPC/run.sh run smoke
+```
+
+Partitions have different walltime ceilings, so a retry that sends the same
+walltime to a shorter-ceiling queue fails again for an unrelated reason. Give
+the ceilings and each attempt is clamped to fit:
+
+```bash
+SLURM_PARTITION_FALLBACK="cpu ood-shared" \
+SLURM_PARTITION_WALLTIME_CAP="ood-shared=08:00:00" \
+  bash unityHPC/run.sh run smoke
+```
+
+Four rules govern this:
+
+- Unset `SLURM_PARTITION_FALLBACK` keeps the single-attempt behaviour exactly.
+- Naming `SLURM_PARTITION` yourself disables the ladder. You named a partition,
+  so only that one is tried. Note this applies to `SLURM_PARTITION=` (blank)
+  too.
+- `run.sh jobs` and `run.sh status` report the partition the job **landed on**,
+  which is not always the one first requested.
+- Only a refused `sbatch` moves to the next partition. If `sbatch` accepts the
+  job but its reply carries no job id, the dispatcher stops and warns: that job
+  is queued and unrecorded, so check `squeue` before resubmitting or it runs
+  twice.
+
+`--dry-run` reports `SLURM_PARTITION` and does not walk the ladder, so it does
+not show which partition a real submission would reach.
 
 ### Pass values into the job command
 

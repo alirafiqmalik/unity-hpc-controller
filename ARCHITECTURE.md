@@ -135,6 +135,8 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
               ├─▶ load .env  ──┐
               │                ├─▶ merge: caller override wins  (${!v+x}: SET, not non-empty)
               ├─▶ env overrides┘        UNITY_OVERRIDABLE = JOB_COMMAND WALLTIME SLURM_*
+              │                                              SLURM_PARTITION_FALLBACK
+              │                                              SLURM_PARTITION_WALLTIME_CAP
               │                                              REMOTE_DIR UNITY_HOST CAMPAIGN
               │                                              MODULES VENV_PATH HF_HOME USER_EMAIL
               ├─▶ _require_safe_name(exp, campaign)   ── exp → remote shell │ campaign → file path
@@ -144,15 +146,34 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
               │        └─ printf %q  for EXP / JOB_COMMAND   (quotes survive)
               │        └─ --gres only if SLURM_GPUS set and != "0"
               │
-              ├─▶ ssh unity 'cd $REMOTE_DIR && sbatch' <<< script
-              │        └─ "Submitted batch job 12345"
+              ├─▶ _submit_ladder()  ── one rung per partition, in order
+              │        │
+              │        ├─ rung = SLURM_PARTITION            (ladder inactive: today's single try)
+              │        ├─ rung = SLURM_PARTITION_FALLBACK   (ladder active, first entry primary)
+              │        │
+              │        ├─▶ ssh unity 'cd $REMOTE_DIR && sbatch --partition=P --time=W'
+              │        │        └─ W = WALLTIME clamped by SLURM_PARTITION_WALLTIME_CAP[P]
+              │        │           (command line beats the #SBATCH header render() baked in)
+              │        │
+              │        ├─ job id parsed  ─────────▶ SUBMIT_JOB_ID / SUBMIT_PARTITION, stop
+              │        ├─ sbatch refused (rc != 0) ─▶ next rung
+              │        └─ rc == 0, no job id       ─▶ STOP. Accepted but unnameable: the job
+              │                                       is queued, so a retry would run it twice
               │
-              └─▶ campaign.record(project, C, 12345, exp, partition)   ◀── THE CONTRACT
-                       │
+              └─▶ campaign.record(project, C, 12345, exp, SUBMIT_PARTITION)  ◀── THE CONTRACT
+                       │                                   └─ the partition it LANDED on,
+                       │                                      not the one first requested
                        └─ .unity_state/C.db   (PENDING, submitted_utc)
 
  --dry-run  ─▶ renders + prints, touches nothing, records nothing
+               (reports SLURM_PARTITION only — it does not walk the ladder)
 ```
+
+The ladder is opt-in and off by default: with `SLURM_PARTITION_FALLBACK` unset,
+`_submit_ladder` makes exactly one attempt and adds no `--partition`/`--time`
+of its own, which is byte-for-byte the submit that preceded the ladder. An explicit caller
+`SLURM_PARTITION` also disables it — the caller named a partition, so the
+ladder does not second-guess it. See `docs/design-decisions.md` §3.1 D9.
 
 Every variable that `render()` bakes into the job must appear in
 `UNITY_OVERRIDABLE`. A variable that `render()` exports without that listing
@@ -236,6 +257,21 @@ A project can run a months-old dispatcher against a current MCP server. The loca
 output then looks correct while the cluster does something else. `unity_doctor`
 exists to make that visible. It compares content rather than version numbers,
 which keeps it from crying wolf on a server-only release.
+
+**The stamp must stay inside the first 40 lines of `run.sh`.**
+`_scaffold_version()` (`mcp/hpc_server.py`) reads `splitlines()[:40]` and gives
+up after that, returning `None` — which the caller cannot distinguish from a
+pre-0.8.2 dispatcher that was never stamped. Drift detection then fails silently
+and permanently. The stamp currently sits at line 39, so the header comment above
+it has **one line of headroom**; adding two lines of prose there disables
+`unity_doctor` for every project scaffolded afterwards. `tests/test_doctor.py::`
+`test_a_freshly_generated_scaffold_is_not_stale` is the guard, and it is the only
+thing standing between a header edit and a silent regression.
+
+`run.sh` also ends with a `[ "${BASH_SOURCE[0]}" = "${0}" ]` guard around its
+`case` dispatch, so the file can be `source`d to unit-test its helpers without
+running a subcommand. It is the one test affordance inside the frozen copy;
+`tests/test_partition_fallback.py` depends on it.
 
 ## 9. Concurrency invariants (I1–I9)
 

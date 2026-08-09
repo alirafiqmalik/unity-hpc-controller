@@ -63,8 +63,9 @@ run.sh run <exp>  ──sbatch──►  SLURM
 
 You can override any of these for one invocation, with no edit to `.env`:
 `JOB_COMMAND`, `WALLTIME`,
-`SLURM_{PARTITION,CPUS,MEM,NODES,GPUS,GPU_TYPE,ACCOUNT}`, `REMOTE_DIR`,
-`UNITY_HOST`, `CAMPAIGN`, `MODULES`, `VENV_PATH`, `HF_HOME` and `USER_EMAIL`. The
+`SLURM_{PARTITION,CPUS,MEM,NODES,GPUS,GPU_TYPE,ACCOUNT,CONSTRAINT}`,
+`SLURM_PARTITION_{FALLBACK,WALLTIME_CAP}`, `REMOTE_DIR`, `UNITY_HOST`,
+`CAMPAIGN`, `MODULES`, `VENV_PATH`, `HF_HOME` and `USER_EMAIL`. The
 caller's environment wins:
 
 ```bash
@@ -73,6 +74,19 @@ JOB_COMMAND="echo smoke-test" SLURM_MEM=1G SLURM_PARTITION=cpu bash unityHPC/run
 
 That is how you smoke-test a project whose real job is a four-hour GPU run. It is
 also how you resize one retry without disturbing every other run.
+
+On a shared cluster a rejected partition is routine. Give `run.sh` an ordered
+list and it retries down it, clamping the walltime to each partition's ceiling:
+
+```bash
+SLURM_PARTITION_FALLBACK="cpu cpu-preempt ood-shared" \
+SLURM_PARTITION_WALLTIME_CAP="ood-shared=08:00:00" \
+  bash unityHPC/run.sh run smoke
+```
+
+Unset, the behaviour is a single attempt, exactly as before. Naming
+`SLURM_PARTITION` yourself disables the ladder. `run.sh jobs` reports the
+partition the job actually landed on.
 
 A **campaign** is a label that groups submissions. Its default is today's UTC
 date.
