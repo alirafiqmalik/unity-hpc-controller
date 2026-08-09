@@ -13,11 +13,15 @@
 #   run.sh fetch [--campaign N]            rsync this campaign's output locally
 #
 # Any of JOB_COMMAND, WALLTIME, SLURM_{PARTITION,CPUS,MEM,NODES,GPUS,GPU_TYPE,
-# ACCOUNT}, REMOTE_DIR, UNITY_HOST and CAMPAIGN may be overridden for a single
-# invocation without touching .env:
+# ACCOUNT,PARTITION_FALLBACK,PARTITION_WALLTIME_CAP}, REMOTE_DIR, UNITY_HOST and
+# CAMPAIGN may be overridden for a single invocation without touching .env:
 #   JOB_COMMAND="echo smoke-test" SLURM_MEM=1G bash run.sh run smoke
 # PROJECT_NAME, MODEL, DATASET, SEED and CONFIG_HASH are optional provenance.
 # UNITY_SSH_TIMEOUT sets the maximum wait for one SSH call, in seconds.
+# SLURM_PARTITION_FALLBACK="cpu cpu-preempt ood-shared" retries a rejected
+# sbatch on later partitions (unset = today's single attempt; an explicit
+# caller SLURM_PARTITION disables this). SLURM_PARTITION_WALLTIME_CAP=
+# "ood-shared=08:00:00" clamps WALLTIME per partition before each retry.
 #
 # Every submitted job is recorded in ../.unity_state/<campaign>.db, which is what
 # /unity-hpc:status, unity_jobs and unity_my_jobs read. The ledger writer is
@@ -56,6 +60,7 @@ fi
 # .env's empty value instead, which looks exactly like a broken module system.
 UNITY_OVERRIDABLE="JOB_COMMAND WALLTIME SLURM_PARTITION SLURM_CPUS SLURM_MEM
                    SLURM_NODES SLURM_GPUS SLURM_GPU_TYPE SLURM_CONSTRAINT SLURM_ACCOUNT
+                   SLURM_PARTITION_FALLBACK SLURM_PARTITION_WALLTIME_CAP
                    REMOTE_DIR UNITY_HOST CAMPAIGN
                    MODULES VENV_PATH HF_HOME USER_EMAIL
                    UNITY_CID PROJECT_NAME MODEL DATASET SEED CONFIG_HASH"
@@ -92,6 +97,8 @@ unset _var _flag
 : "${SLURM_GPUS:=}"
 : "${SLURM_GPU_TYPE:=}"
 : "${SLURM_CONSTRAINT:=}"
+: "${SLURM_PARTITION_FALLBACK:=}"
+: "${SLURM_PARTITION_WALLTIME_CAP:=}"
 : "${CAMPAIGN:=}"
 : "${UNITY_CID:=/work/${SLURM_ACCOUNT:-unknown-account}/${USER:-unknown-user}/cluster-intel}"
 : "${PROJECT_NAME:=$(basename "$PROJECT_DIR")}"
@@ -177,6 +184,140 @@ _require_safe_constraint() {
             echo "run.sh: use only resource names plus '.', '_', '-', '&', '|', '(' and ')'" >&2
             exit 2 ;;
     esac
+}
+
+# sbatch/SLURM accept three walltime spellings: HH:MM:SS, D-HH:MM:SS and
+# MM:SS. Converting to seconds is what lets a cap and a request from different
+# spellings be compared.
+_walltime_seconds() {
+    local value="$1" days=0 rest="$1" h m s
+    if [[ "$value" == *-* ]]; then
+        days="${value%%-*}"
+        rest="${value#*-}"
+    fi
+    IFS=: read -r h m s <<<"$rest"
+    if [ -z "${s:-}" ]; then
+        s="$m"; m="$h"; h=0
+    fi
+    # 10# on every field, days included: bash reads a leading-zero number as
+    # octal, so a plain `08-00:00:00` would abort the script with "value too
+    # great for base" rather than clamp anything.
+    echo $(( 10#$days * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s ))
+}
+
+# The smaller of REQUESTED and CAP, spelled the way its own argument was
+# spelled -- sbatch accepts any of the three formats, so there is no need to
+# reformat, and reformatting would make a test's expected value harder to
+# read than the input it came from. An empty CAP means the partition has none.
+_capped_walltime() {
+    local requested="$1" cap="$2"
+    if [ -z "$cap" ]; then
+        printf '%s\n' "$requested"
+        return 0
+    fi
+    if [ "$(_walltime_seconds "$requested")" -gt "$(_walltime_seconds "$cap")" ]; then
+        printf '%s\n' "$cap"
+    else
+        printf '%s\n' "$requested"
+    fi
+}
+
+# SLURM_PARTITION_WALLTIME_CAP is "partition=HH:MM:SS,partition=HH:MM:SS,...".
+# Echoes the cap for PARTITION, or nothing if it has none.
+_walltime_cap_for() {
+    local partition="$1" entry name cap
+    local IFS=,
+    for entry in ${SLURM_PARTITION_WALLTIME_CAP:-}; do
+        name="${entry%%=*}"
+        cap="${entry#*=}"
+        if [ "$name" = "$partition" ]; then
+            printf '%s\n' "$cap"
+            return 0
+        fi
+    done
+}
+
+# An explicit caller SLURM_PARTITION means the caller named a partition on
+# purpose, so it is honored alone -- the ladder does not second-guess it.
+# Absent that, the ladder is only active when SLURM_PARTITION_FALLBACK is
+# set: unset, cmd_run/cmd_array must keep today's single-attempt behavior
+# exactly, with no synthetic --partition/--time added to the sbatch call.
+_ladder_is_active() {
+    [ -n "$SLURM_PARTITION_FALLBACK" ] && [ -z "${_unity_caller_set_SLURM_PARTITION:-}" ]
+}
+
+# The ordered list of partitions cmd_run/cmd_array should try, one per line.
+_partition_ladder() {
+    if _ladder_is_active; then
+        local p
+        for p in $SLURM_PARTITION_FALLBACK; do
+            printf '%s\n' "$p"
+        done
+    else
+        printf '%s\n' "$SLURM_PARTITION"
+    fi
+}
+
+# Result channel for _submit_ladder, read by the caller immediately after it
+# returns -- the same pattern REST[] uses above for _take_campaign.
+SUBMIT_JOB_ID=""
+SUBMIT_PARTITION=""
+
+# Submits REMOTE_SCRIPT (a path relative to REMOTE_DIR, already uploaded) via
+# sbatch, walking _partition_ladder until an attempt returns a job id or the
+# ladder is exhausted. Each attempt's sbatch reply is printed as it happens,
+# exactly as a single attempt always was. On success sets SUBMIT_JOB_ID and
+# SUBMIT_PARTITION (the partition that attempt actually used) and returns 0;
+# on failure leaves them empty, warns, and returns 1.
+#
+# Only a REFUSED submission (non-zero sbatch) advances the ladder. An accepted
+# submission whose reply carries no job id stops it: that job is already
+# queued, so a retry would run it twice. Every sbatch status is captured
+# rather than left to `set -e`, so this is safe to call bare -- it does not
+# depend on its callers wrapping it in `if !`.
+_submit_ladder() {
+    local remote_script="$1"; shift
+    local sbatch_args=(${@+"$@"})
+    SUBMIT_JOB_ID=""
+    SUBMIT_PARTITION=""
+    local p out job_id tried=()
+    while IFS= read -r p; do
+        tried+=("$p")
+        local attempt_args=(${sbatch_args[@]+"${sbatch_args[@]}"})
+        if _ladder_is_active; then
+            local wt
+            wt="$(_capped_walltime "$WALLTIME" "$(_walltime_cap_for "$p")")"
+            attempt_args=("--partition=${p}" "--time=${wt}" ${sbatch_args[@]+"${sbatch_args[@]}"})
+        fi
+        # `|| rc=$?`, not a bare assignment: sbatch exits non-zero on a
+        # rejection, and under `set -e` a bare assignment would abort the
+        # script there instead of letting the ladder do its job. Capturing the
+        # status is also what separates the two failures below.
+        local rc=0
+        out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${attempt_args[*]-} ${remote_script}")" || rc=$?
+        printf '%s\n' "$out"
+        job_id="$(printf '%s\n' "$out" | sed -n 's/^Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -1)"
+        if [ -n "$job_id" ]; then
+            SUBMIT_JOB_ID="$job_id"
+            SUBMIT_PARTITION="$p"
+            return 0
+        fi
+        # No job id, but sbatch ACCEPTED the submission: the job is queued and
+        # we simply cannot name it. Moving to the next partition would queue a
+        # second copy of the same job, and with no job id there is no ledger
+        # row to scancel either copy by. Only a refusal is safe to retry.
+        if [ "$rc" -eq 0 ]; then
+            echo "run.sh: WARNING sbatch accepted this job on partition ${p} but its" >&2
+            echo "run.sh:   reply carried no job id, so it was NOT recorded. The job is" >&2
+            echo "run.sh:   queued: check squeue before resubmitting, or it runs twice." >&2
+            return 1
+        fi
+    done < <(_partition_ladder)
+    echo "run.sh: WARNING could not read a job id from sbatch's reply --" >&2
+    if [ "${#tried[@]}" -gt 1 ]; then
+        echo "run.sh:   tried partition(s): ${tried[*]}" >&2
+    fi
+    return 1
 }
 
 # ─── job ledger ──────────────────────────────────────────────────────────────
@@ -419,21 +560,16 @@ cmd_run() {
     _ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
     printf '%s\n' "$script" | _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${exp}.sbatch"
 
-    local out
-    out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${sbatch_args[*]-} _slurm/${exp}.sbatch")"
-    printf '%s\n' "$out"
-
-    local job_id
-    job_id="$(printf '%s\n' "$out" | sed -n 's/^Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -1)"
-    if [ -z "$job_id" ]; then
-        echo "run.sh: WARNING could not read a job id from sbatch's reply --" >&2
+    if ! _submit_ladder "_slurm/${exp}.sbatch" ${sbatch_args[@]+"${sbatch_args[@]}"}; then
         echo "run.sh:   the job is NOT in the ledger and status/fetch will not see it." >&2
         return 0
     fi
+    local job_id="$SUBMIT_JOB_ID"
+
     if ! _write_provenance "$job_id" "$exp" "$campaign"; then
         echo "run.sh: WARNING job ${job_id} was submitted without provenance" >&2
     fi
-    if _ledger record "$campaign" "$job_id" "$exp" "$SLURM_PARTITION"; then
+    if _ledger record "$campaign" "$job_id" "$exp" "$SUBMIT_PARTITION"; then
         echo "Recorded job ${job_id} in campaign ${campaign} (.unity_state/${campaign}.db)"
     else
         echo "run.sh: WARNING job ${job_id} was submitted but could not be recorded" >&2
@@ -563,20 +699,18 @@ cmd_array() {
         exit 2
     fi
 
-    local script out parent
+    local script parent
     script="$(render_array "$campaign" "$limit")"
     _check_syntax "array script" "$script"
     _ssh "$UNITY_HOST" "mkdir -p ${REMOTE_DIR}/_slurm"
     printf '%s\n' "$script" | _ssh "$UNITY_HOST" "cat > ${REMOTE_DIR}/_slurm/${campaign}.array.sbatch"
-    out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${sbatch_args[*]-} _slurm/${campaign}.array.sbatch")"
-    printf '%s\n' "$out"
-    parent="$(printf '%s\n' "$out" | sed -n 's/^Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -1)"
-    if [ -z "$parent" ]; then
-        echo "run.sh: WARNING could not read the array job id from sbatch's reply" >&2
-        echo "run.sh:   the manifest is keyed by that id, so it was NOT uploaded and" >&2
+
+    if ! _submit_ladder "_slurm/${campaign}.array.sbatch" ${sbatch_args[@]+"${sbatch_args[@]}"}; then
+        echo "run.sh:   the manifest is keyed by the job id, so it was NOT uploaded and" >&2
         echo "run.sh:   every task will exit with a missing-manifest error. Check squeue." >&2
         return 0
     fi
+    parent="$SUBMIT_JOB_ID"
     # The tasks are queued and reading for this file already; upload it now,
     # under a name no other array can write to.
     if ! _ssh "$UNITY_HOST" \
@@ -584,7 +718,7 @@ cmd_array() {
         echo "run.sh: WARNING array ${parent}'s manifest could not be uploaded --" >&2
         echo "run.sh:   its tasks will exit with a missing-manifest error." >&2
     fi
-    if _ledger array "$campaign" "$parent" "$SLURM_PARTITION" "$normalized"; then
+    if _ledger array "$campaign" "$parent" "$SUBMIT_PARTITION" "$normalized"; then
         echo "Recorded ${ARRAY_COUNT} array tasks under campaign ${campaign}"
     else
         echo "run.sh: WARNING array job ${parent} was submitted but could not be recorded" >&2
@@ -702,6 +836,11 @@ cmd_fetch() {
     ls -1 "$dest" | sed 's/^/  /'
 }
 
+# Guarded so a test can `source run.sh` to reach the functions above without
+# also running a subcommand: sourcing sets BASH_SOURCE[0] to this file while
+# leaving $0 as the caller's shell, which a normal `bash run.sh ...` invocation
+# never does.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 case "${1:-}" in
     version|--version)
             echo "unityHPC/run.sh generated by unity-hpc ${UNITY_SCAFFOLD_VERSION}"
@@ -719,3 +858,4 @@ case "${1:-}" in
             echo "                render <exp> | sync | status | jobs | logs | fetch}" >&2
             exit 2 ;;
 esac
+fi
