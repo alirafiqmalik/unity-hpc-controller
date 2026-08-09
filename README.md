@@ -85,8 +85,10 @@ SLURM_PARTITION_WALLTIME_CAP="ood-shared=08:00:00" \
 ```
 
 Unset, the behaviour is a single attempt, exactly as before. Naming
-`SLURM_PARTITION` yourself disables the ladder. `run.sh jobs` reports the
-partition the job actually landed on.
+`SLURM_PARTITION` yourself disables the ladder — a blank `SLURM_PARTITION=`
+names nothing, so it does not. `run.sh jobs` reports the partition the job
+actually landed on, and `--dry-run` previews the rung a real submit would try
+first.
 
 A **campaign** is a label that groups submissions. Its default is today's UTC
 date.

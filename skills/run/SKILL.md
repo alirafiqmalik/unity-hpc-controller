@@ -100,8 +100,9 @@ Four rules govern this:
 
 - Unset `SLURM_PARTITION_FALLBACK` keeps the single-attempt behaviour exactly.
 - Naming `SLURM_PARTITION` yourself disables the ladder. You named a partition,
-  so only that one is tried. Note this applies to `SLURM_PARTITION=` (blank)
-  too.
+  so only that one is tried. A blank `SLURM_PARTITION=` names nothing, and
+  leaves the ladder running — that is the same "unset it for one run" idiom as
+  `SLURM_GPUS=` above.
 - `run.sh jobs` and `run.sh status` report the partition the job **landed on**,
   which is not always the one first requested.
 - Only a refused `sbatch` moves to the next partition. If `sbatch` accepts the
@@ -109,8 +110,14 @@ Four rules govern this:
   is queued and unrecorded, so check `squeue` before resubmitting or it runs
   twice.
 
-`--dry-run` reports `SLURM_PARTITION` and does not walk the ladder, so it does
-not show which partition a real submission would reach.
+A cap that shortens the request says so on stderr, naming the partition and
+both walltimes. A cap-table entry it cannot read — no `=`, or a value that is
+not `HH:MM:SS`, `D-HH:MM:SS` or `MM:SS` — is named on stderr and skipped, so a
+typo costs you the ceiling, not the submission.
+
+`--dry-run` previews the first rung of the same plan a real submit walks,
+carrying the `--partition` and clamped `--time` that submission would, and
+lists the rest of the ladder under it.
 
 ### Pass values into the job command
 

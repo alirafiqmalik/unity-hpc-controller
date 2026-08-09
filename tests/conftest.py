@@ -1,3 +1,5 @@
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -5,6 +7,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+# run.sh wraps every ssh call in `timeout`, so a dispatcher test that stubs ssh
+# alone still reaches the real one. Logging the call is what lets a test assert
+# the wrapper is there at all.
+STUB_TIMEOUT = r"""#!/usr/bin/env bash
+printf 'timeout %s\n' "$*" >>"$STUB_LOG"
+shift 2
+exec "$@"
+"""
 
 
 @pytest.fixture
@@ -23,6 +34,64 @@ def tmp_data_dir(tmp_path, monkeypatch):
     (d / "locks").mkdir(parents=True)
     monkeypatch.setenv("UNITY_HPC_DATA", str(d))
     return d
+
+
+@pytest.fixture
+def make_dispatcher(tmp_project, materialise, tmp_path):
+    """Build a callable that drives the generated run.sh against stub commands.
+
+    Every dispatcher test needs the same five things — a materialised project, a
+    bin/ of stubs first on PATH, a shared log the stubs append to, a per-call
+    copy of the environment, and a subprocess run rooted in the project. What
+    differs between them is only WHICH stubs and which canned replies, so those
+    are the arguments:
+
+      STUBS         command name -> script body. `timeout` is always stubbed.
+      ENV_DEFAULTS  seed values the stubs read (STUB_SBATCH, STUB_SACCT, ...).
+
+    The returned callable takes run.sh's argv plus per-call environment
+    overrides, and carries `.project`, `.log` and `.sbatch_calls()`.
+    """
+    def _make(stubs, **env_defaults):
+        unity_dir = materialise(tmp_project, "cpu")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name, body in {"timeout": STUB_TIMEOUT, **stubs}.items():
+            p = bin_dir / name
+            p.write_text(body)
+            p.chmod(0o755)
+
+        log = tmp_path / "stub.log"
+        env = dict(os.environ)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["STUB_LOG"] = str(log)
+        env.update({k: str(v) for k, v in env_defaults.items()})
+
+        def run(*args, **overrides):
+            # A fresh copy per call: sharing one dict makes concurrent
+            # invocations race on the stub's canned output rather than on the
+            # code under test.
+            call_env = dict(env)
+            call_env.update({k: str(v) for k, v in overrides.items()})
+            return subprocess.run(
+                ["bash", str(unity_dir / "run.sh"), *args],
+                capture_output=True, text=True, env=call_env, cwd=str(tmp_project),
+            )
+
+        def sbatch_calls():
+            """The remote submit commands the stub ssh saw, in order. Empty
+            when the log is absent: a dry-run never touches the cluster."""
+            if not log.exists():
+                return []
+            return [line for line in log.read_text().splitlines()
+                    if line.startswith("cd ") and "&& sbatch" in line]
+
+        run.project = tmp_project
+        run.log = log
+        run.sbatch_calls = sbatch_calls
+        return run
+
+    return _make
 
 
 @pytest.fixture

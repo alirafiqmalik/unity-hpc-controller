@@ -10,7 +10,6 @@ Two seams:
   - CLI: `run.sh run` / `run.sh array` driven as a subprocess against a
     stub ssh, as in test_dispatcher_ledger.py.
 """
-import os
 import subprocess
 
 import pytest
@@ -81,6 +80,42 @@ def test_walltime_cap_for_a_partition_with_no_entry_is_empty(unity_dir):
     assert result.stdout.strip() == ""
 
 
+def test_walltime_cap_tolerates_a_space_after_the_comma(unity_dir):
+    """"a=1:0:0, b=2:0:0" is how a person writes a list. Splitting on the comma
+    alone leaves the name " b", which matches no partition ever -- the cap is
+    then silently absent and the retry fails on walltime for no visible reason."""
+    result = _call(
+        unity_dir,
+        'SLURM_PARTITION_WALLTIME_CAP="cpu=01:00:00, ood-shared=08:00:00" '
+        '_walltime_cap_for "ood-shared"')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "08:00:00"
+
+
+def test_walltime_cap_warns_past_an_entry_with_no_equals(unity_dir):
+    """An entry without '=' set name == cap, so a later partition name reached
+    the arithmetic in _walltime_seconds. Skip it, and say so."""
+    result = _call(
+        unity_dir,
+        'SLURM_PARTITION_WALLTIME_CAP="ood-shared,cpu=01:00:00" _walltime_cap_for "cpu"')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "01:00:00"
+    assert "WARNING" in result.stderr
+    assert "ood-shared" in result.stderr
+
+
+def test_walltime_cap_warns_past_an_unparseable_cap(unity_dir):
+    """A cap that is not a walltime is a typo, not a ceiling. Reporting no cap
+    submits the request as written, which the partition can still refuse --
+    better than clamping to a number invented from a malformed string."""
+    result = _call(
+        unity_dir, 'SLURM_PARTITION_WALLTIME_CAP="cpu=soon" _walltime_cap_for "cpu"')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ""
+    assert "WARNING" in result.stderr
+    assert "cpu=soon" in result.stderr
+
+
 # ─── CLI seam: run.sh run/array driven against a partition-aware stub ssh ───
 
 STUB_SSH = r"""#!/usr/bin/env bash
@@ -125,45 +160,10 @@ case "$cmd" in
 esac
 """
 
-STUB_TIMEOUT = r"""#!/usr/bin/env bash
-printf 'timeout %s\n' "$*" >>"$STUB_LOG"
-shift 2
-exec "$@"
-"""
-
 
 @pytest.fixture
-def dispatcher(tmp_project, materialise, tmp_path):
-    unity_dir = materialise(tmp_project, "cpu")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name, body in (("ssh", STUB_SSH), ("timeout", STUB_TIMEOUT)):
-        p = bin_dir / name
-        p.write_text(body)
-        p.chmod(0o755)
-
-    log = tmp_path / "stub.log"
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    env["STUB_LOG"] = str(log)
-    env["STUB_SACCT"] = ""
-
-    def run(*args, **overrides):
-        call_env = dict(env)
-        call_env.update({k: str(v) for k, v in overrides.items()})
-        return subprocess.run(
-            ["bash", str(unity_dir / "run.sh"), *args],
-            capture_output=True, text=True, env=call_env, cwd=str(tmp_project),
-        )
-
-    run.project = tmp_project
-    run.log = log
-    return run
-
-
-def _sbatch_calls(dispatcher):
-    return [line for line in dispatcher.log.read_text().splitlines()
-            if line.startswith("cd ") and "&& sbatch" in line]
+def dispatcher(make_dispatcher):
+    return make_dispatcher({"ssh": STUB_SSH}, STUB_SACCT="")
 
 
 def test_unset_fallback_keeps_todays_behaviour_exactly(dispatcher):
@@ -171,7 +171,7 @@ def test_unset_fallback_keeps_todays_behaviour_exactly(dispatcher):
     --partition/--time override args added to it."""
     result = dispatcher("run", "smoke", "--campaign", "c1")
     assert result.returncode == 0, result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 1
     assert "--partition=" not in calls[0]
     assert "--time=" not in calls[0]
@@ -185,7 +185,7 @@ def test_a_rejected_primary_falls_back_to_the_next_partition(dispatcher):
         STUB_REJECT_PARTITIONS="cpu",
     )
     assert result.returncode == 0, result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 2
     assert "--partition=cpu " in calls[0] or calls[0].endswith("--partition=cpu")
     assert "--partition=cpu-preempt" in calls[1]
@@ -205,7 +205,7 @@ def test_an_explicit_caller_partition_disables_the_ladder(dispatcher):
         STUB_REJECT_ALL="1",
     )
     assert "WARNING" in result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 1, calls
     assert "--partition=" not in calls[0]
     assert campaign.jobs(dispatcher.project, "c1") == []
@@ -225,7 +225,7 @@ def test_an_accepted_job_whose_reply_is_unreadable_is_never_resubmitted(dispatch
         STUB_SBATCH_UNPARSEABLE="1",
     )
     assert result.returncode == 0, result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 1, f"the job was submitted {len(calls)} times: {calls}"
     assert "WARNING" in result.stderr
     assert campaign.jobs(dispatcher.project, "c1") == []
@@ -240,7 +240,7 @@ def test_a_rejection_partway_up_the_ladder_still_retries(dispatcher):
         STUB_REJECT_PARTITIONS="cpu cpu-preempt",
     )
     assert result.returncode == 0, result.stderr
-    assert len(_sbatch_calls(dispatcher)) == 3
+    assert len(dispatcher.sbatch_calls()) == 3
     assert campaign.jobs(dispatcher.project, "c1")[0]["partition"] == "ood-shared"
 
 
@@ -251,7 +251,7 @@ def test_every_rung_rejected_warns_with_every_partition_tried(dispatcher):
         STUB_REJECT_ALL="1",
     )
     assert result.returncode == 0, result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 3, calls
     assert "WARNING" in result.stderr
     assert "cpu cpu-preempt ood-shared" in result.stderr
@@ -268,10 +268,80 @@ def test_walltime_is_clamped_per_partition_before_each_retry(dispatcher, tmp_pro
         STUB_REJECT_PARTITIONS="cpu",
     )
     assert result.returncode == 0, result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 2, calls
     assert "--partition=cpu --time=12:00:00" in calls[0]
     assert "--partition=ood-shared --time=08:00:00" in calls[1]
+
+
+def test_a_clamped_request_says_which_partition_shortened_it(dispatcher, tmp_project,
+                                                             materialise):
+    """Silently running for a third of the time asked for is a surprise worth
+    one line. It goes to stderr because callers capture stdout for the job id."""
+    materialise(tmp_project, "cpu", WALLTIME="12:00:00")
+    result = dispatcher(
+        "run", "smoke", "--campaign", "c1",
+        SLURM_PARTITION_FALLBACK="ood-shared",
+        SLURM_PARTITION_WALLTIME_CAP="ood-shared=08:00:00",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ood-shared" in result.stderr
+    assert "12:00:00" in result.stderr and "08:00:00" in result.stderr
+
+
+def test_a_request_under_the_cap_is_not_announced(dispatcher):
+    """The notice marks a request that was CHANGED. Printing it every time
+    teaches the reader to skip the line that matters."""
+    result = dispatcher(
+        "run", "smoke", "--campaign", "c1",
+        SLURM_PARTITION_FALLBACK="cpu",
+        SLURM_PARTITION_WALLTIME_CAP="cpu=08:00:00",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "capped" not in result.stderr
+
+
+def test_blanking_the_partition_leaves_the_ladder_active(dispatcher):
+    """`SLURM_GPUS= run.sh run x` is this script's documented way to turn an
+    option off for one invocation (see UNITY_OVERRIDABLE). `SLURM_PARTITION=`
+    therefore means "I am NOT naming a partition" -- the opposite of the
+    explicit caller partition that stands the ladder down."""
+    result = dispatcher(
+        "run", "smoke", "--campaign", "c1",
+        SLURM_PARTITION="",
+        SLURM_PARTITION_FALLBACK="cpu cpu-preempt",
+        STUB_REJECT_PARTITIONS="cpu",
+    )
+    assert result.returncode == 0, result.stderr
+    calls = dispatcher.sbatch_calls()
+    assert len(calls) == 2, calls
+    assert campaign.jobs(dispatcher.project, "c1")[0]["partition"] == "cpu-preempt"
+
+
+def test_dry_run_previews_the_ladders_first_attempt(dispatcher):
+    """--dry-run's whole job is to answer "what would a real submit do?". With
+    the ladder active a real submit adds --partition/--time, so a preview
+    without them describes a submission that will not happen."""
+    result = dispatcher(
+        "run", "smoke", "--campaign", "c1", "--dry-run",
+        SLURM_PARTITION_FALLBACK="cpu-preempt ood-shared",
+        SLURM_PARTITION_WALLTIME_CAP="cpu-preempt=02:00:00",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "partition=cpu-preempt" in result.stdout
+    assert "cpu-preempt ood-shared" in result.stdout, "the ladder order is not shown"
+    assert "sbatch --partition=cpu-preempt --time=02:00:00" in result.stdout
+    assert not dispatcher.log.exists(), "dry-run must not touch the cluster"
+
+
+def test_dry_run_without_a_ladder_is_unchanged(dispatcher):
+    """The inactive ladder adds nothing to a real sbatch line, so it must add
+    nothing to the preview of one either."""
+    result = dispatcher("run", "smoke", "--campaign", "c1", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "partition=cpu" in result.stdout
+    assert "--partition=" not in result.stdout
+    assert "--time=" not in result.stdout
 
 
 def test_array_submission_also_falls_back(dispatcher, tmp_path):
@@ -283,7 +353,7 @@ def test_array_submission_also_falls_back(dispatcher, tmp_path):
         STUB_REJECT_PARTITIONS="cpu",
     )
     assert result.returncode == 0, result.stderr
-    calls = _sbatch_calls(dispatcher)
+    calls = dispatcher.sbatch_calls()
     assert len(calls) == 2, calls
     assert "--partition=cpu-preempt" in calls[1]
     rows = campaign.jobs(dispatcher.project, "sweep-1")

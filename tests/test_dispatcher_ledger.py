@@ -7,7 +7,6 @@ ledger was never written. A project could not name the jobs it had launched.
 These tests drive the real generated `run.sh` with a stub `ssh`/`rsync` on PATH.
 """
 
-import os
 import subprocess
 
 import pytest
@@ -39,45 +38,14 @@ printf '%s\n' "$*" >>"$STUB_LOG"
 exit 0
 """
 
-STUB_TIMEOUT = r"""#!/usr/bin/env bash
-printf 'timeout %s\n' "$*" >>"$STUB_LOG"
-shift 2
-exec "$@"
-"""
-
-
 @pytest.fixture
-def dispatcher(tmp_project, materialise, tmp_path, monkeypatch):
+def dispatcher(make_dispatcher):
     """A materialised project whose run.sh talks to stub ssh/rsync."""
-    unity_dir = materialise(tmp_project, "cpu")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name, body in (("ssh", STUB_SSH), ("rsync", STUB_RSYNC),
-                       ("timeout", STUB_TIMEOUT)):
-        p = bin_dir / name
-        p.write_text(body)
-        p.chmod(0o755)
-
-    log = tmp_path / "stub.log"
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    env["STUB_LOG"] = str(log)
-    env["STUB_SBATCH"] = "Submitted batch job 12345"
-    env["STUB_SACCT"] = ""
-
-    def run(*args, **overrides):
-        # A fresh copy per call: sharing one dict makes concurrent invocations
-        # race on the stub's canned output rather than on the code under test.
-        call_env = dict(env)
-        call_env.update({k: str(v) for k, v in overrides.items()})
-        return subprocess.run(
-            ["bash", str(unity_dir / "run.sh"), *args],
-            capture_output=True, text=True, env=call_env, cwd=str(tmp_project),
-        )
-
-    run.project = tmp_project
-    run.log = log
-    return run
+    return make_dispatcher(
+        {"ssh": STUB_SSH, "rsync": STUB_RSYNC},
+        STUB_SBATCH="Submitted batch job 12345",
+        STUB_SACCT="",
+    )
 
 
 def test_submitting_records_the_job_in_the_ledger(dispatcher):
@@ -158,9 +126,7 @@ def test_array_submission_uses_one_sbatch_and_records_tasks(dispatcher, tmp_path
         ("12345_1", "trial-b"),
         ("12345_2", "trial-c"),
     ]
-    submissions = [line for line in dispatcher.log.read_text().splitlines()
-                   if line.startswith("cd ") and "&& sbatch" in line]
-    assert len(submissions) == 1
+    assert len(dispatcher.sbatch_calls()) == 1
     assert "#SBATCH --array=0-2%2" in payload.read_text()
 
 
@@ -278,7 +244,7 @@ def test_dry_run_submits_nothing_and_records_nothing(dispatcher):
 
 def test_extra_sbatch_args_survive_campaign_parsing(dispatcher):
     dispatcher("run", "smoke", "--campaign", "c1", "--qos=short")
-    submit = [l for l in dispatcher.log.read_text().splitlines() if "&& sbatch" in l]
+    submit = dispatcher.sbatch_calls()
     assert submit and "--qos=short" in submit[0]
 
 

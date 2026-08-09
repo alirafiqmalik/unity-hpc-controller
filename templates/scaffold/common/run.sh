@@ -222,15 +222,48 @@ _capped_walltime() {
     fi
 }
 
+# Surrounding whitespace stripped. An all-whitespace argument becomes empty.
+_trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    printf '%s\n' "${s%"${s##*[![:space:]]}"}"
+}
+
+# The three spellings _walltime_seconds can convert, and nothing else. A cap
+# it cannot read is a typo, not a ceiling, and must never reach the arithmetic.
+_is_walltime() {
+    [[ "$1" =~ ^([0-9]+-)?[0-9]+:[0-9]+(:[0-9]+)?$ ]]
+}
+
 # SLURM_PARTITION_WALLTIME_CAP is "partition=HH:MM:SS,partition=HH:MM:SS,...".
 # Echoes the cap for PARTITION, or nothing if it has none.
+#
+# Every rejected entry is named on stderr. A cap table is hand-written, and its
+# two failure modes are both silent: "a=1:0:0, b=2:0:0" is the natural way to
+# write a list but splitting on the comma alone yields the name " b", which
+# matches no partition ever; and an entry with no "=" sets name == cap, so a
+# partition NAME went into _walltime_seconds' arithmetic. Either way the cap
+# the author wrote down simply did not apply, and the retry it was meant to
+# rescue failed on walltime for no visible reason.
 _walltime_cap_for() {
     local partition="$1" entry name cap
     local IFS=,
     for entry in ${SLURM_PARTITION_WALLTIME_CAP:-}; do
-        name="${entry%%=*}"
-        cap="${entry#*=}"
+        entry="$(_trim "$entry")"
+        [ -n "$entry" ] || continue
+        name="$(_trim "${entry%%=*}")"
+        cap="$(_trim "${entry#*=}")"
+        if [ "$name" = "$entry" ]; then
+            echo "run.sh: WARNING ignoring SLURM_PARTITION_WALLTIME_CAP entry" >&2
+            echo "run.sh:   '${entry}': expected partition=HH:MM:SS" >&2
+            continue
+        fi
         if [ "$name" = "$partition" ]; then
+            if ! _is_walltime "$cap"; then
+                echo "run.sh: WARNING ignoring SLURM_PARTITION_WALLTIME_CAP entry" >&2
+                echo "run.sh:   '${entry}': '${cap}' is not HH:MM:SS, D-HH:MM:SS or MM:SS" >&2
+                return 0
+            fi
             printf '%s\n' "$cap"
             return 0
         fi
@@ -242,20 +275,46 @@ _walltime_cap_for() {
 # Absent that, the ladder is only active when SLURM_PARTITION_FALLBACK is
 # set: unset, cmd_run/cmd_array must keep today's single-attempt behavior
 # exactly, with no synthetic --partition/--time added to the sbatch call.
+#
+# It is the caller's VALUE that stands the ladder down, not the mere fact that
+# the caller mentioned the variable. `SLURM_GPUS= run.sh run x` is this
+# script's documented way to turn an option off for one invocation, so
+# `SLURM_PARTITION=` reads as "I am not naming a partition" -- the opposite of
+# naming one, and no reason to disable a fallback list the .env asked for.
 _ladder_is_active() {
-    [ -n "$SLURM_PARTITION_FALLBACK" ] && [ -z "${_unity_caller_set_SLURM_PARTITION:-}" ]
+    [ -n "$SLURM_PARTITION_FALLBACK" ] && [ -z "${_unity_caller_SLURM_PARTITION:-}" ]
 }
 
-# The ordered list of partitions cmd_run/cmd_array should try, one per line.
-_partition_ladder() {
-    if _ladder_is_active; then
-        local p
-        for p in $SLURM_PARTITION_FALLBACK; do
-            printf '%s\n' "$p"
-        done
-    else
-        printf '%s\n' "$SLURM_PARTITION"
+# The ordered submit plan: one rung per line, "PARTITION<TAB>WALLTIME", the
+# walltime already clamped by this partition's cap. An EMPTY walltime means the
+# ladder is standing down, and the attempt must add no --partition/--time of
+# its own -- byte-for-byte the single submit that preceded the ladder.
+#
+# Both _submit_ladder and cmd_run's --dry-run read this one function, which is
+# what stops a preview from describing a submission that will not happen.
+_submit_plan() {
+    if ! _ladder_is_active; then
+        printf '%s\t\n' "$SLURM_PARTITION"
+        return 0
     fi
+    local p
+    for p in $SLURM_PARTITION_FALLBACK; do
+        printf '%s\t%s\n' "$p" "$(_capped_walltime "$WALLTIME" "$(_walltime_cap_for "$p")")"
+    done
+}
+
+# The sbatch arguments one rung of the plan contributes, and the one place that
+# says out loud that a cap shortened the request: a job that silently runs for
+# a third of the time asked for is a surprise worth a line. It is called at
+# attempt time, so a rung the ladder never reaches never announces itself. The
+# notice goes to stderr because this function's stdout IS the argument string.
+_rung_args() {
+    local p="$1" wt="$2"
+    [ -n "$wt" ] || return 0
+    if [ "$wt" != "$WALLTIME" ]; then
+        echo "run.sh: partition ${p} capped this request at ${wt} (asked for ${WALLTIME})" >&2
+    fi
+    printf -- '--partition=%s --time=%s' "$p" "$wt"
 }
 
 # Result channel for _submit_ladder, read by the caller immediately after it
@@ -264,7 +323,7 @@ SUBMIT_JOB_ID=""
 SUBMIT_PARTITION=""
 
 # Submits REMOTE_SCRIPT (a path relative to REMOTE_DIR, already uploaded) via
-# sbatch, walking _partition_ladder until an attempt returns a job id or the
+# sbatch, walking _submit_plan until an attempt returns a job id or the
 # ladder is exhausted. Each attempt's sbatch reply is printed as it happens,
 # exactly as a single attempt always was. On success sets SUBMIT_JOB_ID and
 # SUBMIT_PARTITION (the partition that attempt actually used) and returns 0;
@@ -280,21 +339,16 @@ _submit_ladder() {
     local sbatch_args=(${@+"$@"})
     SUBMIT_JOB_ID=""
     SUBMIT_PARTITION=""
-    local p out job_id tried=()
-    while IFS= read -r p; do
+    local p wt extra out job_id tried=()
+    while IFS=$'\t' read -r p wt; do
         tried+=("$p")
-        local attempt_args=(${sbatch_args[@]+"${sbatch_args[@]}"})
-        if _ladder_is_active; then
-            local wt
-            wt="$(_capped_walltime "$WALLTIME" "$(_walltime_cap_for "$p")")"
-            attempt_args=("--partition=${p}" "--time=${wt}" ${sbatch_args[@]+"${sbatch_args[@]}"})
-        fi
+        extra="$(_rung_args "$p" "$wt")"
         # `|| rc=$?`, not a bare assignment: sbatch exits non-zero on a
         # rejection, and under `set -e` a bare assignment would abort the
         # script there instead of letting the ladder do its job. Capturing the
         # status is also what separates the two failures below.
         local rc=0
-        out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${attempt_args[*]-} ${remote_script}")" || rc=$?
+        out="$(_ssh "$UNITY_HOST" "cd ${REMOTE_DIR} && sbatch ${extra} ${sbatch_args[*]-} ${remote_script}")" || rc=$?
         printf '%s\n' "$out"
         job_id="$(printf '%s\n' "$out" | sed -n 's/^Submitted batch job \([0-9][0-9]*\).*/\1/p' | head -1)"
         if [ -n "$job_id" ]; then
@@ -312,7 +366,7 @@ _submit_ladder() {
             echo "run.sh:   queued: check squeue before resubmitting, or it runs twice." >&2
             return 1
         fi
-    done < <(_partition_ladder)
+    done < <(_submit_plan)
     echo "run.sh: WARNING could not read a job id from sbatch's reply --" >&2
     if [ "${#tried[@]}" -gt 1 ]; then
         echo "run.sh:   tried partition(s): ${tried[*]}" >&2
@@ -551,8 +605,23 @@ cmd_run() {
     _check_syntax "job script" "$script"
 
     if [ "$dry_run" -eq 1 ]; then
-        echo "[dry-run] campaign=${campaign} exp=${exp} partition=${SLURM_PARTITION}"
-        echo "[dry-run] would submit: sbatch ${sbatch_args[*]-} _slurm/${exp}.sbatch"
+        # Previewed off the same _submit_plan a real submit walks, first rung
+        # first: with the ladder active a real sbatch carries --partition and a
+        # clamped --time, and a preview without them describes a submission
+        # that will not happen.
+        local rung wt rungs="" first_rung="" first_args=""
+        while IFS=$'\t' read -r rung wt; do
+            rungs="${rungs}${rungs:+ }${rung}"
+            if [ -z "$first_rung" ]; then
+                first_rung="$rung"
+                first_args="$(_rung_args "$rung" "$wt")"
+            fi
+        done <<<"$(_submit_plan)"
+        echo "[dry-run] campaign=${campaign} exp=${exp} partition=${first_rung}"
+        if [ "$rungs" != "$first_rung" ]; then
+            echo "[dry-run] fallback ladder: ${rungs}"
+        fi
+        echo "[dry-run] would submit: sbatch ${first_args} ${sbatch_args[*]-} _slurm/${exp}.sbatch"
         echo "[dry-run] nothing was written to ${UNITY_HOST}:${REMOTE_DIR}"
         return 0
     fi
@@ -841,21 +910,21 @@ cmd_fetch() {
 # leaving $0 as the caller's shell, which a normal `bash run.sh ...` invocation
 # never does.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-case "${1:-}" in
-    version|--version)
-            echo "unityHPC/run.sh generated by unity-hpc ${UNITY_SCAFFOLD_VERSION}"
-            echo "Re-run /unity-hpc:setup (or hpc-scaffold) to regenerate it." ;;
-    run)    shift; cmd_run "$@" ;;
-    array)  shift; cmd_array "$@" ;;
-    render) shift; render "${1:-preview}" ;;
-    sync)   cmd_sync ;;
-    status) shift; cmd_status "$@" ;;
-    jobs)   shift; cmd_jobs "$@" ;;
-    logs)   shift; cmd_logs "$@" ;;
-    fetch)  shift; cmd_fetch "$@" ;;
-    *)      echo "usage: run.sh {run <exp> [--campaign N] [--dry-run] [sbatch args] |" >&2
-            echo "                array <manifest> [--campaign N] [--limit N] [sbatch args] |" >&2
-            echo "                render <exp> | sync | status | jobs | logs | fetch}" >&2
-            exit 2 ;;
-esac
+    case "${1:-}" in
+        version|--version)
+                echo "unityHPC/run.sh generated by unity-hpc ${UNITY_SCAFFOLD_VERSION}"
+                echo "Re-run /unity-hpc:setup (or hpc-scaffold) to regenerate it." ;;
+        run)    shift; cmd_run "$@" ;;
+        array)  shift; cmd_array "$@" ;;
+        render) shift; render "${1:-preview}" ;;
+        sync)   cmd_sync ;;
+        status) shift; cmd_status "$@" ;;
+        jobs)   shift; cmd_jobs "$@" ;;
+        logs)   shift; cmd_logs "$@" ;;
+        fetch)  shift; cmd_fetch "$@" ;;
+        *)      echo "usage: run.sh {run <exp> [--campaign N] [--dry-run] [sbatch args] |" >&2
+                echo "                array <manifest> [--campaign N] [--limit N] [sbatch args] |" >&2
+                echo "                render <exp> | sync | status | jobs | logs | fetch}" >&2
+                exit 2 ;;
+    esac
 fi

@@ -146,14 +146,18 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
               │        └─ printf %q  for EXP / JOB_COMMAND   (quotes survive)
               │        └─ --gres only if SLURM_GPUS set and != "0"
               │
-              ├─▶ _submit_ladder()  ── one rung per partition, in order
-              │        │
-              │        ├─ rung = SLURM_PARTITION            (ladder inactive: today's single try)
-              │        ├─ rung = SLURM_PARTITION_FALLBACK   (ladder active, first entry primary)
+              ├─▶ _submit_plan()  ── the rungs to try, in order, as PARTITION⇥WALLTIME
+              │        ├─ ladder inactive → one rung, SLURM_PARTITION, walltime EMPTY
+              │        │                    (empty = add no --partition/--time at all)
+              │        └─ ladder active   → SLURM_PARTITION_FALLBACK, first entry primary,
+              │                             each W = WALLTIME clamped by
+              │                             SLURM_PARTITION_WALLTIME_CAP[P]
+              │
+              ├─▶ _submit_ladder()  ── one attempt per rung, in order
               │        │
               │        ├─▶ ssh unity 'cd $REMOTE_DIR && sbatch --partition=P --time=W'
-              │        │        └─ W = WALLTIME clamped by SLURM_PARTITION_WALLTIME_CAP[P]
-              │        │           (command line beats the #SBATCH header render() baked in)
+              │        │        └─ (command line beats the #SBATCH header render() baked in)
+              │        │           a clamp that SHORTENS the request says so on stderr
               │        │
               │        ├─ job id parsed  ─────────▶ SUBMIT_JOB_ID / SUBMIT_PARTITION, stop
               │        ├─ sbatch refused (rc != 0) ─▶ next rung
@@ -166,14 +170,21 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
                        └─ .unity_state/C.db   (PENDING, submitted_utc)
 
  --dry-run  ─▶ renders + prints, touches nothing, records nothing
-               (reports SLURM_PARTITION only — it does not walk the ladder)
+               (previews _submit_plan's FIRST rung, carrying the same
+                --partition/--time a real submit would, then lists the ladder)
 ```
 
 The ladder is opt-in and off by default: with `SLURM_PARTITION_FALLBACK` unset,
 `_submit_ladder` makes exactly one attempt and adds no `--partition`/`--time`
 of its own, which is byte-for-byte the submit that preceded the ladder. An explicit caller
 `SLURM_PARTITION` also disables it — the caller named a partition, so the
-ladder does not second-guess it. See `docs/design-decisions.md` §3.1 D9.
+ladder does not second-guess it. A *blank* one does not: `SLURM_PARTITION=` is
+this script's documented way to unset an option for one invocation, so it reads
+as "I am not naming a partition". See `docs/design-decisions.md` §3.1 D9.
+
+`--dry-run` reads the same `_submit_plan`, which is what stops the preview from
+describing a submission that cannot happen. A preview built independently drifts
+the moment either side changes.
 
 Every variable that `render()` bakes into the job must appear in
 `UNITY_OVERRIDABLE`. A variable that `render()` exports without that listing
