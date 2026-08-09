@@ -9,3 +9,9 @@ __pycache__/
 
 # Local agent guidance. Machine-local, not shipped with the plugin.
 /AGENTS.md
+
+# Generated project config. The scaffold writes unityHPC/.env with a real
+# SLURM_ACCOUNT and remote paths; a scratch project scaffolded inside this repo
+# would otherwise be committable. The tracked templates are named env.example,
+# which this pattern does not match.
+.env
