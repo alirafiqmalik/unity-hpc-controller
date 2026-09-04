@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""hpc-watch [--campaign N] [--job <parent>] [--poll SECONDS]
+
+Opt-in foreground watcher, on the user's machine, not a run.sh subcommand.
+Drives the project's unityHPC/run.sh only (status, run, fetch); never opens
+the ledger, never sacct, never sbatch. Ctrl-C stops it; nothing respawns it.
+One watcher per campaign, enforced by an flock on
+.unity_state/<campaign>.watch.json.
+
+Spec: docs/scaffold-axes-spec.md §8. Decision: docs/design-decisions.md §3.7.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import watch  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(watch.main())
