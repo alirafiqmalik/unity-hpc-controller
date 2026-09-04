@@ -15,8 +15,9 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 This repo is single-context. Two existing documents already carry much of what
 `CONTEXT.md` and `docs/adr/` would hold — read them alongside the files above:
 
+- **`CONTEXT.md`** — glossary for the five primitives and the two axes.
 - **`ARCHITECTURE.md`** — what the plugin does: the skills, the `unityHPC/run.sh`
-  ledger contract, the state DB. The nearest thing to a `CONTEXT.md` today.
+  ledger contract, the state DB.
 - **`docs/design-decisions.md`** — why the plugin has this shape, keyed by the
   root-cause IDs (`RC-1` … ) that the test suite cites. Treat each numbered
   section as an ADR: if your output contradicts one, surface the conflict rather

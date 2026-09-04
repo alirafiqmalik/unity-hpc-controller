@@ -51,6 +51,8 @@ run.sh run <exp>  ──sbatch──►  SLURM
    unity_logs / unity_results                       run.sh logs / fetch
 ```
 
+The [Pipeline](#pipeline) section has the layer map, the submit path, and the observe path.
+
 | Command | Talks to the cluster? | Use it for |
 |---|---|---|
 | `run.sh run <exp> [--campaign N] [--dry-run]` | yes | submit a job, and record it |
@@ -99,6 +101,74 @@ it, and it upgrades in place when a new plugin version adds a column.
 
 A job submitted with bare `sbatch`, outside `run.sh`, is invisible to everything
 above. That is the one thing the abstraction cannot do for you.
+
+## Pipeline
+
+The job lifecycle sketch is the contract in one picture. The three maps are the
+layer map, the submit path, and the observe path.
+
+### Layer map
+
+Skills write and submit through the dispatcher on the left, and they read
+through the MCP server on the right. The ledger is the contract: every
+management tool reads the jobs that `run.sh` recorded.
+
+```mermaid
+flowchart TB
+    YOU[You] --> SK["/unity-hpc:* skills"]
+    SK -->|writes / submits| DISP["dispatcher unityHPC/run.sh"]
+    SK -->|reads| MCP["MCP server mcp/hpc_server.py"]
+    DISP -->|writes| LED["ledger .unity_state/campaign.db"]
+    MCP -->|reads| LED
+    DISP -->|ssh / rsync| UNI["Unity SLURM"]
+    UNI -->|telemetry| SH["shared tier $UNITY_HPC_DATA"]
+    MCP -->|reads| SH
+    SH --> S1["summaries.db"]
+    SH --> S2["usage.db"]
+    SH --> S3["cluster-config.json"]
+    SH --> S4["telemetry/"]
+```
+
+### Submit path
+
+Each submit loads `.env` and the caller overrides, then `render` writes the
+`#SBATCH` header plus typed `job_template.sh` and walks the plan and ladder to
+`sbatch`. `campaign.record` stores the partition that landed, not the first
+request, and `--dry-run` prints that plan and writes nothing.
+
+```mermaid
+flowchart TB
+    skill[skill] --> run["run.sh run"]
+    run --> env["load .env + overrides"]
+    env --> render["render SBATCH + job_template.sh"]
+    render --> plan["_submit_plan / _submit_ladder"]
+    plan --> dry["--dry-run"]
+    dry -->|yes| preview["print first rung, no write"]
+    dry -->|no| sbatch["sbatch over SSH"]
+    sbatch --> record["campaign.record into ledger"]
+```
+
+### Observe path
+
+On the cluster, `collector.sh` writes raw telemetry from sacct and seff, and on
+this machine `sync-telemetry.sh` and `rollup.py` fill `summaries.db`.
+`unity_usage`, `unity_traffic`, and `recommend-hardware` read that database,
+while `unity_status` and `unity_jobs` read the ledger and refresh from telemetry
+with no SSH unless you ask.
+
+```mermaid
+flowchart TB
+    U["Unity sacct/seff"] --> C["collector.sh on cluster"]
+    C --> R["raw telemetry"]
+    R --> SY["sync-telemetry.sh"]
+    SY --> P["rollup.py"]
+    P --> D["summaries.db"]
+    D --> UU["unity_usage"]
+    D --> UT["unity_traffic"]
+    D --> RH["recommend-hardware"]
+    ST["unity_status / unity_jobs"] --> L["ledger"]
+    ST -->|optional refresh| D
+```
 
 ## Metrics are declared, never assumed
 

@@ -92,6 +92,170 @@ read time, per project.
 one decision with a measured cost: 84 distinct values collapsed to 17, and 22,070
 jobs filed under `gpu` turned out to be a100s.
 
+### 3.4 Five primitives: resource × orchestration, one public name
+
+D1 ships a typed scaffold with `--type {cpu,gpu,ml}`. That list mixes a
+**resource** (`cpu`, `gpu`) with an **orchestration** (`ml` = coordinated
+multi-node training). Arrays — the other orchestration — are not a type. They
+live in `common/run.sh`. A CPU job that spans nodes and talks through `srun`
+has no home. Issue #11 pinned the names. `CONTEXT.md` holds the glossary.
+
+| Primitive | Resource | Orchestration | What it is |
+|---|---|---|---|
+| `cpu` | cpu | single | One CPU job. One `sbatch`. One ledger row. |
+| `gpu` | gpu | single | One GPU job on one node. One `sbatch`. One ledger row. Several GPUs on that node still count as `gpu`. |
+| `multi-cpu` | cpu | fan-out | N independent CPU tasks. Today's `run.sh array`. N ledger rows. |
+| `multi-gpu` | gpu | fan-out | N independent GPU tasks. Today's `run.sh array`. N ledger rows. |
+| `ml` | gpu | coordinated | One allocation whose ranks communicate. Today's `ml` template. One ledger row. |
+
+The two axes classify the five names. They are not two CLI flags. A cartesian
+`--resource` × `--orchestration` would let a caller write `cpu` + coordinated,
+which this plugin does not implement, and it would treat `ml` as `gpu` + multi,
+which is `multi-gpu`. The public selector stays one name.
+
+**`ml` is a primitive, not a `multi-gpu` preset.** The difference is
+independence, not the launcher. Fan-out tasks do not communicate. Coordinated
+ranks share one allocation and exchange messages. `torchrun` is today's
+implementation of coordinated GPU. It is not the definition. A later launcher
+does not create a sixth primitive.
+
+**`gpu` with `SLURM_GPUS>1` is not `multi-gpu`.** One process on one node that
+uses several GPUs is still `gpu`. `multi-gpu` is N independent copies of that
+shape.
+
+**Multi-node CPU is out of scope for this redesign.** `run.sh` does not emit
+`--ntasks` or `--ntasks-per-node`. No CPU template calls `srun`. G1 never named
+that shape. No closed issue asked for it. It is not a flag on `multi-cpu`: that
+would mix two submission mechanisms under one name. It is not a sixth
+primitive on this map. A later consumer that needs it would add a coordinated
+CPU primitive. That work is separate.
+
+#4–#8 act on a group. Fan-out (`multi-cpu`, `multi-gpu`) is that group.
+`cpu`, `gpu` and `ml` remain one job.
+
+### 3.5 Fan-out payload is opaque JSON; headers stay as today
+
+`cpu`, `gpu` and `ml` keep today's `render()` header: `--job-name`, `--account`,
+`--partition`, `--time`, `--nodes`, `--cpus-per-task`, `--mem`, `--output`,
+`--error`, optional `--gres` / `--constraint` / `--mail-user`. They never emit
+`--ntasks` or `--ntasks-per-node`. `ml` raises `SLURM_NODES` and the template
+launches ranks; it still has no `--ntasks` line.
+
+`multi-cpu` and `multi-gpu` keep today's `render_array()` header: the same
+keys, plus `--array`, plus logs named `%A_%a`. One `sbatch --array`. N ledger
+rows as `<parent>_<index>`. `JOB_COMMAND` is shared. Per-task data is the
+manifest.
+
+A fan-out task receives `EXP` and, when the manifest line has a tab, the JSON
+tail as `UNITY_TASK_PAYLOAD`. A tab-free line is today's `EXP`-only behaviour.
+The harness copies the tail. It does not parse it. `EXP` stays the SLURM job
+name and a filename fragment, so it cannot carry structure. Closed #7 is the
+contract. `ml` has a per-job `EXP` only. No per-task payload.
+
+### 3.6 `campaign` stays a label; the group is the parent job id
+
+Promoting `campaign` to the fan-out identity fights its default (today's UTC
+date) and fights D8 (the manifest is already keyed by parent job id after #9).
+A campaign remains an optional label. It may mix primitives. Two `multi-*`
+submits may share one campaign name. The group object the verbs need is the
+parent SLURM job id: identity, membership (`<parent>_<index>`), and the id
+one `scancel` covers.
+
+**Public scope is the label.** `cancel`, `fetch` and `watch` take `--campaign
+N` and act on every live group with that label. `--job <parent>` pins one
+group. `status` and `jobs` already take the same flag. A campaign, as a
+label, has no end state. A group is finished when every child row is
+terminal.
+
+**Remote layout is campaign-keyed, prefer-if-present.** New scaffolds default
+jobs to `$REMOTE_DIR/_results/<campaign>/`. `REMOTE_RESULTS_DIR` joins
+`UNITY_OVERRIDABLE`. Fetch prefers `<base>/<campaign>` when that directory
+exists, and falls back to today's whole-tree rsync when it does not, so a
+flat `_results/` project keeps working. Two `multi-*` submits that share a
+campaign share one results tree. Closed #4 and #5 are in.
+
+### 3.7 Watcher is opt-in, foreground, on the user's machine
+
+Closed #6 asked for poll → requeue → fetch. Auto-requeue inside `run.sh
+status` stays rejected: a read tool must not submit. The collector's tmux
+session on the login node is not the pattern to copy. The login node is
+shared, and §10 forbids compute there. A watcher that resubmits is not
+telemetry.
+
+The watcher is a process the user starts on their machine and stops with
+Ctrl-C. No other subcommand starts it. It takes `--campaign N` (optional
+`--job`). It calls `run.sh status`, `run` (retry), `fetch`, and `cancel` only.
+It never opens the ledger, never calls `sacct`, never calls `sbatch`. The
+partition ladder stays inside `run.sh` (D9).
+
+The harness owns the retry budget: no retry if that token's previous retry
+failed; no retry if the job died within 120s of submit; attempt counts
+persist so a restart does not reset the budget. A project may disable the
+watcher or pass tighter limits. Infinite retry is not the default.
+
+**Guards.** Attempt counts live in `.unity_state/<campaign>.watch.json`. One
+`flock` on that file: a second watcher on the same campaign exits. The
+process dies with the terminal. Nothing respawns. It runs until every
+in-scope group is terminal, then `fetch`, then exits.
+
+The watcher binary lives in the plugin (`scripts/hpc-watch`), not in the
+frozen `run.sh` copy. It calls the project's `unityHPC/run.sh`. A watcher
+inside the scaffold would freeze retry policy at setup time (§8).
+
+### 3.8 Remote bootstrap is a locked hook, not a pip convention
+
+Nothing in the plugin creates a remote environment. That is survivable for one
+job and not for fan-out: N tasks start together and race on NFS. The race is a
+property of the primitive. The lock is the part every project gets wrong.
+
+If `unityHPC/bootstrap.sh` exists, the job template sources it under one
+`flock` on `REMOTE_DIR`, re-checks after acquire, and uses `if/then … exit 0`
+(not `[ … ] && exit 0` under `set -e`). If the file is absent, the template
+only activates `VENV_PATH` as today. No `VENV_BOOTSTRAP` flag. No
+`requirements.txt` convention. A project that needs conda, modules, `HF_HOME`,
+or scratch setup writes that in the hook and still gets the lock.
+
+### 3.9 Sequenced work is out of scope
+
+`--dependency=afterok:` is a different object from same-shape fan-out. The
+evidence base has no DAG workaround. A later map can name it. This one does
+not.
+
+### 3.10 `--type` grows two names; the three old ones stay
+
+`--type cpu|gpu|ml` keep working: `ml` is still a primitive. `--type
+multi-cpu` and `--type multi-gpu` are added. No `.env` key is renamed.
+`templates/scaffold/{cpu,gpu,ml}` stay. Fan-out reuses the matching resource
+template plus `common/run.sh array`. There is no `templates/scaffold/multi-*`
+directory.
+
+Re-scaffold keeps today's replace and `.pre-redesign/` backup. There is no
+migration command and no major version bump for the type set. `unity_doctor`
+does not treat a three-type scaffold as broken. A generated `run.sh` that
+lacks cancel, payload or hook is ordinary scaffold drift: re-scaffold picks
+it up.
+
+### 3.11 MCP matches the dispatcher; it does not take a primitive
+
+Primitive is a scaffold fact (`--type` at setup). MCP tools do not grow a
+`type` or `primitive` parameter. `unity_submit` stays `run.sh run`. Add
+`unity_array` (manifest) and `unity_cancel`. Do not add a long-running
+`unity_watch` tool. An agent uses the same verbs as `run.sh`. Policy stays
+in the skill (D5).
+
+### 3.12 Telemetry does not record the primitive
+
+`task_run.hardware` is a device class (§3.3). The primitive is a project
+fact. The collector cannot see it. Do not add a `primitive` column. If a
+ranking needs the primitive, join the project ledger at read time (R1).
+
+### 3.13 Skills and README follow the five names
+
+The setup type table lists `cpu|gpu|ml|multi-cpu|multi-gpu`.
+`/unity-hpc:sweep` is the fan-out path. `/unity-hpc:run` stays single-job.
+README drops the sentence that nothing runs in the background. Document
+payload, `bootstrap.sh`, `cancel`, and `watch`.
+
 ## 4. What Unity exposes, and what it does not
 
 From a login-node survey on 2026-07-22, on login6, with Slurm 25.11.6. Treat the
@@ -135,6 +299,8 @@ scripted or SSH invocation must prepend that directory, and must set `PAGER=NONE
 ## See also
 
 - `../ARCHITECTURE.md` — the layer map, the submit path, and the I1–I9 invariants
+- `../CONTEXT.md` — glossary for the five primitives and the two axes
+- `scaffold-axes-spec.md` — implementable spec for the scaffold-axes redesign
 - `../README.md` — installation and daily use
 - `docs/open-follow-ups.md` at the marketplace root — what is still open
 - `docs/marketplace.md` at the marketplace root — naming, versioning, releases
