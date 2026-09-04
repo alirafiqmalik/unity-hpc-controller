@@ -62,6 +62,8 @@ The [Pipeline](#pipeline) section has the layer map, the submit path, and the ob
 | `run.sh fetch` | yes (`rsync`) | pull this campaign's `.out`, `.err` and artifacts |
 | `run.sh render <exp>` | no | preview the sbatch script |
 | `run.sh sync` | yes (`rsync`) | push the project to `$REMOTE_DIR` |
+| `run.sh array <manifest> [--campaign N] [--limit N]` | yes | fan out N independent tasks, one `sbatch --array`, N ledger rows |
+| `run.sh cancel [--campaign N] [--job P]` | yes (`scancel`) | cancel every live job in scope, and mark it `CANCELLED` in the ledger |
 
 You can override any of these for one invocation, with no edit to `.env`:
 `JOB_COMMAND`, `WALLTIME`,
@@ -93,14 +95,53 @@ actually landed on, and `--dry-run` previews the rung a real submit would try
 first.
 
 A **campaign** is a label that groups submissions. Its default is today's UTC
-date.
+date. `cancel`, `fetch` and the watcher all take `--campaign N` and act on every
+live group under that label; `--job <parent>` pins one fan-out group.
 
-Nothing runs in the background. There is no monitor process, nothing auto-fetches,
-and nothing auto-requeues. The ledger is local only, because `sync.sh` excludes
-it, and it upgrades in place when a new plugin version adds a column.
+The ledger is local only, because `sync.sh` excludes it, and it upgrades in
+place when a new plugin version adds a column.
 
 A job submitted with bare `sbatch`, outside `run.sh`, is invisible to everything
 above. That is the one thing the abstraction cannot do for you.
+
+### Fan-out: manifest, payload and cancel
+
+`run.sh array <manifest>` submits one `sbatch --array` for the whole batch, and
+records N ledger rows keyed `<parent>_<index>`. A manifest line is `EXP` alone,
+or `EXP<TAB>JSON`. The JSON tail reaches the task as `UNITY_TASK_PAYLOAD` — the
+harness copies it and never parses it. A tab-free line keeps today's
+`EXP`-only behaviour.
+
+`run.sh cancel [--campaign N] [--job P]` runs one `scancel` over every live
+job in scope, then writes `CANCELLED` back to the ledger. An array's children
+collapse onto their parent job id, the id `scancel` understands.
+
+### Remote bootstrap: `unityHPC/bootstrap.sh`
+
+If `unityHPC/bootstrap.sh` exists, the job template sources it under one
+`flock` on `REMOTE_DIR`. If that file is absent, the template does the plain
+`VENV_PATH` activation instead.
+The lock matters for fan-out: N array tasks start together and would
+otherwise race each other setting up the same NFS-mounted environment. A
+project that needs conda, modules, `HF_HOME` or scratch setup writes that once,
+in the hook, and every task shares the lock.
+
+### Watch: `scripts/hpc-watch`
+
+`hpc-watch` is an opt-in, foreground process that you start on your own
+machine and stop with Ctrl-C. Nothing starts it for you, and nothing
+respawns it.
+
+```bash
+scripts/hpc-watch --campaign N [--job <parent>] [--poll SECONDS]
+```
+
+It polls `run.sh status`, retries a failed task within a budget, calls
+`run.sh fetch` once every in-scope job is terminal, and exits. It never
+opens the ledger, never calls `sacct`, and never calls `sbatch` — those stay
+inside `run.sh`. One `flock` on `.unity_state/<campaign>.watch.json` allows
+one watcher per campaign; a second one on the same campaign exits
+immediately.
 
 ## Pipeline
 
@@ -259,7 +300,7 @@ ln -sf "$(pwd)/scripts/"* ~/.local/bin/
 
 | Skill | Purpose |
 |---|---|
-| `/unity-hpc:setup` | Bootstrap a project — pick cpu, gpu or ml, generate `unityHPC/`, check SSH, sync |
+| `/unity-hpc:setup` | Bootstrap a project — pick cpu, gpu, ml, multi-cpu or multi-gpu, generate `unityHPC/`, check SSH, sync |
 | `/unity-hpc:run <exp>` | Submit one job to SLURM, queue-aware, for any job type |
 | `/unity-hpc:sweep` | Submit a batch of related jobs under one campaign |
 | `/unity-hpc:status` | Check the job states — an instant local read, with a live check on request |
@@ -329,8 +370,8 @@ plugin *data* is this directory. Every script and tool defaults to it, and honor
 ## MCP tools
 
 `unity_status` · `unity_jobs` · `unity_results` · `unity_results_tsv` · `unity_submit`
-· `unity_logs` · `unity_ssh` · `unity_traffic` · `unity_usage` · `unity_cluster_profile`
-· `unity_my_jobs` · `unity_doctor`
+· `unity_array` · `unity_cancel` · `unity_logs` · `unity_ssh` · `unity_traffic`
+· `unity_usage` · `unity_cluster_profile` · `unity_my_jobs` · `unity_doctor`
 
 ## Cluster facts
 

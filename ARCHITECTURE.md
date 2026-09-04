@@ -49,6 +49,8 @@ namespace. It needs the standard library and `mcp`, nothing else.
 | Tool | Notes |
 |---|---|
 | `unity_submit` | Delegates to `run.sh run`. `--dry-run` previews the job |
+| `unity_array` | Delegates to `run.sh array`. One manifest, one `sbatch --array`, N ledger rows |
+| `unity_cancel` | Delegates to `run.sh cancel`. Scoped by campaign, or by one parent job id |
 | `unity_logs` | A live tail over SSH, with a fetched copy as the fallback |
 | `unity_ssh` | One read-only command on the login node. It blocks dangerous writes, and takes a `timeout` argument |
 
@@ -63,7 +65,8 @@ namespace. It needs the standard library and `mcp`, nothing else.
 ## 3. Internal tools
 
 **Dispatcher** — `unityHPC/run.sh`, generated into each project. Its subcommands
-are `run`, `render`, `sync`, `status`, `jobs`, `logs` and `fetch`.
+are `run`, `array`, `render`, `sync`, `status`, `jobs`, `logs`, `fetch` and
+`cancel`.
 
 **Python libraries** (`lib/`)
 
@@ -85,7 +88,19 @@ are `run`, `render`, `sync`, `status`, `jobs`, `logs` and `fetch`.
 `hpc-cleanup`, `hpc-sync-telemetry`, `hpc-retention-gate`, `hpc-config-write`.
 
 **Templates** (`templates/scaffold/`) — `common/{run.sh,sync.sh}`, plus typed
-`cpu|gpu|ml/{env.example,job_template.sh}`.
+`cpu|gpu|ml/{env.example,job_template.sh}`. Five primitives map onto these three
+template directories:
+
+| Primitive | Resource | Orchestration | Template dir |
+|---|---|---|---|
+| `cpu` | cpu | single | `cpu/` |
+| `gpu` | gpu | single | `gpu/` |
+| `multi-cpu` | cpu | fan-out | `cpu/` + `common/run.sh array` |
+| `multi-gpu` | gpu | fan-out | `gpu/` + `common/run.sh array` |
+| `ml` | gpu | coordinated | `ml/` |
+
+There is no `templates/scaffold/multi-*` directory. Fan-out reuses the matching
+resource template and submits through `run.sh array`.
 
 **Agents** (`agents/`) — `recon`, `experiment-dispatcher`, `result-analyzer`.
 
@@ -127,7 +142,7 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
                                                              └───────────────┘
 ```
 
-## 5. Submit path — `/unity-hpc:run`
+## 5. Submit path — `/unity-hpc:run`, `/unity-hpc:sweep`
 
 ```
  skill ──▶ run.sh run <exp> [--campaign C]
@@ -193,6 +208,38 @@ all did, until 0.9.1.
 
 Two tests now hold the line. One enforces that rule. The second enforces that
 somebody actually reads every key `env.example` advertises.
+
+### Fan-out — `run.sh array`
+
+`run.sh array <manifest> [--campaign N] [--limit N]` reuses the resource
+template's `#SBATCH` header through `render_array()`, adds
+`--array=0-N%LIMIT`, and names logs `%A_%a`. One `sbatch --array` call submits
+the whole batch; `campaign.record` writes N ledger rows, keyed
+`<parent>_<index>`.
+
+A manifest line is `EXP` alone, or `EXP<TAB>JSON`. The JSON tail becomes
+`UNITY_TASK_PAYLOAD` in the task's environment. The harness copies that tail
+and never parses it — `EXP` stays the SLURM job name and a filename fragment,
+so it cannot carry structure. A tab-free line keeps today's `EXP`-only
+behaviour.
+
+### Remote bootstrap hook
+
+If `unityHPC/bootstrap.sh` exists, `job_template.sh` sources it under one
+`flock` on `REMOTE_DIR`, re-checks after acquiring the lock, and falls back to
+plain `VENV_PATH` activation when the file is absent. The lock exists because
+fan-out starts N tasks together, and they would otherwise race each other
+setting up the same NFS-mounted environment. A project that needs conda,
+modules, `HF_HOME` or scratch setup writes that once, in the hook, and every
+task shares the lock.
+
+### Cancel — `run.sh cancel`
+
+`run.sh cancel [--campaign N] [--job P]` resolves the campaign's cancelable
+rows to their distinct parent job ids — an array's children collapse onto the
+id `scancel` understands — issues one `scancel` over SSH, and writes
+`CANCELLED` back to the ledger. `unity_cancel` delegates to the same
+subcommand.
 
 ## 6. Read path — no SSH unless asked
 
@@ -328,3 +375,32 @@ shared prose profile, with no lock, no merge and no staleness check.
   projects, and that copy cannot source plugin code. `tests/test_safe_name_parity.py` fails
   if the two copies diverge.
 - **GPU testing runs inside a written envelope** — see `docs/gpu-test-envelope.md`.
+
+## 11. Watcher — `scripts/hpc-watch`
+
+```
+ you ──▶ scripts/hpc-watch --campaign N [--job P] [--poll SECONDS]
+              │
+              ├─▶ flock .unity_state/<campaign>.watch.json  ── one watcher per campaign
+              │        └─ held already → print, exit 1
+              │
+              └─▶ loop until every in-scope group is terminal
+                       ├─▶ run.sh status         (text contract only, no ledger, no sacct)
+                       ├─▶ run.sh run  (retry)   within the harness-owned budget
+                       ├─▶ run.sh fetch          once every in-scope job is terminal
+                       └─▶ Ctrl-C or the terminal closing stops it; nothing respawns it
+```
+
+The watcher is opt-in, foreground, and runs on the user's machine — not a
+`run.sh` subcommand, and not a login-node daemon. It drives only `run.sh
+status`, `run` and `fetch`; it never opens the ledger, never calls `sacct`,
+and never calls `sbatch`. The partition ladder (D9) stays inside `run.sh`.
+
+The harness owns the retry budget: no retry after that token's previous retry
+failed, no retry for a job that died within 120s of submit, and attempt
+counts persist in `.unity_state/<campaign>.watch.json` so a restart does not
+reset the budget. Infinite retry is not the default.
+
+`scripts/hpc-watch` lives in the plugin, not in the frozen `templates/scaffold/
+common/run.sh` copy: a watcher baked into the scaffold would freeze retry
+policy at scaffold time.

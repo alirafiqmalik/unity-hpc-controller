@@ -15,8 +15,15 @@ stop and print what failed.
 
 **1. Get the project type**
 
-Ask the user for the project type: **cpu** for CPU-only jobs, **gpu** for
-single-node GPU jobs, or **ml** for multi-node training with `torchrun`.
+Ask the user for the project type:
+
+| Type | What it is |
+|---|---|
+| `cpu` | One CPU job |
+| `gpu` | One GPU job on one node (several GPUs on that node still count as `gpu`) |
+| `ml` | One coordinated multi-node training job, launched with `torchrun` |
+| `multi-cpu` | N independent CPU tasks, fanned out through `run.sh array` |
+| `multi-gpu` | N independent GPU tasks, fanned out through `run.sh array` |
 
 Do not guess. The answer selects the job template. If the user is not sure, use
 `cpu`. It is the safe default, and you can generate a new scaffold later.
@@ -29,7 +36,7 @@ uses only the supplied values, and fails if any required value is missing.
 ```bash
 UNITY_HPC_NONINTERACTIVE=1 \
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" \
-  --type <cpu|gpu|ml> \
+  --type <cpu|gpu|ml|multi-cpu|multi-gpu> \
   --account <slurm-account> \
   --remote-dir <remote-project-dir> \
   --job-command '<command>' \
@@ -61,7 +68,7 @@ truth after setup; each flag fills its key in that file, in place.
 **2. Generate the unityHPC/ scaffold**
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" --type <cpu|gpu|ml> --dry-run
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" --type <cpu|gpu|ml|multi-cpu|multi-gpu> --dry-run
 ```
 
 Print what will change. Then run the same command without `--dry-run` to apply

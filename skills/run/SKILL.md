@@ -168,8 +168,9 @@ Job <id> submitted to <partition> (campaign <name>).
 `run.sh logs` and `unity_logs` both print stdout and stderr. When a job fails,
 the reason is almost always in the `.err` section.
 
-Nothing runs in the background for the user. A state check and an output fetch
-are both explicit actions.
+`run.sh` starts nothing in the background. A state check and an output fetch
+are both explicit actions. `scripts/hpc-watch` can do that polling for you,
+but only the user starts it, and Ctrl-C stops it.
 
 ## Multi-node note
 

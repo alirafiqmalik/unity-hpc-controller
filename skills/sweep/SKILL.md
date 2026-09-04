@@ -7,9 +7,9 @@ description: "Submit a batch of related Unity jobs under one campaign — respec
 
 Announce: "Using unity-hpc:sweep to submit a batch of jobs to Unity."
 
-A sweep uses one manifest-driven SLURM array. The manifest contains one safe
-experiment name per line. The shared campaign makes the array one unit for
-status, fetch and telemetry.
+A sweep uses one manifest-driven SLURM array. The manifest has one line for each
+task: a safe experiment name alone, or that name, a TAB, and a JSON object. The
+shared campaign makes the array one unit for status, fetch and telemetry.
 
 Vary the jobs the way the project already varies them: a different `JOB_COMMAND`
 for each variant, an argument that the entrypoint reads, or an env var.
@@ -65,8 +65,18 @@ bash unityHPC/run.sh array variants.txt --campaign "$CAMPAIGN" --limit <N>
 The `--limit` value controls the number of array tasks that can run at once.
 Omit it when the scheduler and account limits allow all tasks to run.
 
-Each task reads its own line from the manifest into `$EXP`. To vary anything
-else, read `$EXP` in the job command, or pass values with `sbatch --export`:
+Each task reads its own line from the manifest. The name becomes `$EXP`. A JSON
+tail after the TAB becomes `$UNITY_TASK_PAYLOAD`, which the harness copies and
+never parses, so use it for per-task values that `$EXP` cannot hold:
+
+```
+lr-001<TAB>{"lr": 0.001, "seed": 7}
+```
+
+Write a real tab character, not the four letters `<TAB>`.
+
+To vary anything else, read `$EXP` in the job command, or pass values with
+`sbatch --export`:
 
 ```bash
 bash unityHPC/run.sh array variants.txt --campaign "$CAMPAIGN" \
