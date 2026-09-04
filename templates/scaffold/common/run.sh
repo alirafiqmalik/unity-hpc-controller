@@ -14,8 +14,8 @@
 #   run.sh cancel [--campaign N] [--job P] scancel live jobs; updates the ledger
 #
 # Any of JOB_COMMAND, WALLTIME, SLURM_{PARTITION,CPUS,MEM,NODES,GPUS,GPU_TYPE,
-# ACCOUNT,PARTITION_FALLBACK,PARTITION_WALLTIME_CAP}, REMOTE_DIR, UNITY_HOST and
-# CAMPAIGN may be overridden for a single invocation without touching .env:
+# ACCOUNT,PARTITION_FALLBACK,PARTITION_WALLTIME_CAP}, REMOTE_DIR,
+# REMOTE_RESULTS_DIR, UNITY_HOST or CAMPAIGN may be overridden for one call:
 #   JOB_COMMAND="echo smoke-test" SLURM_MEM=1G bash run.sh run smoke
 # PROJECT_NAME, MODEL, DATASET, SEED and CONFIG_HASH are optional provenance.
 # UNITY_SSH_TIMEOUT sets the maximum wait for one SSH call, in seconds.
@@ -62,7 +62,7 @@ fi
 UNITY_OVERRIDABLE="JOB_COMMAND WALLTIME SLURM_PARTITION SLURM_CPUS SLURM_MEM
                    SLURM_NODES SLURM_GPUS SLURM_GPU_TYPE SLURM_CONSTRAINT SLURM_ACCOUNT
                    SLURM_PARTITION_FALLBACK SLURM_PARTITION_WALLTIME_CAP
-                   REMOTE_DIR UNITY_HOST CAMPAIGN
+                   REMOTE_DIR REMOTE_RESULTS_DIR UNITY_HOST CAMPAIGN
                    MODULES VENV_PATH HF_HOME USER_EMAIL
                    UNITY_CID PROJECT_NAME MODEL DATASET SEED CONFIG_HASH"
 # `${!var+x}` tests whether the variable is SET, not whether it is non-empty.
@@ -101,6 +101,7 @@ unset _var _flag
 : "${SLURM_PARTITION_FALLBACK:=}"
 : "${SLURM_PARTITION_WALLTIME_CAP:=}"
 : "${CAMPAIGN:=}"
+: "${REMOTE_RESULTS_DIR:=}"
 : "${UNITY_CID:=/work/${SLURM_ACCOUNT:-unknown-account}/${USER:-unknown-user}/cluster-intel}"
 : "${PROJECT_NAME:=$(basename "$PROJECT_DIR")}"
 : "${MODEL:=}"
@@ -564,6 +565,13 @@ _check_syntax() {
 
 render() {
     local exp="$1"
+    # Declared and assigned on separate lines. `local campaign="$(_campaign)"`
+    # takes the exit status of the `local` builtin, not of the substitution, so
+    # an invalid CAMPAIGN printed its rejection and `render` still emitted a
+    # script with CAMPAIGN='' and exited 0. Every other campaign entry point
+    # uses a bare assignment and lets `set -e` see the `exit 2`.
+    local campaign
+    campaign="${2:-$(_campaign)}"
     _require_safe_name "experiment name" "$exp"
     require SLURM_ACCOUNT
     require REMOTE_DIR
@@ -604,6 +612,8 @@ render() {
     # $EXP, $SLURM_JOB_ID and friends still happens, just at `eval` time.
     printf 'export EXP=%q\n' "$exp"
     printf 'export REMOTE_DIR=%q\n' "$REMOTE_DIR"
+    printf 'export CAMPAIGN=%q\n' "$campaign"
+    printf 'export REMOTE_RESULTS_DIR=%q\n' "${REMOTE_RESULTS_DIR:-}"
     printf 'export JOB_COMMAND=%q\n' "$JOB_COMMAND"
     printf 'export VENV_PATH=%q\n' "${VENV_PATH:-}"
     printf 'export MODULES=%q\n' "${MODULES:-}"
@@ -631,7 +641,7 @@ cmd_run() {
 
     local campaign script
     campaign="$(_campaign)"
-    script="$(render "$exp")"
+    script="$(render "$exp" "$campaign")"
     _check_syntax "job script" "$script"
 
     if [ "$dry_run" -eq 1 ]; then
@@ -759,6 +769,8 @@ ARRAY_MANIFEST_WAIT
     printf '    export UNITY_TASK_PAYLOAD="$(cut -f2- <<<"$_UNITY_MANIFEST_LINE")"\n'
     printf 'fi\n'
     printf 'export REMOTE_DIR=%q\n' "$REMOTE_DIR"
+    printf 'export CAMPAIGN=%q\n' "$campaign"
+    printf 'export REMOTE_RESULTS_DIR=%q\n' "${REMOTE_RESULTS_DIR:-}"
     printf 'export JOB_COMMAND=%q\n' "$JOB_COMMAND"
     printf 'export VENV_PATH=%q\n' "${VENV_PATH:-}"
     printf 'export MODULES=%q\n' "${MODULES:-}"
@@ -937,7 +949,15 @@ cmd_fetch() {
     rsync -az ${filters[@]+"${filters[@]}"} \
         "${UNITY_HOST}:${REMOTE_DIR}/_slurm/" "$dest/"
 
-    local remote_results="${REMOTE_RESULTS_DIR:-${REMOTE_DIR}/_results}"
+    # Prefer the campaign-keyed subtree so a later campaign does not re-pay the
+    # rsync (and disk) cost of every earlier one sharing the same base. A
+    # project whose remote job still writes a flat _results/ -- the plugin does
+    # not control what the job writes -- keeps today's whole-tree behavior.
+    local remote_base="${REMOTE_RESULTS_DIR:-${REMOTE_DIR}/_results}"
+    local remote_results="${remote_base}/${campaign}"
+    if ! _ssh "$UNITY_HOST" "test -d '${remote_results}'"; then
+        remote_results="$remote_base"
+    fi
     if _ssh "$UNITY_HOST" "test -d '${remote_results}'"; then
         mkdir -p "$dest/artifacts"
         rsync -az "${UNITY_HOST}:${remote_results}/" "$dest/artifacts/"

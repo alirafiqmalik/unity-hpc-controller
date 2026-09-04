@@ -37,9 +37,15 @@ bash unityHPC/run.sh fetch [--campaign <name>]
 ```
 
 This pulls exactly the `.out` and `.err` files of that campaign's recorded jobs
-into `_results/<campaign>/`. It also pulls everything under the remote results
-directory into `_results/<campaign>/artifacts/`. That directory is
-`$REMOTE_RESULTS_DIR`, and its default is `$REMOTE_DIR/_results`.
+into `_results/<campaign>/`. It also pulls the remote results directory into
+`_results/<campaign>/artifacts/`.
+
+The remote base is `$REMOTE_RESULTS_DIR`, and its default is
+`$REMOTE_DIR/_results`. Fetch prefers `<base>/<campaign>` when that
+subdirectory exists on the cluster, so one campaign does not pull the
+artifacts of every earlier campaign that shares the base. If the
+subdirectory does not exist -- a project whose job writes a flat
+`_results/` -- fetch pulls the whole base instead.
 
 If the campaign has no recorded jobs, `fetch` prints that fact, and pulls the
 whole remote `_slurm/` directory instead. That is the fallback for jobs submitted

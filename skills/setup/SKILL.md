@@ -47,7 +47,7 @@ more than the system python:
 | `--hf-home PATH` | `HF_HOME` | a shared model cache |
 | `--constraint 'sm_80&vram48'` | `SLURM_CONSTRAINT` | a node feature, rendered as `#SBATCH --constraint` |
 | `--host NAME` | `UNITY_HOST` | an SSH alias other than `unity` |
-| `--results-dir PATH` | `REMOTE_RESULTS_DIR` | where fetch pulls artifacts from |
+| `--results-dir PATH` | `REMOTE_RESULTS_DIR` | the artifacts base; fetch prefers `<base>/<campaign>` |
 
 A GPU job with no `--venv` runs the system python, which has no framework
 installed. The job then fails on the node for a reason no plugin tool can
