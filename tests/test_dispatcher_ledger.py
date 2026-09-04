@@ -130,6 +130,23 @@ def test_array_submission_uses_one_sbatch_and_records_tasks(dispatcher, tmp_path
     assert "#SBATCH --array=0-2%2" in payload.read_text()
 
 
+def test_array_ledger_exp_is_the_token_not_the_payload_tail(dispatcher, tmp_path):
+    """A manifest line may be token<TAB>json; the ledger's exp column is the
+    token alone, so a tab-delimited payload tail cannot desync cmd_jobs'
+    job_id/exp/partition/status columns or cmd_fetch's filename stem."""
+    manifest = tmp_path / "variants.txt"
+    manifest.write_text('trial-a\t{"lr": 0.01}\ntrial-b\n')
+
+    result = dispatcher("array", str(manifest), "--campaign", "sweep-1")
+
+    assert result.returncode == 0, result.stderr
+    rows = campaign.jobs(dispatcher.project, "sweep-1")
+    assert [(r["job_id"], r["exp"]) for r in rows] == [
+        ("12345_0", "trial-a"),
+        ("12345_1", "trial-b"),
+    ]
+
+
 def test_the_rendered_array_script_is_valid_bash(dispatcher, tmp_path):
     """A released array script escaped its manifest lookup with backslashes that
     bash's printf does not interpret, so every task died on line 14 with a

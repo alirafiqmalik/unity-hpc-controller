@@ -31,9 +31,13 @@ exit 0
 """
 
 
-@pytest.fixture
-def captured_array_script(tmp_project, materialise, tmp_path):
-    """Run `run.sh array` against the fake ssh; return the captured sbatch script."""
+def _run_array(tmp_project, materialise, tmp_path, manifest_text):
+    """Run `run.sh array` against the fake ssh for MANIFEST_TEXT.
+
+    Returns (result, capture_dir) so a caller can inspect the captured
+    sbatch script even when cmd_array rejected the manifest (returncode != 0
+    and no script was ever written).
+    """
     unity_dir = materialise(tmp_project, "cpu", REMOTE_DIR=str(tmp_path / "remote"))
 
     bindir = tmp_path / "bin"
@@ -46,7 +50,7 @@ def captured_array_script(tmp_project, materialise, tmp_path):
     capture_dir.mkdir()
 
     manifest = tmp_path / "variants.txt"
-    manifest.write_text("alpha\nbeta\ngamma\n")
+    manifest.write_text(manifest_text)
 
     env = dict(os.environ)
     env["PATH"] = f"{bindir}:{env['PATH']}"
@@ -57,6 +61,14 @@ def captured_array_script(tmp_project, materialise, tmp_path):
          "--campaign", "camp"],
         capture_output=True, text=True, env=env, cwd=tmp_project,
     )
+    return result, capture_dir
+
+
+@pytest.fixture
+def captured_array_script(tmp_project, materialise, tmp_path):
+    """Run `run.sh array` against the fake ssh; return the captured sbatch script."""
+    result, capture_dir = _run_array(tmp_project, materialise, tmp_path,
+                                      "alpha\nbeta\ngamma\n")
     assert result.returncode == 0, result.stderr
     script = capture_dir / "array.sbatch"
     assert script.is_file(), "cmd_array never wrote the sbatch script"
@@ -100,3 +112,69 @@ def test_array_task_reads_its_own_manifest_line(captured_array_script, tmp_path)
 
 def test_array_header_covers_every_manifest_line(captured_array_script):
     assert "#SBATCH --array=0-2\n" in captured_array_script
+
+
+def _task_preamble(script_text):
+    """The part of the array script that resolves $EXP and $UNITY_TASK_PAYLOAD."""
+    lines = script_text.splitlines()
+    end = next(i for i, line in enumerate(lines) if line.startswith("export EXP="))
+    fi_index = next(i for i in range(end, len(lines)) if lines[i].strip() == "fi")
+    return "\n".join(lines[: fi_index + 1])
+
+
+def test_manifest_line_without_tab_exports_only_exp(tmp_project, materialise, tmp_path):
+    """A tab-free line stays identical to today's EXP-only export."""
+    manifest_text = "alpha\nbeta\n"
+    result, capture_dir = _run_array(tmp_project, materialise, tmp_path, manifest_text)
+    assert result.returncode == 0, result.stderr
+    preamble = _task_preamble((capture_dir / "array.sbatch").read_text())
+
+    manifest = tmp_path / "remote" / "_slurm" / "camp-4242.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(manifest_text)
+
+    out = subprocess.run(
+        ["bash", "-c",
+         f'{preamble}\nprintf "%s\\x1f%s" "$EXP" "${{UNITY_TASK_PAYLOAD+set}}"'],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "SLURM_ARRAY_TASK_ID": "0", "SLURM_ARRAY_JOB_ID": "4242"},
+    )
+    assert out.returncode == 0, out.stderr
+    exp, payload_flag = out.stdout.split("\x1f")
+    assert exp == "alpha"
+    assert payload_flag == "", "a tab-free line must not set UNITY_TASK_PAYLOAD at all"
+
+
+def test_manifest_line_with_tab_exports_token_and_payload_verbatim(
+        tmp_project, materialise, tmp_path):
+    """token<TAB>json exports EXP from the token and UNITY_TASK_PAYLOAD as the
+    exact, unparsed tail."""
+    payload_json = '{"lr": 0.01, "seed": 7, "note": "a b"}'
+    manifest_text = f"trial-a\t{payload_json}\n"
+    result, capture_dir = _run_array(tmp_project, materialise, tmp_path, manifest_text)
+    assert result.returncode == 0, result.stderr
+    preamble = _task_preamble((capture_dir / "array.sbatch").read_text())
+
+    manifest = tmp_path / "remote" / "_slurm" / "camp-4242.manifest"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(manifest_text)
+
+    out = subprocess.run(
+        ["bash", "-c", f'{preamble}\nprintf "%s\\x1f%s" "$EXP" "$UNITY_TASK_PAYLOAD"'],
+        capture_output=True, text=True, timeout=30,
+        env={**os.environ, "SLURM_ARRAY_TASK_ID": "0", "SLURM_ARRAY_JOB_ID": "4242"},
+    )
+    assert out.returncode == 0, out.stderr
+    exp, payload = out.stdout.split("\x1f")
+    assert exp == "trial-a"
+    assert payload == payload_json
+
+
+def test_invalid_token_is_rejected_even_with_a_payload_tail(tmp_project, materialise, tmp_path):
+    """EXP stays _require_safe_name-checked; a payload tail must not smuggle
+    an unsafe token past that gate."""
+    result, capture_dir = _run_array(tmp_project, materialise, tmp_path,
+                                      'bad name\t{"lr": 0.01}\n')
+    assert result.returncode == 2, result.stdout
+    assert "invalid experiment name" in result.stderr
+    assert not (capture_dir / "array.sbatch").exists()

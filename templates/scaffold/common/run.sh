@@ -439,7 +439,9 @@ elif mode == "array":
     parent, partition, manifest = sys.argv[4], sys.argv[5], sys.argv[6]
     try:
         with open(manifest, encoding="utf-8") as fh:
-            exps = [line.strip() for line in fh if line.strip()]
+            # A line may be "token\tjson"; the ledger's exp column is the
+            # token only -- the JSON tail is an opaque payload it never reads.
+            exps = [line.strip().split("\t", 1)[0] for line in fh if line.strip()]
     except OSError:
         sys.exit(2)
     with con:
@@ -718,7 +720,16 @@ ARRAY_MANIFEST_WAIT
     # version of this line reaches the cluster as unparseable bash. The nested
     # double quotes are already valid inside `$( )`, and the single-quoted
     # format string is what stops the local shell expanding $(...) here.
-    printf 'export EXP="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$UNITY_MANIFEST")"\n'
+    printf 'export EXP="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$UNITY_MANIFEST" | cut -f1)"\n'
+    # A manifest line may be "token<TAB>json": EXP above is the token (cut -f1
+    # is a no-op on a tab-free line, so today's export is unchanged); when the
+    # raw line differs from EXP a tab was present, and the tail -- verbatim,
+    # unparsed -- becomes UNITY_TASK_PAYLOAD. cpu/gpu/ml and a tab-free array
+    # line never set this variable at all.
+    printf '_UNITY_MANIFEST_LINE="$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$UNITY_MANIFEST")"\n'
+    printf 'if [ "$_UNITY_MANIFEST_LINE" != "$EXP" ]; then\n'
+    printf '    export UNITY_TASK_PAYLOAD="$(cut -f2- <<<"$_UNITY_MANIFEST_LINE")"\n'
+    printf 'fi\n'
     printf 'export REMOTE_DIR=%q\n' "$REMOTE_DIR"
     printf 'export JOB_COMMAND=%q\n' "$JOB_COMMAND"
     printf 'export VENV_PATH=%q\n' "${VENV_PATH:-}"
@@ -759,7 +770,10 @@ cmd_array() {
     while IFS= read -r exp || [ -n "$exp" ]; do
         [ -n "${exp//[[:space:]]/}" ] || continue
         case "$exp" in \#*) continue ;; esac
-        _require_safe_name "experiment name" "$exp"
+        # A line may carry an opaque payload after a tab: token<TAB>json. Only
+        # the token becomes EXP and is safe-name-checked; the JSON tail is
+        # never parsed here -- it passes through verbatim.
+        _require_safe_name "experiment name" "${exp%%$'\t'*}"
         printf '%s\n' "$exp" >>"$normalized"
     done <"$manifest"
     ARRAY_COUNT="$(wc -l <"$normalized")"
