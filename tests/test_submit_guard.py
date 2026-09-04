@@ -149,3 +149,80 @@ def test_submit_tool_is_not_ml_specific(server):
     exp_desc = submit.inputSchema["properties"]["exp"]["description"].lower()
     assert "experiment name/path" not in exp_desc, \
         "the exp field must not presuppose an experiment-shaped project"
+
+
+def test_no_tool_takes_a_primitive_or_type_parameter(server):
+    """Primitive is a scaffold fact fixed at /unity-hpc:setup, not something an
+    MCP caller chooses per call (design-decisions.md §3.11)."""
+    tools = asyncio.run(server.list_tools())
+    for tool in tools:
+        props = tool.inputSchema.get("properties", {})
+        assert "primitive" not in props, f"{tool.name} must not take primitive"
+        assert "type" not in props, f"{tool.name} must not take type"
+
+
+def test_array_missing_scaffold_gives_actionable_message(server, tmp_project,
+                                                          monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    manifest = tmp_project / "manifest.txt"
+    manifest.write_text("baseline\n")
+    out = server._unity_array(str(manifest))
+    assert "No such file or directory" not in out
+    assert "/unity-hpc:setup" in out
+    assert "unityHPC/run.sh" in out
+
+
+def test_array_present_scaffold_is_invoked(server, tmp_project, materialise,
+                                           monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    unity = materialise(tmp_project, "cpu")
+    unity.joinpath("run.sh").write_text(
+        '#!/usr/bin/env bash\necho "ARRAY $2"\n')
+    manifest = tmp_project / "manifest.txt"
+    manifest.write_text("baseline\n")
+    out = server._unity_array(str(manifest))
+    assert f"ARRAY {manifest}" in out
+
+
+def test_array_extra_args_are_forwarded(server, tmp_project, materialise,
+                                        monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    unity = materialise(tmp_project, "cpu")
+    unity.joinpath("run.sh").write_text(
+        '#!/usr/bin/env bash\necho "ARGS $*"\n')
+    manifest = tmp_project / "manifest.txt"
+    manifest.write_text("baseline\n")
+    out = server._unity_array(str(manifest), "--limit 5")
+    assert "--limit" in out and "5" in out
+
+
+def test_array_campaign_is_forwarded(server, tmp_project, materialise,
+                                     monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    unity = materialise(tmp_project, "cpu")
+    unity.joinpath("run.sh").write_text(
+        '#!/usr/bin/env bash\necho "ARGS $*"\n')
+    manifest = tmp_project / "manifest.txt"
+    manifest.write_text("baseline\n")
+    out = server._unity_array(str(manifest), campaign="mycampaign")
+    assert "--campaign" in out and "mycampaign" in out
+
+
+def test_cancel_missing_scaffold_gives_actionable_message(server, tmp_project,
+                                                           monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    out = server._unity_cancel()
+    assert "No such file or directory" not in out
+    assert "/unity-hpc:setup" in out
+    assert "unityHPC/run.sh" in out
+
+
+def test_cancel_present_scaffold_is_invoked(server, tmp_project, materialise,
+                                            monkeypatch):
+    monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
+    unity = materialise(tmp_project, "cpu")
+    unity.joinpath("run.sh").write_text(
+        '#!/usr/bin/env bash\necho "CANCEL $*"\n')
+    out = server._unity_cancel(campaign="mycampaign", job="12345")
+    assert "--campaign" in out and "mycampaign" in out
+    assert "--job" in out and "12345" in out

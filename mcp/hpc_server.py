@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Unity HPC MCP server — stdio transport.
-Exposes 12 tools for reading campaign state, job status, results,
+Exposes 14 tools for reading campaign state, job status, results,
 logs, cluster queue, historical usage, the shared cluster profile, this
-project's own job telemetry, this server's own health, and running SSH
-commands on Unity.
+project's own job telemetry, this server's own health, submitting or
+cancelling jobs, and running SSH commands on Unity.
 
 Reports metrics a job printed; it never names one itself. A project declares
 its own in unityHPC/metrics.json (see lib/metrics.py).
@@ -208,6 +208,39 @@ async def list_tools() -> list[types.Tool]:
             }
         ),
         types.Tool(
+            name="unity_array",
+            description=(
+                "Submit a fan-out array of independent tasks to SLURM via the "
+                "project's unityHPC/run.sh dispatcher, from a manifest file of "
+                "one experiment name per line. Returns the scheduler's response, "
+                "or guidance if the project has no scaffold yet."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "manifest": {"type": "string", "description": "Path to the manifest file, one experiment name (optionally with a tab-separated payload) per line. Absolute, or relative to the project directory."},
+                    "extra_args": {"type": "string", "description": "Extra flags. '--limit 20' caps concurrent tasks and is read by run.sh; anything else is passed to sbatch, e.g. '--qos=short'. '--dry-run' is not supported here."},
+                    "campaign": {"type": "string", "description": "Group this array under one campaign. Omit for today's UTC date."}
+                },
+                "required": ["manifest"]
+            }
+        ),
+        types.Tool(
+            name="unity_cancel",
+            description=(
+                "Cancel live jobs via the project's unityHPC/run.sh dispatcher: "
+                "scancel the parent job(s) for a campaign, or one job within it, "
+                "and update the ledger."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "campaign": {"type": "string", "description": "Campaign name. Omit for the latest."},
+                    "job": {"type": "string", "description": "Cancel only this parent job id, within the campaign."}
+                }
+            }
+        ),
+        types.Tool(
             name="unity_logs",
             description=("Tail the newest recorded job's SLURM output AND error files "
                          "— live over SSH, falling back to a fetched copy. Reads both "
@@ -294,6 +327,11 @@ async def _dispatch(name: str, args: dict) -> str:
     elif name == "unity_submit":
         return _unity_submit(args["exp"], args.get("extra_args", ""),
                              args.get("campaign"), args.get("env"))
+    elif name == "unity_array":
+        return _unity_array(args["manifest"], args.get("extra_args", ""),
+                            args.get("campaign"))
+    elif name == "unity_cancel":
+        return _unity_cancel(args.get("campaign"), args.get("job"))
     elif name == "unity_logs":
         return _unity_logs(args.get("campaign"), args.get("lines", 20),
                            args.get("stream", "both"))
@@ -548,18 +586,22 @@ def _overridable(runner: Path) -> set[str]:
         return set()
 
 
+def _missing_scaffold_message(runner: Path) -> str:
+    return (
+        f"No job scaffold in this project: {runner} does not exist.\n"
+        "Run /unity-hpc:setup to generate unityHPC/{run.sh,job_template.sh,"
+        "sync.sh,.env} for this project (it will ask whether the project is "
+        "cpu, gpu or ml).\n"
+        "If you keep your dispatcher elsewhere, point PROJECT_DIR at the "
+        "directory that contains unityHPC/."
+    )
+
+
 def _unity_submit(exp: str, extra_args: str, campaign: str | None = None,
                   env: dict | None = None) -> str:
     runner = _project_dir() / "unityHPC" / "run.sh"
     if not runner.exists():
-        return (
-            f"No job scaffold in this project: {runner} does not exist.\n"
-            "Run /unity-hpc:setup to generate unityHPC/{run.sh,job_template.sh,"
-            "sync.sh,.env} for this project (it will ask whether the project is "
-            "cpu, gpu or ml).\n"
-            "If you keep your dispatcher elsewhere, point PROJECT_DIR at the "
-            "directory that contains unityHPC/."
-        )
+        return _missing_scaffold_message(runner)
 
     # Per-invocation overrides were reachable from a shell but not from this
     # tool, so a CPU smoke test inside a GPU-scaffolded project could not be run
@@ -598,6 +640,46 @@ def _unity_submit(exp: str, extra_args: str, campaign: str | None = None,
     if not dry_run and "Recorded job" not in output and proc.returncode == 0:
         output += ("\n\n[unity-hpc] The job was not recorded in the ledger — "
                    "unity_status/unity_jobs will not see it. Note the job id above.")
+    return output
+
+
+def _unity_array(manifest: str, extra_args: str = "",
+                 campaign: str | None = None) -> str:
+    runner = _project_dir() / "unityHPC" / "run.sh"
+    if not runner.exists():
+        return _missing_scaffold_message(runner)
+
+    cmd = ["bash", str(runner), "array", manifest]
+    if campaign:
+        cmd += ["--campaign", campaign]
+    if extra_args:
+        cmd += extra_args.split()
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          cwd=str(_project_dir()), env=dict(os.environ))
+    output = (proc.stdout + proc.stderr).strip()
+    if not output:
+        return f"run.sh exited {proc.returncode} with no output."
+    if "Recorded" not in output and proc.returncode == 0:
+        output += ("\n\n[unity-hpc] The array was not recorded in the ledger — "
+                   "unity_status/unity_jobs will not see it. Note the job id above.")
+    return output
+
+
+def _unity_cancel(campaign: str | None = None, job: str | None = None) -> str:
+    runner = _project_dir() / "unityHPC" / "run.sh"
+    if not runner.exists():
+        return _missing_scaffold_message(runner)
+
+    cmd = ["bash", str(runner), "cancel"]
+    if campaign:
+        cmd += ["--campaign", campaign]
+    if job:
+        cmd += ["--job", job]
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          cwd=str(_project_dir()), env=dict(os.environ))
+    output = (proc.stdout + proc.stderr).strip()
+    if not output:
+        return f"run.sh exited {proc.returncode} with no output."
     return output
 
 
