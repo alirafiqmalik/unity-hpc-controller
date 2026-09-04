@@ -16,8 +16,25 @@ if [ -n "${MODULES:-}" ]; then
     module purge && module load ${MODULES}
 fi
 
-if [ -n "${VENV_PATH:-}" ] && [ -f "${VENV_PATH}/bin/activate" ]; then
-    . "${VENV_PATH}/bin/activate"
+# An optional unityHPC/bootstrap.sh replaces the VENV_PATH activate below.
+# Sourced (not run in a subshell) so a hook that activates a venv or exports
+# HF_HOME etc. affects this job. Serialised with flock on REMOTE_DIR so N
+# fan-out tasks starting together do not race a venv build on shared NFS.
+# The re-check after acquiring the lock is `if/then`, never `[ ... ] &&`: under
+# `set -e` a false `&&` guard is itself a failing command and aborts the very
+# path meant to handle "the hook exists."
+if [ -f "unityHPC/bootstrap.sh" ]; then
+    exec 9>"${REMOTE_DIR}/.unity_bootstrap.lock"
+    flock 9
+    if [ -f "unityHPC/bootstrap.sh" ]; then
+        . "unityHPC/bootstrap.sh"
+    fi
+    flock -u 9
+    exec 9>&-
+else
+    if [ -n "${VENV_PATH:-}" ] && [ -f "${VENV_PATH}/bin/activate" ]; then
+        . "${VENV_PATH}/bin/activate"
+    fi
 fi
 
 # Not `... | head -1 || echo unknown`: on a CPU node nvidia-smi writes
