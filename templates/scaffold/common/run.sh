@@ -11,6 +11,7 @@
 #   run.sh jobs [--campaign N]             print the ledger (local, no SSH)
 #   run.sh logs [--campaign N] [-n LINES]  tail the newest job's stdout and stderr
 #   run.sh fetch [--campaign N]            rsync this campaign's output locally
+#   run.sh cancel [--campaign N] [--job P] scancel live jobs; updates the ledger
 #
 # Any of JOB_COMMAND, WALLTIME, SLURM_{PARTITION,CPUS,MEM,NODES,GPUS,GPU_TYPE,
 # ACCOUNT,PARTITION_FALLBACK,PARTITION_WALLTIME_CAP}, REMOTE_DIR, UNITY_HOST and
@@ -485,6 +486,33 @@ elif mode == "update":
                         "updated_utc=? WHERE job_id=?", (state, hardware, now, jid))
             changed += 1
     print(changed)
+elif mode == "cancelable":
+    # Non-terminal rows in scope, optionally pinned to one group by its
+    # parent job id. Line 1: the ledger rows to mark CANCELLED. Line 2: the
+    # distinct parent ids one `scancel` must name -- an array's children
+    # collapse onto the id `scancel` actually understands.
+    job_filter = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+    ids, parents, seen = [], [], set()
+    for r in con.execute("SELECT job_id, status FROM jobs ORDER BY rowid"):
+        jid, status = r["job_id"], r["status"]
+        if status in TERMINAL:
+            continue
+        parent = jid.split("_", 1)[0] if "_" in jid else jid
+        if job_filter and parent != job_filter:
+            continue
+        ids.append(jid)
+        if parent not in seen:
+            seen.add(parent)
+            parents.append(parent)
+    print(",".join(ids))
+    print(",".join(parents))
+elif mode == "cancel":
+    ids = [i for i in sys.argv[4].split(",") if i]
+    with con:
+        for jid in ids:
+            con.execute(
+                "UPDATE jobs SET status='CANCELLED', updated_utc=? WHERE job_id=?",
+                (now, jid))
 con.close()
 PYEOF
 }
@@ -919,6 +947,41 @@ cmd_fetch() {
     ls -1 "$dest" | sed 's/^/  /'
 }
 
+cmd_cancel() {
+    _take_campaign "$@"
+    set -- ${REST[@]+"${REST[@]}"}
+
+    local campaign job=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --job) job="${2:-}"; shift 2 ;;
+            --job=*) job="${1#--job=}"; shift ;;
+            *) echo "run.sh cancel: unrecognized argument: $1" >&2; exit 2 ;;
+        esac
+    done
+    campaign="$(_campaign)"
+
+    local out ids_line parents_line
+    out="$(_ledger cancelable "$campaign" "$job")"
+    ids_line="$(printf '%s\n' "$out" | sed -n '1p')"
+    parents_line="$(printf '%s\n' "$out" | sed -n '2p')"
+
+    if [ -z "$ids_line" ]; then
+        echo "run.sh cancel: nothing to cancel for campaign ${campaign}${job:+ (job ${job})}" >&2
+        exit 1
+    fi
+
+    local parents
+    IFS=',' read -r -a parents <<<"$parents_line"
+
+    if ! _ssh "$UNITY_HOST" "scancel ${parents[*]}"; then
+        echo "run.sh: WARNING scancel failed for: ${parents[*]}" >&2
+        exit 1
+    fi
+    echo "Cancelled in campaign ${campaign}: ${parents[*]}"
+    _ledger cancel "$campaign" "$ids_line" >/dev/null
+}
+
 # Guarded so a test can `source run.sh` to reach the functions above without
 # also running a subcommand: sourcing sets BASH_SOURCE[0] to this file while
 # leaving $0 as the caller's shell, which a normal `bash run.sh ...` invocation
@@ -936,9 +999,11 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         jobs)   shift; cmd_jobs "$@" ;;
         logs)   shift; cmd_logs "$@" ;;
         fetch)  shift; cmd_fetch "$@" ;;
+        cancel) shift; cmd_cancel "$@" ;;
         *)      echo "usage: run.sh {run <exp> [--campaign N] [--dry-run] [sbatch args] |" >&2
                 echo "                array <manifest> [--campaign N] [--limit N] [sbatch args] |" >&2
-                echo "                render <exp> | sync | status | jobs | logs | fetch}" >&2
+                echo "                render <exp> | sync | status | jobs | logs | fetch |" >&2
+                echo "                cancel [--campaign N] [--job <parent>]}" >&2
                 exit 2 ;;
     esac
 fi
