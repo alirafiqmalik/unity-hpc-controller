@@ -7,8 +7,8 @@ import pytest
 from lib import scaffold
 
 
-def test_types_are_cpu_gpu_ml():
-    assert scaffold.TYPES == ("cpu", "gpu", "ml")
+def test_types_are_the_five_primitives():
+    assert scaffold.TYPES == ("cpu", "gpu", "ml", "multi-cpu", "multi-gpu")
 
 
 def test_plan_cpu_creates_four_files(tmp_project):
@@ -52,13 +52,29 @@ def test_generated_files_carry_provenance_header(tmp_project):
         assert "/unity-hpc:setup" in head, f"{action.path.name} lacks provenance"
 
 
-@pytest.mark.parametrize("ptype", ["cpu", "gpu", "ml"])
+# parametrized over TYPES itself, not a copy of it: a name added to TYPES with
+# no template directory behind it must fail here rather than at a user's sbatch.
+@pytest.mark.parametrize("ptype", scaffold.TYPES)
 def test_plan_renders_all_four_files_for_every_type(tmp_project, ptype):
     actions = scaffold.plan(tmp_project, ptype)
     assert sorted(a.path.name for a in actions) == sorted(
         [".env", "job_template.sh", "run.sh", "sync.sh"]
     )
     assert all(a.content.strip() for a in actions)
+
+
+@pytest.mark.parametrize("ptype,resource", [("multi-cpu", "cpu"), ("multi-gpu", "gpu")])
+def test_a_fan_out_type_renders_its_resource_template(tmp_project, ptype, resource):
+    """multi-cpu and multi-gpu are orchestration on the cpu and gpu resources, so
+    every file they render is the resource type's file, byte for byte (spec §9)."""
+    assert ({a.path.name: a.content for a in scaffold.plan(tmp_project, ptype)}
+            == {a.path.name: a.content for a in scaffold.plan(tmp_project, resource)})
+
+
+def test_no_multi_star_template_directory_exists():
+    """Spec §9: the fan-out names reuse cpu/ and gpu/. A multi-*/ directory would
+    be a second copy of a job template, free to drift from the one it forked."""
+    assert not list(scaffold.template_root().glob("multi-*"))
 
 
 def test_gpu_template_requests_a_gpu_but_does_not_use_torchrun():
@@ -118,16 +134,18 @@ def test_ml_template_uses_torchrun_for_multinode():
 
 
 def test_env_defaults_differ_by_type():
-    def env_of(ptype):
-        return (scaffold.template_root() / ptype / "env.example").read_text()
+    def env_of(resource_dir):
+        return (scaffold.template_root() / resource_dir / "env.example").read_text()
 
     assert 'SLURM_GPUS=""' in env_of("cpu")
     assert 'WALLTIME="04:00:00"' in env_of("cpu")
     assert 'SLURM_GPUS="1"' in env_of("gpu")
     assert 'SLURM_GPUS="1"' in env_of("ml")
-    # the old universal ML default must not survive anywhere
-    for ptype in scaffold.TYPES:
-        assert 'WALLTIME="00:15:00"' not in env_of(ptype)
+    # the old universal ML default must not survive in any template. Walks the
+    # resource directories rather than TYPES: multi-cpu and multi-gpu have no
+    # directory of their own (spec §9), they resolve to cpu/ and gpu/.
+    for resource_dir in sorted(set(scaffold._RESOURCE_DIR.values())):
+        assert 'WALLTIME="00:15:00"' not in env_of(resource_dir)
 
 
 def test_generated_run_sh_is_stamped_with_the_plugin_version(tmp_project, materialise):

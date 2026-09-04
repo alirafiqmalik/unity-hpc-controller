@@ -2,7 +2,7 @@
 """Generate the unityHPC/ scaffold for a project.
 
 Usage:
-  hpc-scaffold --type {cpu,gpu,ml} [--project-dir DIR] [--dry-run]
+  hpc-scaffold --type {cpu,gpu,ml,multi-cpu,multi-gpu} [--project-dir DIR] [--dry-run]
   UNITY_HPC_NONINTERACTIVE=1 hpc-scaffold --type cpu --account ACCOUNT \
     --remote-dir /work/ACCOUNT/user/project --job-command 'python run.py'
 

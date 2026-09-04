@@ -14,11 +14,22 @@ from pathlib import Path
 #: Replaced with the generating plugin's version when a template is rendered.
 VERSION_PLACEHOLDER = "@@UNITY_HPC_VERSION@@"
 
-TYPES: tuple[str, ...] = ("cpu", "gpu", "ml")
+TYPES: tuple[str, ...] = ("cpu", "gpu", "ml", "multi-cpu", "multi-gpu")
 SCAFFOLD_FILES: tuple[str, ...] = ("run.sh", "job_template.sh", "sync.sh", ".env")
 
 #: files taken from templates/scaffold/common/ rather than the per-type dir
 _COMMON_FILES = frozenset({"run.sh", "sync.sh"})
+
+#: `--type` name -> templates/scaffold/ subdirectory. multi-cpu and multi-gpu
+#: are fan-out orchestration on the same resource template as cpu/gpu; there is
+#: no templates/scaffold/multi-*/ directory (spec §9).
+_RESOURCE_DIR = {
+    "cpu": "cpu",
+    "gpu": "gpu",
+    "ml": "ml",
+    "multi-cpu": "cpu",
+    "multi-gpu": "gpu",
+}
 
 #: on-disk template name for the rendered target name
 _TEMPLATE_NAME = {".env": "env.example"}
@@ -69,7 +80,7 @@ class Action:
 
 def _template_path(ptype: str, target_name: str) -> Path:
     source_name = _TEMPLATE_NAME.get(target_name, target_name)
-    subdir = "common" if target_name in _COMMON_FILES else ptype
+    subdir = "common" if target_name in _COMMON_FILES else _RESOURCE_DIR[ptype]
     return template_root() / subdir / source_name
 
 
