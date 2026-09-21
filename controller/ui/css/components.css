@@ -121,3 +121,8 @@ canvas{width:100%;display:block}
 .tel-run .t{color:var(--muted);font-size:11px;font-family:var(--mono);margin-left:auto;white-space:nowrap}
 #telOutput{max-height:240px;overflow-y:auto}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* Usage-chart series filter. A name is a control, and the sentence says so. */
+.legend-hint{margin:8px 0 0;font-size:11px;line-height:1.3;color:var(--ink-2)}
+.legend .legend-pick{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--border);border-radius:99px;background:var(--panel-2)}
+.legend .legend-pick[aria-pressed="false"]{border-style:dashed}

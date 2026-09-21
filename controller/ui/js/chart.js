@@ -85,11 +85,40 @@ export function usageSeries(usage) {
   };
 }
 
+/** The sentence that tells an operator the legend is a filter. */
+const FILTER_HINT = 'Click a name to show or hide it.';
+
+/**
+ * Put the filter sentence just before a legend, once.
+ *
+ * The sentence is a sibling of the legend, not a child. The heading's right
+ * side already holds the staleness note, so the sentence stays under the
+ * chart, where it does not share that line.
+ * @param {HTMLElement} legend the legend element
+ */
+function showFilterHint(legend) {
+  const id = legend.id + 'Hint';
+  let hint = document.getElementById(id);
+  if (!hint) {
+    hint = document.createElement('p');
+    hint.id = id;
+    hint.className = 'legend-hint';
+    legend.before(hint);
+  }
+  hint.textContent = FILTER_HINT;
+}
+
+/** Remove the filter sentence when the legend is not a selector. */
+function hideFilterHint(legend) {
+  const hint = document.getElementById(legend.id + 'Hint');
+  if (hint) hint.remove();
+}
+
 /** One legend entry. A dim entry is a series that is off, but selectable. */
 function legendItem(name, color, shows) {
   const style = 'cursor:pointer;user-select:none;opacity:' + (shows ? '1' : '.4');
   const tip = (shows ? 'Hide ' : 'Show ') + name;
-  return `<span data-series="${esc(name)}" role="button" tabindex="0" aria-pressed="${shows}" title="${esc(tip)}" style="${style}"><i style="background:${color}"></i>${esc(name)}</span>`;
+  return `<span class="legend-pick" data-series="${esc(name)}" role="button" tabindex="0" aria-pressed="${shows}" title="${esc(tip)}" style="${style}"><i style="background:${color}"></i>${esc(name)}</span>`;
 }
 
 /**
@@ -142,14 +171,18 @@ export function drawUsageChart(canvasId, legendId, usage, fallbackNames) {
   if (legend) lastDraw.set(legendId, { canvasId, usage, fallbackNames });
   if (!packed) {
     if (cv) lineChart(cv, [[]], ['#34d399'], false);
-    if (legend && fallbackNames) {
-      legend.innerHTML = fallbackNames.map((n, i) => `<span><i style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></i>${esc(n)}</span>`).join('');
+    if (legend) {
+      hideFilterHint(legend);
+      if (fallbackNames) {
+        legend.innerHTML = fallbackNames.map((n, i) => `<span><i style="background:${CHART_COLORS[i % CHART_COLORS.length]}"></i>${esc(n)}</span>`).join('');
+      }
     }
     return;
   }
   const off = hiddenSeries(canvasId);
   const shows = packed.names.map(n => !off.includes(n));
   if (legend) {
+    showFilterHint(legend);
     legend.innerHTML = packed.names.map((n, i) => legendItem(n, packed.colors[i], shows[i])).join('');
     wireLegend(legend, legendId);
   }

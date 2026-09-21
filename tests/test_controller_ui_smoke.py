@@ -265,6 +265,53 @@ def selector(page):
     _inject(page)
 
 
+def test_the_legend_says_a_click_filters(selector):
+    """A first look must show that a name is a filter. A hover tip is not enough.
+
+    The sentence sits under the chart. The staleness note keeps the heading.
+    """
+    report = selector.eval(
+        """(() => {
+          const hint = document.getElementById('chartUtilLegendHint');
+          const legend = document.getElementById('chartUtilLegend');
+          const note = document.getElementById('utilWindow');
+          const pick = legend.querySelector('[data-series]');
+          const box = pick ? getComputedStyle(pick) : null;
+          return {
+            text: hint ? hint.textContent : '',
+            childOfLegend: hint ? hint.parentElement === legend : null,
+            justBefore: hint ? hint.nextElementSibling === legend : false,
+            names: Array.from(legend.children).map(c => c.dataset.series || ''),
+            noteParent: note ? note.parentElement.tagName : '',
+            border: box ? box.borderTopWidth : '',
+            radius: box ? box.borderRadius : '',
+          };
+        })()"""
+    )
+    assert report["text"] == "Click a name to show or hide it."
+    assert report["childOfLegend"] is False
+    assert report["justBefore"] is True
+    assert report["names"] == ["a100", "a40", "l40s"]
+    assert report["noteParent"] == "H3"
+    assert report["border"] not in ("", "0px")
+    assert report["radius"] not in ("", "0px")
+
+    # The same chart on Analytics is the same control.
+    selector.eval("go('analytics')")
+    an = selector.eval(
+        "document.getElementById('chartAnLegendHint') "
+        "&& document.getElementById('chartAnLegendHint').textContent"
+    )
+    assert an == "Click a name to show or hide it."
+    assert selector.eval(
+        "document.getElementById('anWindow').parentElement.tagName"
+    ) == "H3"
+
+    # A legend that does not filter must not grow the sentence.
+    selector.eval("go('queue')")
+    assert selector.eval("document.getElementById('chartQLegendHint')") is None
+
+
 def test_the_legend_lists_every_series_the_api_returned(selector):
     names = [row[0] for row in _entries(selector, "chartUtilLegend")]
     assert names == ["a100", "a40", "l40s"]
