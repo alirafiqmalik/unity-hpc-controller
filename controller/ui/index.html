@@ -18,11 +18,11 @@
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.45}
 a{color:var(--blue);text-decoration:none}
 
-header{display:flex;align-items:center;gap:14px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:50}
+header{display:flex;align-items:center;flex-wrap:wrap;gap:14px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:50}
 .brand{display:flex;align-items:center;gap:10px;font-weight:650;font-size:15px}
 .logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--accent),#0ea5e9);display:grid;place-items:center;color:#06110c;font-weight:800;font-size:13px}
 .brand small{color:var(--muted);font-weight:500;font-size:12px}
-.env-pill{margin-left:6px;font-size:11px;padding:3px 9px;border-radius:999px;background:var(--accent-dim);color:var(--accent);border:1px solid rgba(52,211,153,.35);display:flex;align-items:center;gap:6px}
+.env-pill{margin-left:6px;font-size:11px;padding:3px 9px;border-radius:999px;background:var(--accent-dim);color:var(--accent);border:1px solid rgba(52,211,153,.35);display:flex;align-items:center;gap:6px;white-space:nowrap;flex-shrink:0}
 .env-pill.off{background:rgba(248,113,113,.12);color:var(--red);border-color:rgba(248,113,113,.35)}
 .env-pill.off .dot{background:var(--red);animation:none;box-shadow:none}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 var(--accent);animation:pulse 2s infinite}
@@ -31,6 +31,7 @@ header{display:flex;align-items:center;gap:14px;padding:10px 20px;border-bottom:
 .clock{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .icon-btn{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);color:var(--ink-2);cursor:pointer;font-size:14px}
 .icon-btn:hover{border-color:var(--ink-2);color:var(--ink)}
+.avatar{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--violet),var(--blue));display:grid;place-items:center;font-size:12px;font-weight:700;color:#0b0e13}
 
 nav{display:flex;gap:2px;padding:0 20px;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:47px;z-index:40;overflow-x:auto}
 .tab{padding:11px 16px;font-size:13px;font-weight:550;color:var(--ink-2);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:7px}
@@ -54,13 +55,19 @@ main{padding:22px 24px;max-width:1440px;margin:0 auto}
 .g2-1{grid-template-columns:2fr 1fr}
 .g1-2{grid-template-columns:1fr 2fr}
 @media(max-width:1000px){.g4,.g3,.g2,.g2-1,.g1-2{grid-template-columns:1fr}}
+@media(max-width:720px){
+  .brand{flex:1 0 100%}
+  .env-pill{margin-left:36px}
+  nav{position:static}
+}
 
 .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
 .card h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
 .card h3 .right{font-size:11px;text-transform:none;letter-spacing:0;color:var(--muted);font-weight:500}
-.card.proj-card{cursor:pointer;transition:border-color .12s}
-.card.proj-card:hover{border-color:var(--accent)}
+.card.proj-card{cursor:pointer;transition:border-color .12s, transform .12s}
+.card.proj-card:hover{border-color:var(--accent);transform:translateY(-1px)}
 
+.lbl{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
 .kpi .lbl{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
 .kpi .val{font-size:30px;font-weight:680;font-variant-numeric:tabular-nums;margin-top:6px}
 .kpi .val .unit{font-size:13px;color:var(--ink-2);font-weight:500;margin-left:3px}
@@ -93,7 +100,8 @@ tbody tr:hover{background:var(--panel-2)}
 .bar-row .pct{font-size:11.5px;color:var(--ink-2);min-width:36px;text-align:right}
 
 .heat{display:grid;grid-template-columns:repeat(8,1fr);gap:5px}
-.cell{border-radius:5px;padding:8px 6px;font-size:10.5px;font-family:var(--mono);text-align:center;cursor:pointer;border:1px solid transparent}
+.cell{border-radius:5px;padding:8px 6px;font-size:10.5px;font-family:var(--mono);text-align:center;cursor:pointer;border:1px solid transparent;overflow:hidden;min-width:0}
+.cell .hn{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell:hover{border-color:var(--ink-2)}
 .cell small{display:block;opacity:.75;font-size:9.5px}
 
@@ -137,7 +145,12 @@ pre .c{color:#7c8698}pre .k{color:var(--accent)}pre .s{color:#79c0ff}pre .n{colo
 .kv b{font-weight:600;font-variant-numeric:tabular-nums}
 .kv span{color:var(--muted)}
 
-.drawer{position:fixed;top:0;right:-460px;width:460px;max-width:92vw;height:100%;background:var(--panel);border-left:1px solid var(--border);z-index:100;transition:right .25s ease;padding:20px;overflow-y:auto;box-shadow:-20px 0 60px rgba(0,0,0,.5)}
+.tgl{width:34px;height:19px;border-radius:99px;background:var(--panel-2);border:1px solid var(--border);position:relative;cursor:pointer;flex-shrink:0;transition:.15s}
+.tgl.on{background:var(--accent-dim);border-color:var(--accent)}
+.tgl.on::after{left:16px;background:var(--accent)}
+.tgl::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:var(--muted);transition:.15s}
+
+.drawer{position:fixed;top:0;right:-560px;width:560px;max-width:92vw;height:100%;background:var(--panel);border-left:1px solid var(--border);z-index:100;transition:right .25s ease;padding:20px;overflow-y:auto;box-shadow:-20px 0 60px rgba(0,0,0,.5)}
 .drawer.open{right:0}
 .drawer h2{font-size:16px;margin-bottom:2px}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;display:none}
@@ -149,10 +162,16 @@ canvas{width:100%;display:block}
 .legend{display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
 .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px}
 
-.empty{padding:18px 8px;color:var(--muted);font-size:13px;line-height:1.55}
-.empty code,.hint code{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
-.proj-path{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-all;margin:6px 0 10px}
-.proj-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.integration{display:flex;align-items:center;gap:13px;padding:13px 2px;border-bottom:1px solid var(--border)}
+.integration:last-child{border-bottom:none}
+.integration .ic{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font-weight:800;font-size:15px;flex-shrink:0}
+.integration .nm{font-weight:600;font-size:13.5px}
+.integration .ds{font-size:11.5px;color:var(--muted)}
+.integration .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+
+.empty{padding:10px 2px;color:var(--muted);font-size:12.5px}
+.proj-path{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-all;margin:8px 0 12px}
+.proj-meta{display:flex;gap:8px;flex-wrap:wrap}
 .actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
 </style>
 </head>
@@ -160,13 +179,14 @@ canvas{width:100%;display:block}
 
 <header>
   <div class="brand">
-    <div class="logo">U</div>Unity HPC Controller
+    <div class="logo">U</div>Unity HPC Controller<small>&nbsp;controller</small>
     <span class="env-pill off" id="envPill"><span class="dot"></span><span id="envLabel">connecting…</span></span>
   </div>
   <div class="th">
     <span class="hint">Last sync <span class="mono" id="lastSync">—</span></span>
     <span class="clock" id="clock">--:--:--</span>
     <button class="icon-btn" title="Settings" onclick="go('settings')">&#9881;</button>
+    <div class="avatar" title="you">U</div>
   </div>
 </header>
 
@@ -178,26 +198,41 @@ canvas{width:100%;display:block}
       <div><h1>Cluster Overview</h1><div class="sub" id="ovSub">auto-refresh 10s</div></div>
       <div><button class="btn sm" onclick="go('dispatch')">&#9654; Dispatch run</button> <button class="btn sm ghost" onclick="go('projects')">+ Attach project</button></div>
     </div>
-    <div class="grid g4" id="ovKpis"></div>
+    <div class="grid g4">
+      <div class="card kpi"><div class="lbl">GPUs free</div><div class="val" id="kGpu">—</div><div class="delta" id="kGpuD">waiting on snapshot</div></div>
+      <div class="card kpi"><div class="lbl">Jobs running</div><div class="val" id="kRun">—</div><div class="delta" id="kRunD">across attached projects</div></div>
+      <div class="card kpi"><div class="lbl">Jobs queued</div><div class="val" id="kPend">—</div><div class="delta" id="kPendD">GPU pending</div></div>
+      <div class="card kpi"><div class="lbl">Active users</div><div class="val" id="kUsers">—</div><div class="delta" id="kUsersD">fairshare from the cluster profile</div></div>
+    </div>
     <div class="grid g2-1 section-gap">
       <div class="card">
-        <h3>Partitions <span class="right">from cluster-config.json</span></h3>
+        <h3>Node utilization — GPU partitions <span class="right" id="heatRight">hover for detail · updated 10s</span></h3>
         <div class="heat" id="heat"></div>
+        <div class="legend">
+          <span><i style="background:#1f6f54"></i>&lt;40% util</span>
+          <span><i style="background:#34d399"></i>40–70%</span>
+          <span><i style="background:#fbbf24"></i>70–90%</span>
+          <span><i style="background:#f87171"></i>&gt;90% / hot</span>
+          <span><i style="background:#3a4352"></i>idle/down</span>
+        </div>
       </div>
       <div class="card">
-        <h3>Controller events <span class="right" id="alertHead"></span></h3>
+        <h3>Alerts <span class="right" id="alertHead"></span></h3>
         <div class="stack" id="alerts"></div>
       </div>
     </div>
     <div class="grid g2 section-gap">
       <div class="card">
-        <h3>GPU utilization</h3>
+        <h3>GPU utilization — last 24h</h3>
         <canvas id="chartUtil" height="150"></canvas>
-        <div class="empty" id="chartUtilEmpty" hidden></div>
-        <div class="legend" id="chartUtilLegend"></div>
+        <div class="legend" id="chartUtilLegend">
+          <span><i style="background:#34d399"></i>a100</span>
+          <span><i style="background:#60a5fa"></i>a40</span>
+          <span><i style="background:#a78bfa"></i>preempt</span>
+        </div>
       </div>
       <div class="card">
-        <h3>Recent activity <span class="right">$UNITY_HPC_DATA/controller/events.jsonl</span></h3>
+        <h3>Recent activity <span class="right">controller log</span></h3>
         <div class="stack" id="feed"></div>
       </div>
     </div>
@@ -205,23 +240,20 @@ canvas{width:100%;display:block}
 
   <section class="page" id="pg-queue">
     <div class="page-head">
-      <div><h1>Queue &amp; Partitions</h1><div class="sub">live snapshot.csv + cluster-config.json</div></div>
+      <div><h1>Queue &amp; Partitions</h1><div class="sub">squeue snapshot · reasons, ETA, backfill</div></div>
       <button class="btn sm" onclick="refresh({toastOk:true})">&#8635; Refresh</button>
     </div>
     <div class="grid g4" id="parts"></div>
     <div class="grid g2-1 section-gap">
       <div class="card">
-        <h3>Pending jobs <span class="right">attached project ledgers</span></h3>
-        <div id="pendWrap">
-          <table><thead><tr><th>Job ID</th><th>Project</th><th>Exp</th><th>Partition</th><th>Status</th></tr></thead>
-          <tbody id="pendRows"></tbody></table>
-        </div>
+        <h3>Pending jobs <span class="right">top of the attached ledgers</span></h3>
+        <table><thead><tr><th>Job ID</th><th>User</th><th>Partition</th><th>GPUs</th><th>Queued for</th><th>Reason</th><th>Est. start</th></tr></thead>
+        <tbody id="pendRows"></tbody></table>
       </div>
       <div class="card">
-        <h3>Queue depth</h3>
+        <h3>Queue depth — 6h</h3>
         <canvas id="chartQ" height="170"></canvas>
-        <div class="empty" id="chartQEmpty" hidden></div>
-        <div class="legend" id="chartQLegend"></div>
+        <div class="legend" id="chartQLegend"><span><i style="background:#fbbf24"></i>pending</span><span><i style="background:#34d399"></i>running</span></div>
         <div class="section-gap"></div>
         <h3>Pending reasons</h3>
         <div id="reasons"></div>
@@ -231,25 +263,35 @@ canvas{width:100%;display:block}
 
   <section class="page" id="pg-jobs">
     <div class="page-head">
-      <div><h1>Jobs</h1><div class="sub">ledgers of attached projects · click a row for detail</div></div>
+      <div><h1>My Jobs</h1><div class="sub">scoped by campaign · click a row for detail</div></div>
       <div class="chips" id="jobChips"></div>
     </div>
-    <div class="card" id="jobTableWrap">
-      <table><thead><tr><th></th><th>Job</th><th>Project / Campaign</th><th>Status</th><th>Partition</th><th>Hardware</th><th>Elapsed</th></tr></thead>
+    <div class="card">
+      <table><thead><tr><th></th><th>Job</th><th>Project / Campaign</th><th>Status</th><th>Partition</th><th>GPU</th><th>Runtime</th><th>Exit</th><th></th></tr></thead>
       <tbody id="jobRows"></tbody></table>
     </div>
   </section>
 
   <section class="page" id="pg-users">
     <div class="page-head">
-      <div><h1>Users &amp; Fairshare</h1><div class="sub">per-user consumption is not in the controller API</div></div>
+      <div><h1>Users &amp; Fairshare</h1><div class="sub" id="userSub">rolling window from the cluster profile</div></div>
+      <button class="btn sm" onclick="exportUsers()">&#11015; Export CSV</button>
     </div>
-    <div class="card" id="usersCard"></div>
+    <div class="grid g3">
+      <div class="card kpi"><div class="lbl">GPU-hours this week</div><div class="val" id="uHours">—</div><div class="delta" id="uHoursD">from job ledgers</div></div>
+      <div class="card kpi"><div class="lbl">Median wait (gpu)</div><div class="val" id="uWait">—</div><div class="delta" id="uWaitD">not in the snapshot</div></div>
+      <div class="card kpi"><div class="lbl">Your fairshare rank</div><div class="val" id="uRank">—</div><div class="delta" id="uRankD">not in the cluster profile</div></div>
+    </div>
+    <div class="card section-gap">
+      <h3>Top users by consumption</h3>
+      <table><thead><tr><th>#</th><th>User</th><th>Group</th><th>Active jobs</th><th>GPU-hrs</th><th>Fairshare usage</th></tr></thead>
+      <tbody id="userRows"></tbody></table>
+    </div>
   </section>
 
   <section class="page" id="pg-analytics">
     <div class="page-head">
-      <div><h1>Usage Analytics</h1><div class="sub">summaries.db via hpc-sync-telemetry</div></div>
+      <div><h1>Usage Analytics</h1><div class="sub">historical telemetry · cluster-intel rollups</div></div>
       <div class="chips" id="anChips">
         <span class="chip on" data-h="24">24h</span>
         <span class="chip" data-h="168">7d</span>
@@ -258,55 +300,74 @@ canvas{width:100%;display:block}
     </div>
     <div class="grid g2">
       <div class="card">
-        <h3>Cluster util by GPU type</h3>
+        <h3>Cluster util by partition</h3>
         <canvas id="chartAn" height="180"></canvas>
-        <div class="empty" id="chartAnEmpty" hidden></div>
-        <div class="legend" id="chartAnLegend"></div>
+        <div class="legend" id="chartAnLegend">
+          <span><i style="background:#34d399"></i>a100</span>
+          <span><i style="background:#60a5fa"></i>a40</span>
+          <span><i style="background:#a78bfa"></i>cpu-only</span>
+        </div>
       </div>
       <div class="card">
-        <h3>Job outcomes <span class="right">task_run in summaries.db</span></h3>
-        <div id="outcomesBox"></div>
+        <h3>Job outcomes — your campaigns (30d)</h3>
+        <div id="outcomesBox">
+          <div style="display:flex;align-items:center;gap:26px">
+            <div id="donut" style="width:150px;height:150px;border-radius:50%;flex-shrink:0;background:#3a4352"></div>
+            <div class="stack" style="flex:1" id="outcomeRows">
+              <div class="kv"><span><b style="color:var(--done)">&#9679;</b>&nbsp; Completed</span><b>—</b></div>
+              <div class="kv"><span><b style="color:var(--fail)">&#9679;</b>&nbsp; Failed</span><b>—</b></div>
+              <div class="kv"><span><b style="color:var(--amber)">&#9679;</b>&nbsp; Timeout</span><b>—</b></div>
+              <div class="kv"><span><b style="color:var(--muted)">&#9679;</b>&nbsp; Cancelled</span><b>—</b></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="card section-gap">
-      <h3>Jobs by attached project</h3>
+      <h3>GPU-hours by project — last 30 days</h3>
       <div id="projBars"></div>
     </div>
   </section>
 
   <section class="page" id="pg-dispatch">
     <div class="page-head">
-      <div><h1>Dispatch Run</h1><div class="sub">POST /api/v1/projects/{slug}/runs · the controller calls run.sh</div></div>
-      <span class="pill grey">same origin · no auth tokens</span>
+      <div><h1>Dispatch Run</h1><div class="sub">POST /api/v1/projects/{slug}/runs · controller submits via run.sh</div></div>
+      <span class="pill grey">controller validates &amp; submits via sbatch</span>
     </div>
     <div class="grid g2">
       <div class="card">
         <h3>Run request</h3>
         <label>Project</label>
-        <select id="dispProject" onchange="renderPreview()"></select>
+        <select id="dispProject" onchange="onDispProject()"></select>
         <div class="f-row">
-          <div><label>Exp</label><input id="dispExp" value="" placeholder="smoke" oninput="renderPreview()"></div>
-          <div><label>Campaign</label><input id="dispCampaign" value="" placeholder="optional" oninput="renderPreview()"></div>
+          <div><label>Campaign</label><input id="dispCampaign" placeholder="sweep-lr-v4" oninput="renderPreview()"></div>
+          <div><label>Exp</label><input id="dispExp" placeholder="smoke" oninput="renderPreview()"></div>
         </div>
-        <label class="check"><input type="checkbox" id="dispDry" onchange="renderPreview()"> dry_run (preview only, no sbatch)</label>
         <div class="f-row3">
-          <div><label>JOB_COMMAND</label><input id="dispCmd" placeholder="optional override" oninput="renderPreview()"></div>
-          <div><label>WALLTIME</label><input id="dispWall" placeholder="HH:MM:SS" oninput="renderPreview()"></div>
-          <div><label>SLURM_PARTITION</label><input id="dispPart" placeholder="optional" oninput="renderPreview()"></div>
+          <div><label>Partition</label><input id="dispPart" placeholder="gpu-a100" oninput="renderPreview()"></div>
+          <div><label>GPUs / task</label><input id="dispGpus" placeholder="1" oninput="renderPreview()"></div>
+          <div><label>Walltime</label><input id="dispWall" placeholder="08:00:00" oninput="renderPreview()"></div>
         </div>
-        <div class="section-gap actions">
+        <div class="f-row">
+          <div><label>Scaffold</label><input id="dispScaffold" readonly></div>
+          <div><label>Command</label><input id="dispCmd" placeholder="optional JOB_COMMAND" oninput="renderPreview()"></div>
+        </div>
+        <label>Manifest path (optional — array dispatch)</label>
+        <textarea id="dispManifest" rows="4" placeholder="leave empty for a single exp" oninput="renderPreview()"></textarea>
+        <label class="check"><input type="checkbox" id="dispDry" onchange="renderPreview()"> Validate only (dry-run)</label>
+        <div class="section-gap" style="display:flex;gap:9px">
           <button class="btn primary" onclick="dispatchRun(false)">&#9654; Dispatch</button>
           <button class="btn" onclick="dispatchRun(true)">Validate (dry-run)</button>
         </div>
-        <div class="hint section-gap">Overrides are passed as env to run.sh. Only keys in UNITY_OVERRIDABLE are accepted.</div>
+        <div class="hint section-gap">The controller handles environment bootstrap, fan-out, watch, and result fetch. This page only posts the run request.</div>
       </div>
       <div>
         <div class="card">
-          <h3>Request preview <span class="right">POST body</span></h3>
+          <h3>Request preview <span class="right">exact body posted to the controller</span></h3>
           <pre id="dispatchPrev" class="grey-scroll"></pre>
         </div>
         <div class="card section-gap">
-          <h3>Recently dispatched <span class="right">controller events</span></h3>
+          <h3>Recently dispatched <span class="right">live from controller</span></h3>
           <div class="stack" id="dispList"></div>
         </div>
       </div>
@@ -315,14 +376,14 @@ canvas{width:100%;display:block}
 
   <section class="page" id="pg-projects">
     <div class="page-head">
-      <div><h1>Projects</h1><div class="sub">GET /api/v1/projects · click a card to configure, run, fetch, sync, or detach</div></div>
+      <div><h1>Attach a Project</h1><div class="sub">each card is a directory the coding-agent skill registered · click to manage</div></div>
     </div>
     <div class="grid g3" id="projCards"></div>
     <div class="card section-gap">
-      <h3>Attach a path</h3>
+      <h3>Register a path on this machine</h3>
       <div class="f-row3">
-        <div><label>Path</label><input id="attachPath" placeholder="/home/you/proj"></div>
-        <div><label>Slug (optional)</label><input id="attachSlug" placeholder="derived from path"></div>
+        <div><label>Project path</label><input id="attachPath" placeholder="/home/you/phd-gnn-scaling"></div>
+        <div><label>Slug</label><input id="attachSlug" placeholder="optional"></div>
         <div>
           <label>Primitive</label>
           <select id="attachPrim">
@@ -334,40 +395,48 @@ canvas{width:100%;display:block}
           </select>
         </div>
       </div>
-      <div class="actions">
-        <button class="btn primary" onclick="attachProject()">Attach</button>
+      <div class="section-gap" style="display:flex;gap:9px">
+        <button class="btn primary" onclick="attachProject()">Register project →</button>
       </div>
-      <div class="hint section-gap">Or run <code>/unity-hpc:connect</code> in a coding agent. The path must exist on this machine and should contain <code>unityHPC/run.sh</code> after scaffold.</div>
+      <div class="hint section-gap">Or run <code>/unity-hpc:connect</code> from a coding agent. Click a card to configure, run, stop, and monitor.</div>
     </div>
   </section>
 
   <section class="page" id="pg-settings">
-    <div class="page-head"><div><h1>Settings</h1><div class="sub" id="setSub">controller HTTP API</div></div></div>
+    <div class="page-head"><div><h1>Settings &amp; Integrations</h1><div class="sub" id="setSub">controller host</div></div></div>
     <div class="grid g2">
       <div class="card">
-        <h3>Controller bind</h3>
-        <div id="setBind"></div>
+        <h3>Observability stack — docker-compose</h3>
+        <div class="integration"><div class="ic" style="background:rgba(251,191,36,.12);color:var(--amber)">P</div>
+          <div><div class="nm">Prometheus</div><div class="ds">cluster-plane metrics · scrape :9100, slurm-exporter :8080</div></div>
+          <div class="right"><span class="pill grey" id="pillProm">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
+        <div class="integration"><div class="ic" style="background:rgba(248,113,113,.12);color:var(--red)">G</div>
+          <div><div class="nm">Grafana</div><div class="ds">dashboards + Alertmanager · :3000</div></div>
+          <div class="right"><span class="pill grey" id="pillGraf">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
+        <div class="integration"><div class="ic" style="background:rgba(96,165,250,.12);color:var(--blue)">M</div>
+          <div><div class="nm">MLflow</div><div class="ds">experiment-plane tracking · :5000 · per dispatched run</div></div>
+          <div class="right"><span class="pill grey" id="pillMl">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
+        <div class="integration"><div class="ic" style="background:rgba(167,139,250,.12);color:var(--violet)">A</div>
+          <div><div class="nm">Alertmanager</div><div class="ds">Slack + email on node down / queue stall / quota &gt; 90%</div></div>
+          <div class="right"><span class="pill grey">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
       </div>
-      <div class="card">
-        <h3>Tailscale</h3>
-        <p class="hint">Serve on this machine, then view from any device on your tailnet. Do not use <code>tailscale funnel</code> — that publishes the dashboard to the public internet.</p>
-        <div class="kv"><span>Direct tailnet</span><b class="mono">python3 -m controller.serve --host 0.0.0.0</b></div>
-        <div class="kv"><span>HTTPS via serve</span><b class="mono">python3 -m controller.serve --tailscale</b></div>
-        <div class="kv"><span>Or</span><b class="mono">tailscale serve --bg 8300</b></div>
-      </div>
-      <div class="card">
-        <h3>Poll cadence &amp; data</h3>
-        <div class="kv"><span>Dashboard poll</span><b>every 10s</b></div>
-        <div class="kv"><span>Live KPIs</span><b class="mono">snapshot.csv</b></div>
-        <div class="kv"><span>Usage rollup</span><b class="mono">summaries.db · hpc-sync-telemetry</b></div>
-        <div class="kv"><span>Registry</span><b class="mono">$UNITY_HPC_DATA/controller</b></div>
-        <p class="hint section-gap">Default data dir is <code>~/.local/share/unity-hpc/controller</code> (<code>projects.json</code>, <code>events.jsonl</code>). Override with <code>$UNITY_HPC_DATA</code>.</p>
-      </div>
-      <div class="card">
-        <h3>Auth</h3>
-        <p class="hint">The plugin uses HTTP with no tokens on localhost. This page is same-origin with the API. There is no API token, no agent key, and no copy-token control.</p>
-        <div class="kv"><span>Health</span><b class="mono" id="setHealth">—</b></div>
-        <div class="kv"><span>Attached projects</span><b class="mono" id="setNproj">—</b></div>
+      <div>
+        <div class="card">
+          <h3>Cluster access</h3>
+          <div class="kv"><span>Login node</span><b class="mono" id="setLogin">—</b></div>
+          <div class="kv"><span>This page</span><b class="mono" id="setOrigin">—</b></div>
+          <div class="kv"><span>Slurm poll cadence</span><b class="mono">every 10s</b></div>
+          <div class="kv"><span>Job ledger</span><b class="mono" id="setLedger">—</b></div>
+          <div class="kv"><span>Health</span><b class="mono" id="setHealth">—</b></div>
+          <div class="hint section-gap">Tailscale is on by default. Enable the user service with <code>hpc-controller --install-user-service</code>.</div>
+        </div>
+        <div class="card section-gap">
+          <h3>Notifications</h3>
+          <div class="kv"><span>Job completion</span><div class="tgl" onclick="tg(this)"></div></div>
+          <div class="kv"><span>Job failure</span><div class="tgl on" onclick="tg(this)"></div></div>
+          <div class="kv"><span>Daily digest</span><div class="tgl" onclick="tg(this)"></div></div>
+          <div class="kv"><span>Retry budget exhausted</span><div class="tgl on" onclick="tg(this)"></div></div>
+        </div>
       </div>
     </div>
   </section>
@@ -383,18 +452,9 @@ const FAIL_STATES=['FAILED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','BOOT_FAIL','D
 const PRIMITIVES=['cpu','gpu','ml','multi-cpu','multi-gpu'];
 
 const state={
-  page:'overview',
-  hours:24,
-  jfilter:'all',
-  health:null,
-  cluster:null,
-  queue:null,
-  usage:null,
-  jobs:[],
-  events:[],
-  projects:[],
-  error:null,
-  drawerSlug:null,
+  page:'overview', hours:24, jfilter:'all',
+  health:null, cluster:null, queue:null, usage:null,
+  jobs:[], events:[], projects:[], error:null, drawerSlug:null,
 };
 
 const nav=document.getElementById('nav');
@@ -407,8 +467,8 @@ function go(name){
   window.scrollTo({top:0});
   render();
 }
-
 function chipSel(el){el.parentElement.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));el.classList.add('on');}
+function tg(el){el.classList.toggle('on');toast(el.classList.contains('on')?'Noted — enable the user service from a shell':'Toggled off');}
 
 async function api(path, opts) {
   const r = await fetch(path, {headers:{'content-type':'application/json'}, ...opts});
@@ -416,26 +476,21 @@ async function api(path, opts) {
   if(!r.ok) throw new Error(j.error||r.statusText);
   return j;
 }
-
 function toast(msg){
   const t=document.createElement('div');
   t.style.cssText='position:fixed;bottom:16px;right:16px;background:var(--panel-2);border:1px solid var(--accent);color:var(--ink);padding:10px 16px;border-radius:9px;font-size:12.5px;z-index:200;box-shadow:0 8px 30px rgba(0,0,0,.4);max-width:420px';
   t.textContent=msg;document.body.appendChild(t);
   setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .3s';},1800);setTimeout(()=>t.remove(),2200);
 }
-
-function esc(s){
-  return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function jq(s){return JSON.stringify(String(s??''));}
 function copyPre(btn){
   const text=btn.parentElement.innerText.replace(/^Copy\n/,'');
   navigator.clipboard&&navigator.clipboard.writeText(text);
   btn.textContent='Copied!';setTimeout(()=>btn.textContent='Copy',1200);
 }
-
 function ago(iso){
-  if(!iso) return 'never';
+  if(!iso) return '—';
   const t=Date.parse(iso);
   if(Number.isNaN(t)) return String(iso);
   const s=Math.max(0,(Date.now()-t)/1000);
@@ -469,9 +524,9 @@ function jobCount(counts, names){
   }
   return n;
 }
-function emptyHtml(msg){return `<div class="empty">${msg}</div>`;}
 function live(){return (state.cluster&&state.cluster.live)||{available:false,latest:{},trend:[]};}
 function latest(){return live().latest||{};}
+function dash(v){return (v===0||v)?v:'—';}
 
 async function refresh(opts){
   opts=opts||{};
@@ -488,10 +543,7 @@ async function refresh(opts){
       return j;
     }),
   ]);
-  const pick=(i,fallback)=>{
-    const s=settled[i];
-    return s.status==='fulfilled'?s.value:fallback;
-  };
+  const pick=(i,fallback)=>settled[i].status==='fulfilled'?settled[i].value:fallback;
   const failed=settled.filter(s=>s.status==='rejected');
   state.error=failed.length===settled.length?(failed[0].reason&&failed[0].reason.message)||'controller unreachable':null;
   state.health=pick(0,null);
@@ -518,14 +570,13 @@ function renderHeader(){
     label.textContent='controller unreachable';
   } else if(L.available){
     pill.classList.remove('off');
-    label.textContent='Cluster: '+name+' — live snapshot';
+    label.textContent='Cluster: '+name+' — live sync';
   } else {
     pill.classList.add('off');
-    label.textContent='Cluster: '+name+' — no snapshot.csv';
+    label.textContent='Cluster: '+name+' — waiting on snapshot';
   }
   const ts=(L.latest&&L.latest.timestamp_utc)||cl.generated_utc;
-  document.getElementById('lastSync').textContent=ts?ago(ts):'never';
-  const n=state.jobs.filter(j=>stUpper(j)==='RUNNING').length;
+  document.getElementById('lastSync').textContent=ts?ago(ts):'—';
   const badge=document.getElementById('jobsBadge');
   if(badge) badge.textContent=String(state.jobs.length);
 }
@@ -542,89 +593,150 @@ function render(){
   if(page==='settings') renderSettings();
 }
 
+function heatColor(util){
+  if(util==null) return {c:'#3a4352', label:'idle'};
+  const v=Math.round(util);
+  let c;
+  if(v<40) c='#1f6f54'; else if(v<70) c='#34d399'; else if(v<90) c='#fbbf24'; else c='#f87171';
+  return {c, v};
+}
+
 function renderOverview(){
   const cl=state.cluster||{};
   const L=live();
   const lat=latest();
   const bits=[cl.cluster||'Unity HPC'];
   if(cl.slurm_version) bits.push('Slurm '+cl.slurm_version);
-  if(L.available&&lat.total_nodes) bits.push(lat.total_nodes+' nodes');
+  if(lat.total_nodes) bits.push(lat.total_nodes+' nodes');
   bits.push('auto-refresh 10s');
   document.getElementById('ovSub').textContent=bits.join(' · ');
 
-  const kpis=document.getElementById('ovKpis');
-  if(!L.available){
-    kpis.innerHTML=`<div class="card kpi" style="grid-column:1/-1">${emptyHtml('No live queue snapshot. Populate <code>snapshot.csv</code> (cluster-intel poller) under <code>$UNITY_HPC_DATA</code>, then refresh. Run <code>hpc-sync-telemetry</code> if the file lives on the cluster copy.')}</div>`;
-  } else {
-    kpis.innerHTML=`
-      <div class="card kpi"><div class="lbl">GPU jobs running</div><div class="val">${esc(lat.gpu_running??'—')}</div><div class="delta">${lat.timestamp_utc?ago(lat.timestamp_utc):''}</div></div>
-      <div class="card kpi"><div class="lbl">GPU jobs pending</div><div class="val">${esc(lat.gpu_pending??'—')}</div><div class="delta">${lat.gpu_preempt_pending?('+'+lat.gpu_preempt_pending+' preempt'):''}</div></div>
-      <div class="card kpi"><div class="lbl">Free nodes</div><div class="val">${esc(lat.free_nodes??'—')}<span class="unit">${lat.total_nodes?('/ '+lat.total_nodes):''}</span></div><div class="delta">${esc(lat.gpu_types_free||'')}</div></div>
-      <div class="card kpi"><div class="lbl">Attached projects</div><div class="val">${(cl.kpis&&cl.kpis.attached_projects!=null)?cl.kpis.attached_projects:state.projects.length}</div><div class="delta">GET /api/v1/projects</div></div>`;
-  }
+  const mineRun=state.jobs.filter(j=>stUpper(j)==='RUNNING').length;
+  const minePend=state.jobs.filter(j=>stUpper(j)==='PENDING').length;
+  document.getElementById('kGpu').innerHTML=L.available
+    ? `${esc(dash(lat.free_nodes))}<span class="unit">${lat.total_nodes?('/ '+lat.total_nodes):''}</span>`
+    : '—';
+  document.getElementById('kGpuD').textContent=lat.gpu_types_free|| (L.available?'free nodes':'waiting on snapshot');
+  document.getElementById('kRun').textContent=L.available?dash(lat.gpu_running):dash(mineRun||null);
+  document.getElementById('kRunD').textContent=mineRun? (mineRun+' of these are yours') : 'cluster GPU jobs';
+  document.getElementById('kPend').textContent=L.available?dash(lat.gpu_pending):dash(minePend||null);
+  document.getElementById('kPendD').textContent=lat.gpu_preempt_pending? (lat.gpu_preempt_pending+' preempt pending') : 'GPU pending';
+  const accounts=(cl.accounts||cl.users||[]);
+  const nUsers=Array.isArray(accounts)?accounts.length:0;
+  document.getElementById('kUsers').textContent=nUsers?String(nUsers):'—';
+  document.getElementById('kUsersD').textContent=nUsers?'in the cluster profile':'fairshare not in the profile';
 
-  const parts=(cl.partitions)||[];
+  const byType=((state.usage&&state.usage.usage)||{}).by_type||[];
+  const utilMap={};
+  byType.forEach(t=>{ if(t.gpu_type) utilMap[t.gpu_type]=t.avg; });
+  const parts=cl.partitions||[];
   const heat=document.getElementById('heat');
-  if(!parts.length){
-    heat.innerHTML=emptyHtml('No partitions in <code>cluster-config.json</code>. Run <code>/unity-hpc:recon</code> to observe the cluster.');
-  } else {
-    heat.innerHTML=parts.map(p=>{
-      const gpus=p.gpus_total!=null?p.gpus_total+' GPU':'';
-      const nodes=p.nodes!=null?p.nodes+' nodes':'';
-      const gt=(p.gpu_types||[]).join(', ')||'cpu';
-      return `<div class="cell" style="background:#1f6f5422;border:1px solid #34d39955;color:var(--accent)" title="${esc(p.name)}">${esc(p.name)}<small>${esc([nodes,gpus,gt].filter(Boolean).join(' · '))}</small></div>`;
-    }).join('');
-  }
+  document.getElementById('heatRight').textContent=parts.length? 'hover for detail · updated 10s' : 'no cluster profile yet';
+  heat.innerHTML=heatCells(parts, utilMap);
 
   const ev=state.events.slice().reverse();
-  const fails=ev.filter(e=>e.ok===false||e.kind==='cancel');
-  document.getElementById('alertHead').textContent=fails.length?fails.length+' notable':'';
-  document.getElementById('alerts').innerHTML=ev.length
-    ? ev.slice(0,8).map(eventRow).join('')
-    : emptyHtml('No controller events yet. Dispatch a run to write <code>$UNITY_HPC_DATA/controller/events.jsonl</code>.');
+  const alerts=ev.filter(e=>e.ok===false);
+  document.getElementById('alertHead').textContent=alerts.length? alerts.length+' active' : 'quiet';
+  document.getElementById('alerts').innerHTML=alerts.length
+    ? alerts.slice(0,6).map(e=>eventRow(e,'#fbbf24','&#9888;')).join('')
+    : `<div class="feed-item"><div class="feed-ic" style="background:#34d39922;color:var(--accent)">&#10003;</div><div>No active alerts</div><div class="t">now</div></div>`;
   document.getElementById('feed').innerHTML=ev.length
-    ? ev.slice(0,10).map(eventRow).join('')
-    : emptyHtml('Empty activity log. Use Dispatch or <code>/unity-hpc:dispatch</code>.');
+    ? ev.slice(0,8).map(e=>eventRow(e)).join('')
+    : `<div class="empty">No controller events yet</div>`;
 
-  drawUsageChart('chartUtil','chartUtilEmpty','chartUtilLegend',state.usage);
+  drawUsageChart('chartUtil','chartUtilLegend',state.usage,['a100','a40','preempt']);
 }
 
-function eventRow(e){
+function heatCells(parts, utilMap){
+  const cells=[];
+  if(!parts.length){
+    for(let n=0;n<24;n++){
+      cells.push(`<div class="cell" style="background:#3a4352;color:#8b95a5"><span class="hn">—</span><small>idle</small></div>`);
+    }
+    return cells.join('');
+  }
+  const weights=parts.map(p=>Math.max(1, Number(p.nodes)||1));
+  const sum=weights.reduce((a,b)=>a+b,0)||1;
+  parts.forEach((p,i)=>{
+    const gts=p.gpu_types||[];
+    const avg=gts.map(g=>utilMap[g]).filter(v=>v!=null);
+    const util=avg.length? avg.reduce((a,b)=>a+b,0)/avg.length : null;
+    const {c,v}=heatColor(util);
+    const sub=util==null? 'idle' : (Math.round(v)+'%');
+    const bg=util==null? '#3a4352' : c+'22';
+    const bd=util==null? 'transparent' : c+'55';
+    const fg=util==null? '#8b95a5' : c;
+    let n=Math.max(1, Math.round(weights[i]/sum*24));
+    const label=String(p.name||'node');
+    for(let k=0;k<n && cells.length<24;k++){
+      const name=n>1? (label+'-'+k) : label;
+      cells.push(`<div class="cell" style="background:${bg};border:1px solid ${bd};color:${fg}" title="${esc(p.name)} ${esc(sub)}"><span class="hn">${esc(name)}</span><small>${esc(sub)}</small></div>`);
+    }
+  });
+  while(cells.length<24){
+    cells.push(`<div class="cell" style="background:#3a4352;color:#8b95a5"><span class="hn">—</span><small>idle</small></div>`);
+  }
+  return cells.slice(0,24).join('');
+}
+
+function eventRow(e, col, ic){
   const ok=e.ok!==false;
-  const col=ok?'#34d399':'#f87171';
-  const ic=ok?'&#10003;':'&#10005;';
-  return `<div class="feed-item"><div class="feed-ic" style="background:${col}22;color:${col}">${ic}</div><div><b>${esc(e.kind||'event')}</b> ${esc(e.message||'')}</div><div class="t">${esc(ago(e.ts))}</div></div>`;
+  col=col||(ok?'#34d399':'#f87171');
+  ic=ic||(ok?'&#10003;':'&#10005;');
+  return `<div class="feed-item"><div class="feed-ic" style="background:${col}22;color:${col}">${ic}</div><div>${esc(e.message||e.kind||'event')}</div><div class="t">${esc(ago(e.ts))}</div></div>`;
+}
+
+function queuedFor(j){
+  if(!j.submitted_utc) return '—';
+  const t=Date.parse(j.submitted_utc);
+  if(Number.isNaN(t)) return '—';
+  return fmtElapsed((Date.now()-t)/1000);
+}
+function exitOf(j){
+  const u=stUpper(j);
+  if(u==='COMPLETED') return '0';
+  if(u==='RUNNING'||u==='PENDING'||!u) return '—';
+  return u;
 }
 
 function renderQueue(){
   const q=state.queue||{};
-  const parts=q.partitions||[];
+  const parts=q.partitions||(state.cluster&&state.cluster.partitions)||[];
   const box=document.getElementById('parts');
   if(!parts.length){
-    box.innerHTML=`<div class="card" style="grid-column:1/-1">${emptyHtml('No partition records. Run <code>/unity-hpc:recon</code> to write <code>cluster-config.json</code>.')}</div>`;
+    box.innerHTML=`<div class="card"><div class="lbl">partitions</div>
+      <div style="font-size:22px;font-weight:650;margin:4px 0 8px">—<span style="font-size:12px;color:var(--ink-2);font-weight:500"> / — busy</span></div>
+      <div class="bar"><i style="width:0%"></i></div>
+      <div style="display:flex;justify-content:space-between;margin-top:9px;font-size:11.5px;color:var(--muted)"><span>queued: <b style="color:var(--ink-2)">0</b></span><span>median wait: <b style="color:var(--ink-2)">—</b></span></div></div>`;
   } else {
     box.innerHTML=parts.map(p=>{
-      const gpus=p.gpus_total!=null?p.gpus_total+' GPUs':'—';
-      const nodes=p.nodes!=null?p.nodes+' nodes':'—';
+      const total=Number(p.gpus_total)||Number(p.nodes)||0;
+      const runningHere=state.jobs.filter(j=>j.partition===p.name&&stUpper(j)==='RUNNING').length;
+      const pendingHere=state.jobs.filter(j=>j.partition===p.name&&stUpper(j)==='PENDING').length;
+      const used=total?Math.min(total, runningHere):runningHere;
+      const pct=total?Math.round(used/total*100):(runningHere?40:0);
+      const cls=pct>90?'hot':pct>70?'warn':'';
       return `<div class="card"><div class="lbl">${esc(p.name)}</div>
-        <div style="font-size:18px;font-weight:650;margin:4px 0 8px">${esc(nodes)}</div>
-        <div class="hint">${esc((p.gpu_types||[]).join(', ')||'cpu')} · ${esc(gpus)}</div>
-        <div style="display:flex;justify-content:space-between;margin-top:9px;font-size:11.5px;color:var(--muted)"><span>wall: <b style="color:var(--ink-2)">${esc(p.max_walltime||'—')}</b></span><span>${esc(p.access||'')}</span></div></div>`;
+        <div style="font-size:22px;font-weight:650;margin:4px 0 8px;font-variant-numeric:tabular-nums">${used}<span style="font-size:12px;color:var(--ink-2);font-weight:500"> / ${total||'—'} busy</span></div>
+        <div class="bar ${cls}"><i style="width:${pct}%"></i></div>
+        <div style="display:flex;justify-content:space-between;margin-top:9px;font-size:11.5px;color:var(--muted)"><span>queued: <b style="color:var(--ink-2)">${pendingHere}</b></span><span>median wait: <b style="color:var(--ink-2)">—</b></span></div></div>`;
     }).join('');
   }
   const pending=state.jobs.filter(j=>stUpper(j)==='PENDING');
-  const wrap=document.getElementById('pendWrap');
-  if(!pending.length){
-    wrap.innerHTML=emptyHtml('No pending jobs in attached project ledgers. Dispatch a run, or attach a project with <code>/unity-hpc:connect</code>.');
-  } else {
-    wrap.innerHTML=`<table><thead><tr><th>Job ID</th><th>Project</th><th>Exp</th><th>Partition</th><th>Status</th></tr></thead><tbody id="pendRows"></tbody></table>`;
-    document.getElementById('pendRows').innerHTML=pending.map(j=>{
-      const[pill,lbl]=pillFor(j.status);
-      return `<tr onclick='openJob(${jq(j.job_id)})'><td class="mono">${esc(j.job_id)}</td><td>${esc(j.slug)}</td><td class="mono">${esc(j.exp)}</td><td>${esc(j.partition||'—')}</td><td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td></tr>`;
-    }).join('');
-  }
-  document.getElementById('reasons').innerHTML=emptyHtml('squeue reason codes are not in the controller API. Pending rows above come from attached project ledgers.');
-  const trend=(q.live&&q.live.available&&q.live.trend)||[];
+  document.getElementById('pendRows').innerHTML=pending.length
+    ? pending.slice(0,10).map(j=>{
+        const[pill,lbl]=pillFor(j.status);
+        return `<tr onclick='openJob(${jq(j.job_id)})'><td class="mono">${esc(j.job_id)}</td><td>${esc(j.slug||'—')}</td><td>${esc(j.partition||'—')}</td><td class="mono">${esc(j.hardware||'—')}</td><td class="mono">${esc(queuedFor(j))}</td><td><span class="pill ${pill}">${esc(lbl)}</span></td><td class="mono">—</td></tr>`;
+      }).join('')
+    : `<tr><td colspan="7" class="empty" style="cursor:default">No pending jobs in attached ledgers</td></tr>`;
+
+  const buckets={};
+  pending.forEach(j=>{const k=j.partition||'unspecified'; buckets[k]=(buckets[k]||0)+1;});
+  const entries=Object.entries(buckets);
+  const tot=Math.max(1, pending.length);
+  const mix=entries.length? entries.map(([name,n])=>[name, Math.round(n/tot*100), n/tot>0.6?'warn':'']) : [['none', 0, '']];
+  document.getElementById('reasons').innerHTML=mix.map(r=>`<div class="kv"><span>${esc(r[0])}</span><div class="bar-row" style="width:55%"><div class="bar ${r[2]}" style="flex:1"><i style="width:${r[1]}%"></i></div><span class="pct">${r[1]}%</span></div></div>`).join('');
+  const trend=(q.live&&q.live.available&&q.live.trend)||(live().trend)||[];
   drawTrend(trend);
 }
 
@@ -638,14 +750,9 @@ function renderJobs(){
     if(state.jfilter==='failed') return FAIL_STATES.includes(u);
     return true;
   });
-  const wrap=document.getElementById('jobTableWrap');
-  if(!state.jobs.length){
-    wrap.innerHTML=emptyHtml('No jobs recorded. Attach a project (<code>/unity-hpc:connect</code> or the Projects page) and dispatch a run so <code>run.sh</code> writes the ledger.');
-    return;
-  }
-  wrap.innerHTML=`<table><thead><tr><th></th><th>Job</th><th>Project / Campaign</th><th>Status</th><th>Partition</th><th>Hardware</th><th>Elapsed</th></tr></thead><tbody id="jobRows"></tbody></table>`;
-  document.getElementById('jobRows').innerHTML=rows.map(j=>{
+  document.getElementById('jobRows').innerHTML=rows.length? rows.map(j=>{
     const[pill,lbl]=pillFor(j.status);
+    const liveSt=stUpper(j)!=='COMPLETED' && !FAIL_STATES.includes(stUpper(j)) && stUpper(j)!=='CANCELLED';
     const warn=FAIL_STATES.includes(stUpper(j))?'<span style="color:var(--fail)">&#9888;</span>':'';
     return `<tr onclick='openJob(${jq(j.job_id)})'>
       <td>${warn}</td>
@@ -654,8 +761,10 @@ function renderJobs(){
       <td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td>
       <td>${esc(j.partition||'—')}</td>
       <td class="mono">${esc(j.hardware||'—')}</td>
-      <td class="mono">${esc(fmtElapsed(j.elapsed_s))}</td></tr>`;
-  }).join('')||`<tr><td colspan="7">${emptyHtml('No jobs match this filter.')}</td></tr>`;
+      <td class="mono">${esc(fmtElapsed(j.elapsed_s))}</td>
+      <td class="mono" style="color:${exitOf(j)==='0'?'var(--done)':exitOf(j)==='—'?'var(--muted)':'var(--fail)'}">${esc(exitOf(j))}</td>
+      <td>${liveSt?`<button class="btn sm ghost" onclick='event.stopPropagation();projectPost(${jq(j.slug)},"stop",{job:${jq(j.job_id)}})'>Cancel</button>`:''}</td></tr>`;
+  }).join('') : `<tr><td colspan="9" class="empty" style="cursor:default">No jobs match this filter</td></tr>`;
 }
 
 function openJob(id){
@@ -667,13 +776,17 @@ function openJob(id){
       <div><h2 class="mono">${esc(j.exp||j.job_id)}</h2><div class="hint">#${esc(j.job_id)} · ${esc(j.slug)} / ${esc(j.campaign||'')}</div></div>
       <button class="icon-btn" onclick="closeDrawer()">&#10005;</button></div>
     <div class="section-gap"><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span> <span class="pill grey">${esc(j.partition||'—')}</span> <span class="pill grey mono">${esc(j.hardware||'—')}</span></div>
+    <div class="card section-gap"><h3>Metrics</h3>
+      <div class="hint">No training metrics in the job ledger.</div></div>
     <div class="card section-gap"><h3>Detail</h3>
-      <div class="kv"><span>Elapsed</span><b class="mono">${esc(fmtElapsed(j.elapsed_s))}</b></div>
+      <div class="kv"><span>Runtime</span><b class="mono">${esc(fmtElapsed(j.elapsed_s))}</b></div>
+      <div class="kv"><span>Exit code</span><b class="mono">${esc(exitOf(j))}</b></div>
       <div class="kv"><span>Attempt</span><b class="mono">${esc(j.attempt??'—')}</b></div>
       <div class="kv"><span>Submitted</span><b class="mono">${esc(j.submitted_utc||'—')}</b></div>
       <div class="kv"><span>Updated</span><b class="mono">${esc(j.updated_utc||'—')}</b></div></div>
-    <div class="actions">
+    <div class="section-gap" style="display:flex;gap:9px;margin-bottom:10px">
       <button class="btn sm" onclick='projectPost(${jq(j.slug)},"stop",{job:${jq(j.job_id)}})'>Cancel</button>
+      <button class="btn sm" onclick='projectPost(${jq(j.slug)},"fetch",{})'>Fetch results</button>
       <button class="btn sm ghost" onclick='openProject(${jq(j.slug)})'>Open project</button>
     </div>`;
   document.getElementById('ovl').classList.add('on');
@@ -681,48 +794,82 @@ function openJob(id){
   state.drawerSlug=null;
 }
 
+function gpuHours(list){
+  const s=(list||[]).reduce((a,j)=>a+(Number(j.elapsed_s)||0),0);
+  return s/3600;
+}
 function renderUsers(){
-  const present=state.cluster&&state.cluster.config_present;
-  document.getElementById('usersCard').innerHTML=`
-    <h3>Fairshare unavailable as a user table</h3>
-    <p class="empty" style="padding:0 0 8px">The controller does not expose per-user consumption. <code>cluster-config.json</code> written by <code>/unity-hpc:recon</code> stores a single account fairshare factor, not a ranked user list. There is no live user table to show.</p>
-    <div class="kv"><span>cluster-config.json</span><b class="mono">${present?'present':'missing — run /unity-hpc:recon'}</b></div>
-    <div class="kv"><span>Path</span><b class="mono">$UNITY_HPC_DATA/cluster-config.json</b></div>`;
+  const cl=state.cluster||{};
+  const accounts=Array.isArray(cl.accounts)?cl.accounts:(Array.isArray(cl.users)?cl.users:[]);
+  const hrs=gpuHours(state.jobs);
+  document.getElementById('uHours').textContent=hrs?hrs.toFixed(1):'—';
+  document.getElementById('uHoursD').textContent=hrs?'summed from job ledgers':'no elapsed time in the ledgers';
+  document.getElementById('userSub').textContent=accounts.length
+    ? (accounts.length+' accounts · cluster profile')
+    : 'fairshare is not in the cluster profile';
+  document.getElementById('userRows').innerHTML=accounts.length
+    ? accounts.map((u,i)=>{
+        const name=u.user||u.name||u.id||'—';
+        const group=u.group||u.account||'—';
+        const active=u.active_jobs!=null?u.active_jobs:'—';
+        const gh=u.gpu_hours!=null?u.gpu_hours:'—';
+        const share=Number(u.fairshare);
+        const pct=Number.isFinite(share)?Math.round(share):0;
+        const cls=pct>80?'hot':pct>60?'warn':'';
+        return `<tr><td>${i+1}</td><td><b>${esc(name)}</b></td><td style="color:var(--muted)">${esc(group)}</td><td class="mono">${esc(active)}</td><td class="mono">${esc(gh)}</td>
+          <td><div class="bar-row"><div class="bar ${cls}" style="flex:1"><i style="width:${pct}%"></i></div><span class="pct">${Number.isFinite(share)?pct+'%':'—'}</span></div></td></tr>`;
+      }).join('')
+    : `<tr><td colspan="6" class="empty" style="cursor:default">No user or fairshare rows in the cluster profile</td></tr>`;
+}
+function exportUsers(){
+  const rows=[...document.querySelectorAll('#userRows tr')].map(tr=>[...tr.children].map(td=>td.innerText.replace(/\s+/g,' ').trim()).join(','));
+  const csv=['#,User,Group,Active jobs,GPU-hrs,Fairshare',...rows].join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='users.csv';
+  a.click();
+  toast('Exported users.csv');
 }
 
 function renderAnalytics(){
-  drawUsageChart('chartAn','chartAnEmpty','chartAnLegend',state.usage);
+  drawUsageChart('chartAn','chartAnLegend',state.usage,['a100','a40','cpu-only']);
   const out=(state.usage&&state.usage.outcomes)||{};
   const box=document.getElementById('outcomesBox');
-  if(!out.available||!out.counts||!Object.keys(out.counts).length){
-    box.innerHTML=emptyHtml('No <code>task_run</code> outcomes. Run <code>hpc-sync-telemetry</code> to build <code>summaries.db</code>.');
-  } else {
-    const counts=out.counts;
-    const total=Object.values(counts).reduce((a,b)=>a+(Number(b)||0),0)||1;
-    const order=['COMPLETED','FAILED','TIMEOUT','CANCELLED','RUNNING','PENDING'];
-    const keys=[...order.filter(k=>counts[k]!=null),...Object.keys(counts).filter(k=>!order.includes(k))];
-    const cols={COMPLETED:'#60a5fa',FAILED:'#f87171',TIMEOUT:'#fbbf24',CANCELLED:'#3a4352',RUNNING:'#34d399',PENDING:'#fbbf24'};
-    let acc=0, stops=[];
-    keys.forEach(k=>{
-      const frac=(Number(counts[k])||0)/total*100;
-      const col=cols[k]||'#a78bfa';
-      stops.push(`${col} ${acc}% ${acc+frac}%`);
-      acc+=frac;
+  const counts=(out.available&&out.counts)||{};
+  const labels=[['COMPLETED','Completed','#60a5fa'],['FAILED','Failed','#f87171'],['TIMEOUT','Timeout','#fbbf24'],['CANCELLED','Cancelled','#3a4352']];
+  const known=labels.reduce((a,x)=>a+(Number(counts[x[0]])||0),0);
+  const total=Object.values(counts).reduce((a,b)=>a+(Number(b)||0),0)||0;
+  let acc=0, stops=[];
+  if(total){
+    labels.forEach(([key,,col])=>{
+      const frac=(Number(counts[key])||0)/total*100;
+      if(frac){stops.push(`${col} ${acc}% ${acc+frac}%`); acc+=frac;}
     });
-    box.innerHTML=`<div style="display:flex;align-items:center;gap:26px">
-      <div style="width:150px;height:150px;border-radius:50%;flex-shrink:0;background:conic-gradient(${stops.join(',')})"></div>
-      <div class="stack" style="flex:1">${keys.map(k=>`<div class="kv"><span>${esc(k)}</span><b>${esc(counts[k])}</b></div>`).join('')}</div></div>`;
+    if(acc<100) stops.push(`#3a4352 ${acc}% 100%`);
   }
+  const donut=stops.length?`conic-gradient(${stops.join(',')})`:'#3a4352';
+  box.innerHTML=`<div style="display:flex;align-items:center;gap:26px">
+    <div style="width:150px;height:150px;border-radius:50%;flex-shrink:0;background:${donut}"></div>
+    <div class="stack" style="flex:1">
+      ${labels.map(([key,label,col])=>`<div class="kv"><span><b style="color:${col}">&#9679;</b>&nbsp; ${label}</span><b>${counts[key]!=null?esc(counts[key]):'—'}</b></div>`).join('')}
+    </div></div>`;
+  if(!known && !total){ /* keep the empty dashes */ }
   const bars=document.getElementById('projBars');
   if(!state.projects.length){
-    bars.innerHTML=emptyHtml('No attached projects. Use <code>/unity-hpc:connect</code> or attach a path on the Projects page. Per-project GPU-hours are not in this API.');
+    bars.innerHTML='<div class="empty">No attached projects</div>';
   } else {
-    const max=Math.max(1,...state.projects.map(p=>Object.values(p.job_counts||{}).reduce((a,b)=>a+(Number(b)||0),0)));
-    bars.innerHTML=state.projects.map(p=>{
-      const n=Object.values(p.job_counts||{}).reduce((a,b)=>a+(Number(b)||0),0);
-      const pct=Math.round(n/max*100);
-      return `<div class="kv"><span class="mono">${esc(p.slug)}</span><div class="bar-row" style="width:65%"><div class="bar" style="flex:1"><i style="width:${pct}%;background:var(--blue)"></i></div><span class="pct">${n}</span></div></div>`;
-    }).join('')+`<p class="hint section-gap">Counts are ledger rows, not GPU-hours. Cluster util above comes from <code>hpc-sync-telemetry</code>.</p>`;
+    const rows=state.projects.map(p=>{
+      const mine=state.jobs.filter(j=>j.slug===p.slug);
+      const h=gpuHours(mine);
+      return {slug:p.slug, h};
+    });
+    const max=Math.max(1, ...rows.map(r=>r.h));
+    bars.innerHTML=rows.map(r=>{
+      const pct=Math.round(r.h/max*100);
+      const label=r.h? r.h.toFixed(1)+'h' : '0h';
+      return `<div class="kv"><span class="mono">${esc(r.slug)}</span><div class="bar-row" style="width:65%"><div class="bar" style="flex:1"><i style="width:${pct}%;background:var(--blue)"></i></div><span class="pct">${label}</span></div></div>`;
+    }).join('');
   }
 }
 
@@ -730,19 +877,26 @@ function renderDispatch(){
   const sel=document.getElementById('dispProject');
   const cur=sel.value;
   sel.innerHTML=state.projects.length
-    ? state.projects.map(p=>`<option value="${esc(p.slug)}">${esc(p.slug)} (${esc(p.primitive||'')})</option>`).join('')
+    ? state.projects.map(p=>`<option value="${esc(p.slug)}">${esc(p.slug)}</option>`).join('')
     : `<option value="">No attached projects</option>`;
   if(cur&&[...sel.options].some(o=>o.value===cur)) sel.value=cur;
-  renderPreview();
+  onDispProject();
   const disp=state.events.filter(e=>e.kind==='dispatch'||e.kind==='dry-run').slice().reverse();
   document.getElementById('dispList').innerHTML=disp.length
     ? disp.slice(0,8).map(e=>{
         const ok=e.ok!==false;
         return `<div class="feed-item"><span class="pill ${ok?'run':'fail'}"><span class="d"></span>${ok?'ok':'fail'}</span><div class="mono">${esc(e.message||e.kind)}</div><div class="t">${esc(ago(e.ts))}</div></div>`;
       }).join('')
-    : emptyHtml('No dispatch events yet.');
+    : `<div class="empty">Nothing dispatched yet</div>`;
 }
 
+function onDispProject(){
+  const slug=document.getElementById('dispProject').value;
+  const p=state.projects.find(x=>x.slug===slug);
+  const sc=document.getElementById('dispScaffold');
+  if(sc) sc.value=p?(p.primitive||''):'';
+  renderPreview();
+}
 function dispatchPayload(){
   const slug=document.getElementById('dispProject').value;
   const body={};
@@ -750,14 +904,18 @@ function dispatchPayload(){
   if(exp) body.exp=exp;
   const camp=document.getElementById('dispCampaign').value.trim();
   if(camp) body.campaign=camp;
+  const manifest=document.getElementById('dispManifest').value.trim();
+  if(manifest) body.manifest=manifest;
   body.dry_run=document.getElementById('dispDry').checked;
   const ov={};
   const cmd=document.getElementById('dispCmd').value.trim();
   const wall=document.getElementById('dispWall').value.trim();
   const part=document.getElementById('dispPart').value.trim();
+  const gpus=document.getElementById('dispGpus').value.trim();
   if(cmd) ov.JOB_COMMAND=cmd;
   if(wall) ov.WALLTIME=wall;
   if(part) ov.SLURM_PARTITION=part;
+  if(gpus) ov.SLURM_GPUS=gpus;
   if(Object.keys(ov).length) body.overrides=ov;
   return {slug, body};
 }
@@ -772,7 +930,7 @@ function renderPreview(){
 async function dispatchRun(forceDry){
   const {slug, body}=dispatchPayload();
   if(!slug){toast('Attach a project first');return;}
-  if(!body.exp){toast('exp is required');return;}
+  if(!body.exp && !body.manifest){toast('exp is required');return;}
   if(forceDry) body.dry_run=true;
   try{
     const r=await api('/api/v1/projects/'+encodeURIComponent(slug)+'/runs',{method:'POST',body:JSON.stringify(body)});
@@ -784,7 +942,7 @@ async function dispatchRun(forceDry){
 function renderProjects(){
   const box=document.getElementById('projCards');
   if(!state.projects.length){
-    box.innerHTML=`<div class="card" style="grid-column:1/-1">${emptyHtml('No attached projects. Use /unity-hpc:connect in a coding agent, or attach a path below.')}</div>`;
+    box.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="empty">No attached projects. Use /unity-hpc:connect in a coding agent, or register a path below.</div></div>`;
     return;
   }
   box.innerHTML=state.projects.map(p=>{
@@ -795,14 +953,15 @@ function renderProjects(){
     const fail=jobCount(c,FAIL_STATES);
     return `<div class="card proj-card" onclick='openProject(${jq(p.slug)})'>
       <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
-        <div><b>${esc(p.slug)}</b><div class="hint">${esc(p.primitive||'—')}</div></div>
-        <span class="pill ${p.scaffold?'run':'grey'}"><span class="d"></span>scaffold ${p.scaffold?'yes':'no'}</span>
+        <div><div class="lbl">${esc(p.primitive||'project')}</div>
+          <div style="font-size:16px;font-weight:650;margin-top:4px">${esc(p.slug)}</div></div>
+        <span class="pill ${run?'run':pend?'pend':'grey'}"><span class="d"></span>${run?'running':pend?'queued':'idle'}</span>
       </div>
       <div class="proj-path">${esc(p.path||'')}</div>
       <div class="proj-meta">
         <span class="pill run">${run} running</span>
         <span class="pill pend">${pend} pending</span>
-        <span class="pill done">${done} completed</span>
+        <span class="pill done">${done} done</span>
         <span class="pill fail">${fail} failed</span>
       </div>
     </div>`;
@@ -834,38 +993,42 @@ async function openProject(slug){
     const jobs=p.jobs||[];
     const jobRows=jobs.length?jobs.map(j=>{
       const[pill,lbl]=pillFor(j.status);
-      return `<tr><td class="mono">${esc(j.job_id)}</td><td class="mono">${esc(j.exp)}</td><td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td><td>${esc(j.partition||'—')}</td></tr>`;
-    }).join(''):`<tr><td colspan="4">${emptyHtml('No jobs in this project ledger yet. Dispatch a run.')}</td></tr>`;
+      return `<tr onclick='openJob(${jq(j.job_id)})'><td class="mono">${esc(j.job_id)}</td><td class="mono">${esc(j.exp)}</td><td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td><td>${esc(j.partition||'—')}</td></tr>`;
+    }).join(''):`<tr><td colspan="4" class="empty" style="cursor:default">No jobs yet</td></tr>`;
     document.getElementById('drawer').innerHTML=`
       <div style="display:flex;justify-content:space-between;align-items:start">
         <div><h2 class="mono">${esc(p.slug)}</h2><div class="hint">${esc(p.path||'')}</div></div>
         <button class="icon-btn" onclick="closeDrawer()">&#10005;</button></div>
       <div class="section-gap"><span class="pill violet">${esc(p.primitive||'—')}</span>
-        <span class="pill ${p.scaffold?'run':'grey'}">scaffold ${p.scaffold?'yes':'no'}</span></div>
+        <span class="pill ${p.scaffold?'run':'grey'}">${p.scaffold?'scaffold ready':'no scaffold'}</span></div>
 
       <div class="card section-gap"><h3>Configure</h3>
-        <label>Primitive</label><select id="cfgPrim">${primOpts}</select>
-        <label>remote_dir</label><input id="cfgRemote" value="${esc(p.remote_dir||'')}">
-        <label>unity_host</label><input id="cfgHost" value="${esc(p.unity_host||'unity')}">
-        <label>campaign</label><input id="cfgCamp" value="${esc(p.campaign||'')}">
+        <div class="f-row">
+          <div><label>Primitive</label><select id="cfgPrim">${primOpts}</select></div>
+          <div><label>Campaign</label><input id="cfgCamp" value="${esc(p.campaign||'')}"></div>
+        </div>
+        <label>Remote work dir</label><input id="cfgRemote" value="${esc(p.remote_dir||'')}">
+        <label>Unity host</label><input id="cfgHost" value="${esc(p.unity_host||'unity')}">
         <div class="actions"><button class="btn primary sm" onclick='patchProject(${jq(p.slug)})'>Save</button></div>
       </div>
 
       <div class="card section-gap"><h3>Run</h3>
-        <label>exp</label><input id="runExp" placeholder="smoke">
-        <label>campaign</label><input id="runCamp" placeholder="optional">
-        <label class="check"><input type="checkbox" id="runDry"> dry_run</label>
-        <div class="f-row3">
-          <div><label>JOB_COMMAND</label><input id="runCmd" placeholder="optional"></div>
-          <div><label>WALLTIME</label><input id="runWall" placeholder="optional"></div>
-          <div><label>SLURM_PARTITION</label><input id="runPart" placeholder="optional"></div>
+        <div class="f-row">
+          <div><label>Exp</label><input id="runExp" placeholder="smoke"></div>
+          <div><label>Campaign</label><input id="runCamp" placeholder="optional"></div>
         </div>
-        <div class="actions"><button class="btn primary sm" onclick='runProject(${jq(p.slug)})'>POST runs</button></div>
+        <div class="f-row3">
+          <div><label>Partition</label><input id="runPart" placeholder="optional"></div>
+          <div><label>Walltime</label><input id="runWall" placeholder="optional"></div>
+          <div><label>Command</label><input id="runCmd" placeholder="optional"></div>
+        </div>
+        <label class="check"><input type="checkbox" id="runDry"> dry-run</label>
+        <div class="actions"><button class="btn primary sm" onclick='runProject(${jq(p.slug)})'>&#9654; Dispatch</button></div>
       </div>
 
-      <div class="card section-gap"><h3>Stop / fetch / sync</h3>
+      <div class="card section-gap"><h3>Control</h3>
         <div class="actions">
-          <button class="btn sm" onclick='projectPost(${jq(p.slug)},"stop",{})'>Stop / cancel</button>
+          <button class="btn sm" onclick='projectPost(${jq(p.slug)},"stop",{})'>Stop</button>
           <button class="btn sm" onclick='projectPost(${jq(p.slug)},"fetch",{})'>Fetch</button>
           <button class="btn sm" onclick='projectPost(${jq(p.slug)},"sync",{})'>Sync</button>
         </div>
@@ -876,9 +1039,8 @@ async function openProject(slug){
         <tbody>${jobRows}</tbody></table>
       </div>
 
-      <div class="card section-gap"><h3>Detach</h3>
-        <p class="hint">Removes the registry row. The project directory is not deleted.</p>
-        <div class="actions"><button class="btn sm danger" onclick='detachProject(${jq(p.slug)})'>DELETE project</button></div>
+      <div class="actions">
+        <button class="btn sm danger" onclick='detachProject(${jq(p.slug)})'>Detach</button>
       </div>`;
     document.getElementById('ovl').classList.add('on');
     document.getElementById('drawer').classList.add('open');
@@ -948,15 +1110,12 @@ function closeDrawer(){
 }
 
 function renderSettings(){
-  const origin=location.origin;
-  document.getElementById('setSub').textContent=origin;
-  document.getElementById('setBind').innerHTML=`
-    <div class="kv"><span>This page</span><b class="mono">${esc(origin)}</b></div>
-    <div class="kv"><span>Default bind</span><b class="mono">0.0.0.0:8300</b></div>
-    <div class="kv"><span>Localhost</span><b class="mono">127.0.0.1:8300</b></div>
-    <p class="hint section-gap">The plugin talks to this origin over HTTP with no tokens on localhost.</p>`;
+  const cl=state.cluster||{};
+  document.getElementById('setSub').textContent=(cl.cluster||location.host)+' · '+(state.health&&state.health.ok?'up':'waiting');
+  document.getElementById('setLogin').textContent=cl.cluster||'unity';
+  document.getElementById('setOrigin').textContent=location.origin;
+  document.getElementById('setLedger').textContent='sqlite · '+state.jobs.length+' rows';
   document.getElementById('setHealth').textContent=state.health?(state.health.ok?'ok':'down'):(state.error||'—');
-  document.getElementById('setNproj').textContent=state.health&&state.health.projects!=null?state.health.projects:state.projects.length;
 }
 
 function usageSeries(usage){
@@ -971,36 +1130,32 @@ function usageSeries(usage){
   };
 }
 
-function drawUsageChart(canvasId, emptyId, legendId, usage){
+function drawUsageChart(canvasId, legendId, usage, fallbackNames){
   const cv=document.getElementById(canvasId);
-  const empty=document.getElementById(emptyId);
   const legend=document.getElementById(legendId);
   const packed=usageSeries(usage);
+  if(cv) cv.style.display='block';
   if(!packed){
-    if(cv) cv.style.display='none';
-    if(empty){empty.hidden=false;empty.innerHTML='No usage series. Run <code>hpc-sync-telemetry</code> to build <code>summaries.db</code>.';}
-    if(legend) legend.innerHTML='';
+    if(cv) lineChart(cv, [[]], ['#34d399'], false);
+    if(legend && fallbackNames){
+      legend.innerHTML=fallbackNames.map((n,i)=>`<span><i style="background:${CHART_COLORS[i%CHART_COLORS.length]}"></i>${esc(n)}</span>`).join('');
+    }
     return;
   }
-  if(cv) cv.style.display='block';
-  if(empty) empty.hidden=true;
   if(legend) legend.innerHTML=packed.names.map((n,i)=>`<span><i style="background:${packed.colors[i]}"></i>${esc(n)}</span>`).join('');
   lineChart(cv, packed.series, packed.colors, true);
 }
 
 function drawTrend(trend){
   const cv=document.getElementById('chartQ');
-  const empty=document.getElementById('chartQEmpty');
   const legend=document.getElementById('chartQLegend');
+  if(legend) legend.innerHTML='<span><i style="background:#fbbf24"></i>pending</span><span><i style="background:#34d399"></i>running</span>';
+  if(!cv) return;
+  cv.style.display='block';
   if(!trend||!trend.length){
-    if(cv) cv.style.display='none';
-    if(empty){empty.hidden=false;empty.innerHTML='No live queue trend. Populate <code>snapshot.csv</code> (cluster-intel poller) then run <code>hpc-sync-telemetry</code> if needed.';}
-    if(legend) legend.innerHTML='';
+    lineChart(cv, [[]], ['#fbbf24'], false);
     return;
   }
-  if(cv) cv.style.display='block';
-  if(empty) empty.hidden=true;
-  if(legend) legend.innerHTML='<span><i style="background:#fbbf24"></i>pending</span><span><i style="background:#34d399"></i>running</span>';
   lineChart(cv, [trend.map(r=>Number(r.pending)||0), trend.map(r=>Number(r.running)||0)], ['#fbbf24','#34d399'], false);
 }
 
@@ -1057,9 +1212,9 @@ document.getElementById('anChips').addEventListener('click',e=>{
 
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toTimeString().slice(0,8);},1000);
 window.addEventListener('resize',()=>{
-  if(state.page==='overview') drawUsageChart('chartUtil','chartUtilEmpty','chartUtilLegend',state.usage);
-  if(state.page==='queue') drawTrend(((state.queue&&state.queue.live)||{}).trend||[]);
-  if(state.page==='analytics') drawUsageChart('chartAn','chartAnEmpty','chartAnLegend',state.usage);
+  if(state.page==='overview') drawUsageChart('chartUtil','chartUtilLegend',state.usage,['a100','a40','preempt']);
+  if(state.page==='queue') drawTrend(((state.queue&&state.queue.live)||live()).trend||[]);
+  if(state.page==='analytics') drawUsageChart('chartAn','chartAnLegend',state.usage,['a100','a40','cpu-only']);
 });
 
 go('overview');
