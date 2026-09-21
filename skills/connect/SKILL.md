@@ -38,7 +38,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/hpc-scaffold" \
 
 Interactive: dry-run first, then apply. Differing files move to `unityHPC/.pre-redesign/`. Full `.env` flags: `controller/ops/setup.md`.
 
-Collector deploy is **opt-in**: ask the user before starting a long-lived `tmux has-session` collector on the login node (`collector.sh` / `collector_parse.py`). Default skip. Details: `controller/ops/setup.md`. Use `--collector deploy` only when authorized.
+Copying the sample scripts is **opt-in**: ask the user before putting `collector.sh` and `collector_parse.py` on the login node. Default skip. Do not start `collector.sh loop`. The controller opens a tmux session when a schedule runs, and that session closes after a quiet period. Details: `controller/ops/setup.md`. Use `--collector deploy` only when authorized.
 
 **4. POST attach**
 

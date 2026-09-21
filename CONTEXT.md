@@ -93,6 +93,12 @@ HTTP interface, the dashboard, and every call to `run.sh`. It is not a
 login-node process and not the watcher.
 _Avoid_: daemon, monitor, MCP server, plugin
 
+**Cluster session**:
+A tmux session on the login node that the controller opens to run one
+scheduled sample. It closes after a quiet period. It is not a resident
+collector and not the watcher.
+_Avoid_: collector, daemon, unity-collector
+
 **Attached project**:
 A local directory registered with the controller. Identity is its slug.
 The controller reaches its `unityHPC/run.sh` and its ledger through that

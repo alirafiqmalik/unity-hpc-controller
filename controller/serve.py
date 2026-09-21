@@ -416,8 +416,8 @@ def main(argv: list[str] | None = None) -> int:
         raise
 
     _write_runtime(os.getpid(), host, port)
-    # The scheduled telemetry pull is a thread in this process, not a daemon on
-    # the login node. It does nothing until an operator switches it on.
+    # The schedule sleeps in this process until a run is due. It does nothing
+    # until an operator switches it on. ADR 0004.
     telemetry.start_scheduler()
     ts_url = _tailscale_serve(port) if args.tailscale else None
     _print_urls(host, port, ts_url=ts_url, pid=os.getpid())

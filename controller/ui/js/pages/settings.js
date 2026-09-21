@@ -61,6 +61,14 @@ function text(id, value) {
   if (el) el.textContent = value;
 }
 
+/** "closes after 45 min with no command". */
+function idleText(seconds) {
+  if (!seconds) return '—';
+  const minutes = seconds / 60;
+  const shown = Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
+  return 'closes after ' + shown + ' min with no command';
+}
+
 export function render() {
   const cl = state.cluster || {};
   text('setSub', (cl.cluster || location.host) + ' · '
@@ -147,6 +155,7 @@ function paint() {
     ? (sched.thread_alive ? 'on' : 'on · thread not started')
     : 'off');
   text('telNext', sched.enabled ? ago(sched.next_run_utc) : 'schedule is off');
+  text('telIdle', idleText(sched.inactivity_timeout_s));
   fill('telInterval', sched.interval_minutes || 60);
   fill('telSourceInput', src.origin === 'settings' ? src.value : '');
 

@@ -46,7 +46,8 @@ def test_collector_deployment_is_opt_in(text):
     lowered = text.lower()
     assert "opt-in" in lowered or "ask the user" in lowered
     assert "login node" in lowered
-    assert "long-lived" in lowered or "persistent" in lowered
+    assert "collector.sh loop" in text
+    assert "do not start" in lowered
 
 
 def test_scaffold_generation_is_invoked(text):

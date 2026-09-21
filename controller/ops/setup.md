@@ -190,17 +190,20 @@ Every project on this machine shares one cluster configuration. If it does not
 exist yet, run the `unity-hpc:recon` skill. It is read-only and safe. If the
 configuration exists, skip this step: another project already produced it.
 
-**11. Cluster-intel collector — ask the user first, this is opt-in**
+**11. Sample scripts — ask the user first, this is opt-in**
 
-> ⚠ **CAUTION: This step leaves a lasting footprint on shared infrastructure.**
-> It starts one **long-lived tmux session on the Unity login node**.
-> `collector.sh` samples queue, partition, GPU and job state every 15 minutes. It
-> keeps running after your session ends, and other cluster users can see it.
+> ⚠ **CAUTION: This step copies files onto the shared login node.**
+> Do not start `collector.sh loop`. That resident session is retired.
+> The controller opens a tmux session named `unity-hpc` when a schedule runs,
+> sends `collector.sh once`, then pulls. The session closes after a quiet
+> period of one and a half intervals. A 30 minute schedule closes it after
+> 45 minutes with no command. Other cluster users can see the session while
+> it is open.
 
-Ask the user directly whether to deploy the collector. **Default to no.** Nothing
-else in this skill depends on it, and it feeds usage analytics only. If the user
-declines, say so in the summary and continue. Setup is complete without the
-collector.
+Ask the user directly whether to copy the scripts. **Default to no.** Nothing
+else in this skill depends on them, and they feed usage analytics only. If the
+user declines, say so in the summary and continue. Setup is complete without
+them.
 
 Run the next commands only after the user opts in:
 
@@ -210,22 +213,18 @@ ssh "$UNITY_HOST" "mkdir -p $CID/telemetry"
 scp "${CLAUDE_PLUGIN_ROOT}/cluster-intel/collector.sh" \
     "${CLAUDE_PLUGIN_ROOT}/cluster-intel/collector_parse.py" \
     "$UNITY_HOST:$CID/"
-ssh "$UNITY_HOST" "tmux has-session -t unity-collector 2>/dev/null \
-    || tmux new-session -d -s unity-collector \
-       'UNITY_CID=$CID bash $CID/collector.sh loop'"
 ```
 
-`collector.sh` is the single cluster-side telemetry writer. Two guards keep it a
-singleton: `tmux has-session` allows one session, and a `flock` on
-`collector.lock` allows one writer even if two sessions race. A second setup run
-therefore never starts a second copy, and never writes a record twice. The
-collector also owns the 35-day retention prune on its own output, so there is no
-separate prune step.
+`collector.sh once` is the single cluster-side telemetry writer. A `flock` on
+`collector.lock` allows one writer even if two samples race. `once` also runs
+the 35-day retention prune on its own output, so there is no separate prune
+step. Do not leave a `unity-collector` session behind. If one is still running
+from an older setup, kill it. The controller will open `unity-hpc` itself.
 
 **12. Print the summary**
 
 Report what the run created, what it skipped, what it moved to `.pre-redesign/`,
-and whether it deployed the collector. Then print:
+and whether it copied the sample scripts. Then print:
 
 ```
 Next: bash unityHPC/run.sh run <job-name>

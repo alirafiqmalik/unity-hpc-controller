@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # collector.sh — the SINGLE cluster-side telemetry writer (invariant I1).
 #
-# Runs on the Unity login node inside one tmux session, sampling every 15 min
-# and appending to the authoritative raw store:
+# The controller does not start `loop`. A schedule sends `once` into a tmux
+# session that closes on its own (ADR 0004). `loop` remains for a manual run.
+#
+# `once` samples and prunes, then exits. It appends to the authoritative raw store:
 #   $UNITY_CID/telemetry/YYYY-MM-DD/{resource_state,events,task_runs}.jsonl
 #
 # Singleton-guarded by a `flock` on collector.lock, so a second copy of this
-# script can never double-write (I1). The deploy convention of one tmux
-# session (`tmux has-session`, checked by skills/setup/SKILL.md's deploy
-# command) keeps operators from starting a second session in the first
-# place, but flock is what actually enforces I1 in-script. Every cluster
+# script can never double-write (I1). The controller opens one session and
+# sends `once`. flock is what enforces I1 if two samples overlap. Every cluster
 # command runs under `timeout` and `nice`, with the wrapper PATH + PAGER fix
 # (the `unity-slurm-*` wrappers are not on the non-interactive PATH).
 # Retention is owned here, and only here (there is no local pruner):
@@ -20,7 +20,7 @@
 # commands, reshapes their raw output into the pipe-delimited shapes
 # collector_parse.py expects, and pipes it through.
 #
-# Modes: loop (default) | once | sample | prune
+# Modes: once (what the controller sends) | sample | prune | loop (manual only)
 set -euo pipefail
 
 export PATH="/modules/user-resources/bin:$PATH"

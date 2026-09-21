@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from controller import cluster_session
 from controller import http as chttp
 from controller import telemetry
 from lib import paths
@@ -351,7 +352,7 @@ def test_the_schedule_thread_starts_once_and_stops():
 
 
 def test_the_schedule_thread_fires_a_due_retrieval(stub_script, monkeypatch):
-    monkeypatch.setattr(telemetry, "TICK_SECONDS", 0.05)
+    monkeypatch.setattr(cluster_session, "collect", lambda cfg, source: {"ok": True})
     telemetry.save_settings(source="unity:/work/a/b/telemetry/",
                             schedule_enabled=True, interval_minutes=5)
     # Backdate the clock so the first run is already due.
@@ -367,8 +368,45 @@ def test_the_schedule_thread_fires_a_due_retrieval(stub_script, monkeypatch):
     assert run is not None and run["reason"] == "schedule"
 
 
-def test_the_schedule_does_nothing_while_it_is_off(stub_script, monkeypatch):
-    monkeypatch.setattr(telemetry, "TICK_SECONDS", 0.05)
+def test_turning_the_schedule_on_wakes_the_thread(stub_script, monkeypatch):
+    """The thread sleeps until the due time. A settings write must wake it."""
+    monkeypatch.setattr(cluster_session, "collect", lambda cfg, source: {"ok": True})
+    telemetry.start_scheduler()
+    past = datetime.now(timezone.utc) - timedelta(minutes=10)
+    telemetry.save_settings(
+        source="unity:/work/a/b/telemetry/",
+        schedule_enabled=True,
+        interval_minutes=5,
+        schedule_since_utc=past.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    for _ in range(40):
+        if telemetry.last_run():
+            break
+        time.sleep(0.05)
+    telemetry.stop_scheduler()
+    run = telemetry.last_run()
+    assert run is not None and run["reason"] == "schedule"
+
+
+def test_a_failed_sample_does_not_start_a_pull(stub_script, monkeypatch):
+    monkeypatch.setattr(
+        cluster_session, "collect",
+        lambda cfg, source: {"ok": False, "error": "ssh down"},
+    )
+    telemetry.save_settings(source="unity:/work/a/b/telemetry/",
+                            schedule_enabled=True, interval_minutes=30)
+    assert telemetry._fire_schedule(telemetry.settings()) is False
+    assert telemetry.last_run() is None
+
+
+def test_the_status_names_the_session_timeout():
+    telemetry.save_settings(interval_minutes=30)
+    sched = telemetry.status()["schedule"]
+    assert sched["inactivity_timeout_s"] == 45 * 60
+    assert sched["session"] == "unity-hpc"
+
+
+def test_the_schedule_does_nothing_while_it_is_off(stub_script):
     telemetry.save_settings(source="unity:/work/a/b/telemetry/")
     telemetry.start_scheduler()
     time.sleep(0.5)

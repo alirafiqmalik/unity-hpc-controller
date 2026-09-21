@@ -143,6 +143,8 @@ def test_the_interval_control_saves(page):
     page.eval("telSaveInterval()")
     assert wait(page, "fetch('/api/v1/telemetry').then(r=>r.json())"
                       ".then(j=>j.telemetry.schedule.interval_minutes===25)")
+    # 25 minutes × 1.5 = 37.5 minutes of quiet before the session closes.
+    assert wait(page, "document.getElementById('telIdle').textContent.includes('37.5')")
 
 
 def test_the_interval_control_refuses_a_value_out_of_range(page):

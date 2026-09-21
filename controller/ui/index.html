@@ -264,6 +264,7 @@
           <h3>Scheduled retrieval <span class="right" id="telSchedState">&mdash;</span></h3>
           <div class="kv"><span>Schedule</span><div class="tgl" id="telSchedTgl" onclick="telSchedule(this)"></div></div>
           <div class="kv"><span>Next run</span><b class="mono" id="telNext">&mdash;</b></div>
+          <div class="kv"><span>Cluster session</span><b class="mono" id="telIdle">&mdash;</b></div>
           <label for="telInterval">Interval &mdash; minutes</label>
           <div class="tel-row">
             <input id="telInterval" type="number" min="5" max="1440" step="5" value="60">
@@ -274,7 +275,7 @@
             <input id="telSourceInput" placeholder="unity:/work/&lt;account&gt;/&lt;user&gt;/cluster-intel/telemetry/">
             <button class="btn sm" onclick="telSaveSource()">Save</button>
           </div>
-          <div class="hint section-gap">The schedule is a thread in this controller. It stops when the controller stops. It is not a login-node daemon.</div>
+          <div class="hint section-gap">Each scheduled run sends one sample into the cluster session, then pulls. The session closes after a quiet period of one and a half intervals. It stops when this controller stops.</div>
         </div>
       </div>
       <div>

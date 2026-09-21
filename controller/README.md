@@ -33,15 +33,18 @@ same lock. It never adds a second one.
 | `PATCH /api/v1/telemetry/settings` | `source`, `schedule_enabled`, `interval_minutes` |
 
 A retrieval runs in its own thread, so the HTTP handler never waits for a pull.
-The schedule is one daemon thread in this process. It starts with the server and
-stops with it: there is no login-node daemon, and no cron entry. Settings live in
+The schedule is one thread in this process. It sleeps until the next run is
+due. A due run sends `collector.sh once` into the `unity-hpc` tmux session,
+waits for that sample, then pulls. The session closes after a quiet period of
+one and a half intervals. Settings live in
 `$UNITY_HPC_DATA/controller/telemetry.json`, not in the browser.
 
 The source is read from the saved setting, then `UNITY_TELEMETRY_SRC` in the
 controller's environment, then the first attached project whose `unityHPC/.env`
 declares one. The Settings tab shows which layer answered.
 
-ADR 0003 records why the schedule lives here.
+ADR 0003 records why the schedule lives here. ADR 0004 records the session
+and the idle timeout.
 
 ## Dashboard
 

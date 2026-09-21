@@ -1,5 +1,9 @@
 # Scheduled telemetry retrieval is a thread in the controller
 
+Status: the five-second poll is superseded by ADR 0004. On-demand retrieval,
+the local lock, and the decision to keep the schedule in the controller are
+unchanged.
+
 The dashboard draws GPU utilization from `summaries.db` and the header pill from
 `snapshot.csv`. Both files are local copies. `cluster-intel/sync-telemetry.sh`
 fills them: it pulls the raw telemetry with `rsync`, then rolls it up, and holds

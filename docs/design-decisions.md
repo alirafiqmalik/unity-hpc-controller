@@ -177,8 +177,10 @@ campaign share one results tree. Closed #4 and #5 are in.
 ### 3.7 Watcher is opt-in, foreground, on the user's machine
 
 Closed #6 asked for poll → requeue → fetch. Auto-requeue inside `run.sh
-status` stays rejected: a read tool must not submit. The collector's tmux
-session on the login node is not the pattern to copy. The login node is
+status` stays rejected: a read tool must not submit. A resident collector
+tmux session on the login node is not the pattern to copy. ADR 0004 replaces
+it: the controller opens a cluster session for one sample, and the session
+closes after a quiet period of one and a half intervals. The login node is
 shared, and §10 forbids compute there. A watcher that resubmits is not
 telemetry.
 

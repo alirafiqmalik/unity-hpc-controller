@@ -151,7 +151,11 @@ def _refresh_guidance_marker(project_dir: Path) -> str:
 
 
 def _deploy_collector(values: dict[str, str]) -> None:
-    """Deploy only after the caller explicitly requested --collector deploy."""
+    """Copy the sample scripts. Do not start a resident collector loop.
+
+    The controller opens the tmux session when a schedule runs, and that
+    session closes on its own. See ADR 0004.
+    """
     host = values.get("UNITY_HOST") or "unity"
     account = values["SLURM_ACCOUNT"]
     cid = values.get("UNITY_CID") or f"/work/{account}/{getpass.getuser()}/cluster-intel"
@@ -163,10 +167,6 @@ def _deploy_collector(values: dict[str, str]) -> None:
     subprocess.run(["scp", str(root / "cluster-intel" / "collector.sh"),
                     str(root / "cluster-intel" / "collector_parse.py"),
                     f"{host}:{cid}/"], check=True)
-    remote = ("tmux has-session -t unity-collector 2>/dev/null || "
-              f"tmux new-session -d -s unity-collector 'UNITY_CID={quoted_cid} "
-              f"bash {quoted_cid}/collector.sh loop'")
-    subprocess.run(["timeout", "--foreground", timeout, "ssh", host, remote], check=True)
 
 
 def main() -> int:
@@ -241,7 +241,7 @@ def main() -> int:
                   if (project_dir / "CLAUDE.md").exists()
                   else "  skip marker refresh (no CLAUDE.md)")
         if args.collector == "deploy":
-            print("  deploy collector (explicit request)")
+            print("  copy sample scripts (explicit request; no resident loop)")
         return 0
 
     print(f"Generating the {args.ptype} scaffold in {project_dir}/unityHPC:")
@@ -264,7 +264,7 @@ def main() -> int:
         }[_refresh_guidance_marker(project_dir)])
     if args.collector == "deploy":
         _deploy_collector(values)
-        print("  deployed collector")
+        print("  copied sample scripts (the controller opens the session)")
 
     if any(a.kind == "replace" for a in actions):
         print(f"\nDisplaced files are preserved in "

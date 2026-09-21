@@ -6,9 +6,10 @@ up, and holds `locks/sync.lock` across both. This module does not repeat that
 lock. It starts the script, reads the same lock to tell an operator whether a
 run is in progress, and keeps a history of the runs it started.
 
-The schedule is a thread in the controller process. The controller is the
-always-on process on this machine (CONTEXT.md), so a periodic pull needs no new
-process and no login-node daemon. ADR 0003 records the choice.
+The schedule is a thread in the controller process. It sleeps until the next
+run is due, and a settings change wakes it. A due run samples in the cluster
+session, then pulls. ADR 0003 put the schedule here. ADR 0004 replaced the
+five-second poll and the resident collector.
 
 Stdlib only. No function here raises to an HTTP caller (I6).
 """
@@ -24,7 +25,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import events, registry
+from controller import cluster_session, events, registry
 from lib import paths
 
 REPO = Path(__file__).resolve().parent.parent
@@ -32,8 +33,10 @@ SYNC_SCRIPT = REPO / "scripts" / "hpc-sync-telemetry"
 
 #: Longest a single retrieval may take before it is killed.
 SYNC_TIMEOUT = 3600
-#: How often the schedule thread looks at the clock.
-TICK_SECONDS = 5.0
+#: How long to wait after a missed sample or a busy lock before trying again.
+SAMPLE_BACKOFF_S = 30.0
+#: How long stop_scheduler waits for the thread to notice.
+SCHEDULER_JOIN_S = 2.0
 #: Bounds on the schedule interval an operator may set.
 MIN_INTERVAL_MINUTES = 5
 MAX_INTERVAL_MINUTES = 1440
@@ -53,6 +56,7 @@ _lock = threading.Lock()
 _in_flight: dict | None = None
 _scheduler: threading.Thread | None = None
 _scheduler_stop = threading.Event()
+_scheduler_wake = threading.Event()
 
 
 # --------------------------------------------------------------------------
@@ -164,6 +168,9 @@ def save_settings(**changes) -> dict:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
     os.replace(tmp, path)
+    # The schedule thread sleeps until the next due time. A write is the
+    # signal that the due time may have changed.
+    _scheduler_wake.set()
     return current
 
 
@@ -505,18 +512,61 @@ def _due(cfg: dict) -> bool:
     return when is not None and _now() >= when
 
 
+def _seconds_until_due(cfg: dict) -> float | None:
+    """Seconds until the next run, 0 when it is due, None when the schedule is off."""
+    when = _parse(next_run_utc(cfg))
+    if when is None:
+        return None
+    return max(0.0, (when - _now()).total_seconds())
+
+
+def _fire_schedule(cfg: dict) -> bool:
+    """Sample in the cluster session, then pull. False when the sample did not run."""
+    source = resolve_source()
+    if not source["configured"]:
+        return False
+    report = cluster_session.collect(cfg, source["value"])
+    if not report.get("ok"):
+        events.record(
+            "sync",
+            "scheduled sample did not run",
+            error=str(report.get("error") or ""),
+        )
+        return False
+    start_sync(reason="schedule")
+    return True
+
+
 def _scheduler_loop() -> None:
-    while not _scheduler_stop.wait(TICK_SECONDS):
+    """Sleep until the next due time. A settings write or a stop wakes it."""
+    while not _scheduler_stop.is_set():
+        try:
+            delay = _seconds_until_due(settings())
+        except Exception:  # a schedule fault must not kill the thread (I6)
+            delay = SAMPLE_BACKOFF_S
+        if delay is None:
+            _scheduler_wake.wait()
+            _scheduler_wake.clear()
+            continue
+        if delay > 0 and _scheduler_wake.wait(delay):
+            _scheduler_wake.clear()
+            continue
+        if _scheduler_stop.is_set():
+            return
         try:
             cfg = settings()
-            if not cfg["schedule_enabled"]:
+            if not _due(cfg):
                 continue
             if _in_flight is not None or sync_running():
+                _scheduler_wake.wait(SAMPLE_BACKOFF_S)
+                _scheduler_wake.clear()
                 continue
-            if _due(cfg):
-                start_sync(reason="schedule")
-        except Exception:  # a schedule fault must not kill the thread (I6)
-            continue
+            if not _fire_schedule(cfg):
+                _scheduler_wake.wait(SAMPLE_BACKOFF_S)
+                _scheduler_wake.clear()
+        except Exception:
+            _scheduler_wake.wait(SAMPLE_BACKOFF_S)
+            _scheduler_wake.clear()
 
 
 def start_scheduler() -> bool:
@@ -526,6 +576,7 @@ def start_scheduler() -> bool:
         if _scheduler is not None and _scheduler.is_alive():
             return False
         _scheduler_stop.clear()
+        _scheduler_wake.clear()
         _scheduler = threading.Thread(
             target=_scheduler_loop, name="unity-telemetry-schedule", daemon=True
         )
@@ -536,10 +587,12 @@ def start_scheduler() -> bool:
 def stop_scheduler() -> None:
     global _scheduler
     _scheduler_stop.set()
+    _scheduler_wake.set()
     thread = _scheduler
     if thread is not None and thread.is_alive():
-        thread.join(timeout=TICK_SECONDS * 2)
-    _scheduler = None
+        thread.join(timeout=SCHEDULER_JOIN_S)
+    if thread is None or not thread.is_alive():
+        _scheduler = None
 
 
 def scheduler_alive() -> bool:
@@ -570,6 +623,10 @@ def status(limit: int = 10) -> dict:
             "thread_alive": scheduler_alive(),
             "min_interval_minutes": MIN_INTERVAL_MINUTES,
             "max_interval_minutes": MAX_INTERVAL_MINUTES,
+            "inactivity_timeout_s": cluster_session.inactivity_timeout_s(
+                cfg["interval_minutes"]
+            ),
+            "session": cluster_session.SESSION_NAME,
         },
         "stores": {
             "summaries_db": _freshness(paths.summaries_db()),

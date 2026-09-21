@@ -319,14 +319,15 @@ def test_collector_wraps_commands_in_timeout_and_nice():
 def test_collector_is_singleton_guarded():
     # The in-script guarantee is flock alone; see
     # test_once_exits_cleanly_when_lock_held / test_once_writes_when_lock_free
-    # for the behavioral proof. `tmux has-session` is a deploy-time
-    # operator convention, not a guard collector.sh itself performs — that
-    # lives in the deployment ssh command in skills/connect/SKILL.md.
+    # for the behavioral proof. `tmux has-session` opens the controller's
+    # cluster session. It is not a second writer.
     text = COLLECTOR.read_text()
     assert "flock" in text
     assert "collector.lock" in text
-    setup_text = (REPO_ROOT / "skills" / "connect" / "SKILL.md").read_text()
-    assert "tmux has-session" in setup_text
+    # The session open lives with the schedule, not in the connect skill.
+    # flock inside collector.sh is still what stops two samples writing at once.
+    session_text = (REPO_ROOT / "controller" / "cluster_session.py").read_text()
+    assert "tmux has-session" in session_text
 
 
 def test_collector_sources_real_freemem_and_gresused_for_nodes():
