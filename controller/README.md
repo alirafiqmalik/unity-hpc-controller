@@ -18,6 +18,31 @@ Do not use `tailscale funnel`.
 Operator runbooks (the old skill bodies) are in `ops/`. The HTTP seam is
 `http.handle` — tests call it without sockets.
 
+## Telemetry retrieval
+
+`telemetry.py` owns the local copy of the cluster telemetry: what state it is
+in, an on-demand pull, and an optional schedule. The pull itself stays
+`scripts/hpc-sync-telemetry`, which pulls the raw tree, rolls it up and takes
+`locks/sync.lock` across both. This module starts that script and reads the
+same lock. It never adds a second one.
+
+| Route | Does |
+|---|---|
+| `GET /api/v1/telemetry` | source, whether a retrieval runs, store freshness, rollup age, schedule, history |
+| `POST /api/v1/telemetry/sync` | start one retrieval; `202` when it starts, `200` with a reason when it does not |
+| `PATCH /api/v1/telemetry/settings` | `source`, `schedule_enabled`, `interval_minutes` |
+
+A retrieval runs in its own thread, so the HTTP handler never waits for a pull.
+The schedule is one daemon thread in this process. It starts with the server and
+stops with it: there is no login-node daemon, and no cron entry. Settings live in
+`$UNITY_HPC_DATA/controller/telemetry.json`, not in the browser.
+
+The source is read from the saved setting, then `UNITY_TELEMETRY_SRC` in the
+controller's environment, then the first attached project whose `unityHPC/.env`
+declares one. The Settings tab shows which layer answered.
+
+ADR 0003 records why the schedule lives here.
+
 ## Dashboard
 
 `ui/` holds plain ES modules and stylesheets. `http._static` serves them as

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from controller import dispatch, events, registry, snapshot
+from controller import dispatch, events, registry, snapshot, telemetry
 from controller.dispatch import DispatchError
 from controller.registry import RegistryError
 
@@ -114,6 +114,28 @@ def _route(method: str, path: str, req: Request) -> Response:
             "usage": snapshot.usage(hours),
             "outcomes": snapshot.outcomes(),
         })
+
+    if path == "/api/v1/telemetry" and method == "GET":
+        try:
+            limit = int(_q(req, "limit", "10") or "10")
+        except ValueError:
+            limit = 10
+        return _json(200, {"telemetry": telemetry.status(limit)})
+
+    if path == "/api/v1/telemetry/sync" and method == "POST":
+        body = _read_json(req)
+        result = telemetry.start_sync(reason=body.get("reason") or "manual")
+        # 202: the retrieval runs in its own thread, so this answer is only the
+        # decision to start. The panel polls /api/v1/telemetry for the outcome.
+        return _json(202 if result.get("started") else 200, result)
+
+    if path == "/api/v1/telemetry/settings" and method == "PATCH":
+        body = _read_json(req)
+        keys = ("source", "schedule_enabled", "interval_minutes")
+        saved = telemetry.save_settings(**{k: body[k] for k in keys if k in body})
+        events.record("configure", "updated telemetry retrieval settings")
+        return _json(200, {"ok": True, "settings": saved,
+                           "telemetry": telemetry.status()})
 
     if path == "/api/v1/jobs" and method == "GET":
         return _json(200, {"jobs": snapshot.all_jobs()})

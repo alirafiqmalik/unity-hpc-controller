@@ -17,6 +17,11 @@ Same sources the cluster-intel dashboard already reads:
 | Usage / heatmap | `summaries.db` | rollup |
 | Activity feed | `controller/events.jsonl` | append-only |
 | Project cards | `controller/projects.json` | registry |
+| Retrieval panel | `controller/telemetry.json`, `controller/telemetry-runs.jsonl` | on-demand pull + schedule |
+
+`snapshot.csv` and `summaries.db` are local copies. The Settings tab starts the
+retrieval that fills them, and reports how old each one is. ADR 0003 has the
+design.
 
 Degrade to an empty state when a source is missing (I6). Poll `/api/v1/*`
 every 10s from the browser. No WebSocket in v0.12 — Tailscale and a

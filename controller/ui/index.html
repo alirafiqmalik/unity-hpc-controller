@@ -238,39 +238,62 @@
   </section>
 
   <section class="page" id="pg-settings">
-    <div class="page-head"><div><h1>Settings &amp; Integrations</h1><div class="sub" id="setSub">controller host</div></div></div>
+    <div class="page-head">
+      <div><h1>Settings &amp; Retrieval</h1><div class="sub" id="setSub">controller host</div></div>
+      <button class="btn sm ghost" onclick="refresh({toastOk:true})">&#8635; Refresh</button>
+    </div>
     <div class="grid g2">
-      <div class="card">
-        <h3>Observability stack — docker-compose</h3>
-        <div class="integration"><div class="ic" style="background:rgba(251,191,36,.12);color:var(--amber)">P</div>
-          <div><div class="nm">Prometheus</div><div class="ds">cluster-plane metrics · scrape :9100, slurm-exporter :8080</div></div>
-          <div class="right"><span class="pill grey" id="pillProm">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
-        <div class="integration"><div class="ic" style="background:rgba(248,113,113,.12);color:var(--red)">G</div>
-          <div><div class="nm">Grafana</div><div class="ds">dashboards + Alertmanager · :3000</div></div>
-          <div class="right"><span class="pill grey" id="pillGraf">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
-        <div class="integration"><div class="ic" style="background:rgba(96,165,250,.12);color:var(--blue)">M</div>
-          <div><div class="nm">MLflow</div><div class="ds">experiment-plane tracking · :5000 · per dispatched run</div></div>
-          <div class="right"><span class="pill grey" id="pillMl">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
-        <div class="integration"><div class="ic" style="background:rgba(167,139,250,.12);color:var(--violet)">A</div>
-          <div><div class="nm">Alertmanager</div><div class="ds">Slack + email on node down / queue stall / quota &gt; 90%</div></div>
-          <div class="right"><span class="pill grey">Off</span><div class="tgl" onclick="tg(this)"></div></div></div>
+      <div>
+        <div class="card">
+          <h3>Unity telemetry retrieval <span class="right" id="telState">reading…</span></h3>
+          <div class="kv"><span>Source</span><b class="mono" id="telSource">&mdash;</b></div>
+          <div class="kv"><span>Source from</span><b class="mono" id="telOrigin">&mdash;</b></div>
+          <div class="kv"><span>Retrieval now</span><b class="mono" id="telRunning">&mdash;</b></div>
+          <div class="kv"><span>Last success</span><b class="mono" id="telLastOk">&mdash;</b></div>
+          <div class="kv"><span>Rollup</span><b class="mono" id="telRollup">&mdash;</b></div>
+          <div class="kv"><span>summaries.db</span><b class="mono" id="telDb">&mdash;</b></div>
+          <div class="kv"><span>snapshot.csv</span><b class="mono" id="telCsv">&mdash;</b></div>
+          <div class="kv"><span>Raw telemetry</span><b class="mono" id="telRaw">&mdash;</b></div>
+          <div class="kv"><span>GPU series</span><b class="mono" id="telSeries">&mdash;</b></div>
+          <div class="actions">
+            <button class="btn primary sm" id="telSyncBtn" onclick="telSync()">&#8681; Retrieve now</button>
+          </div>
+          <div class="hint section-gap" id="telHint">One retrieval pulls the raw telemetry, then rolls it up. The pull and the rollup hold one lock, so two retrievals cannot overlap.</div>
+        </div>
+        <div class="card section-gap">
+          <h3>Scheduled retrieval <span class="right" id="telSchedState">&mdash;</span></h3>
+          <div class="kv"><span>Schedule</span><div class="tgl" id="telSchedTgl" onclick="telSchedule(this)"></div></div>
+          <div class="kv"><span>Next run</span><b class="mono" id="telNext">&mdash;</b></div>
+          <label for="telInterval">Interval &mdash; minutes</label>
+          <div class="tel-row">
+            <input id="telInterval" type="number" min="5" max="1440" step="5" value="60">
+            <button class="btn sm" onclick="telSaveInterval()">Save</button>
+          </div>
+          <label for="telSourceInput">Telemetry source</label>
+          <div class="tel-row">
+            <input id="telSourceInput" placeholder="unity:/work/&lt;account&gt;/&lt;user&gt;/cluster-intel/telemetry/">
+            <button class="btn sm" onclick="telSaveSource()">Save</button>
+          </div>
+          <div class="hint section-gap">The schedule is a thread in this controller. It stops when the controller stops. It is not a login-node daemon.</div>
+        </div>
       </div>
       <div>
         <div class="card">
-          <h3>Cluster access</h3>
-          <div class="kv"><span>Login node</span><b class="mono" id="setLogin">—</b></div>
-          <div class="kv"><span>This page</span><b class="mono" id="setOrigin">—</b></div>
-          <div class="kv"><span>Slurm poll cadence</span><b class="mono">every 10s</b></div>
-          <div class="kv"><span>Job ledger</span><b class="mono" id="setLedger">—</b></div>
-          <div class="kv"><span>Health</span><b class="mono" id="setHealth">—</b></div>
-          <div class="hint section-gap">Tailscale is on by default. Enable the user service with <code>hpc-controller --install-user-service</code>.</div>
+          <h3>Retrieval history <span class="right" id="telHistHead"></span></h3>
+          <div class="stack" id="telHistory"></div>
         </div>
         <div class="card section-gap">
-          <h3>Notifications</h3>
-          <div class="kv"><span>Job completion</span><div class="tgl" onclick="tg(this)"></div></div>
-          <div class="kv"><span>Job failure</span><div class="tgl on" onclick="tg(this)"></div></div>
-          <div class="kv"><span>Daily digest</span><div class="tgl" onclick="tg(this)"></div></div>
-          <div class="kv"><span>Retry budget exhausted</span><div class="tgl on" onclick="tg(this)"></div></div>
+          <h3>Last retrieval output <span class="right" id="telOutHead"></span></h3>
+          <pre id="telOutput">No retrieval has run from this controller yet.</pre>
+        </div>
+        <div class="card section-gap">
+          <h3>Cluster access</h3>
+          <div class="kv"><span>Login node</span><b class="mono" id="setLogin">&mdash;</b></div>
+          <div class="kv"><span>This page</span><b class="mono" id="setOrigin">&mdash;</b></div>
+          <div class="kv"><span>Dashboard poll cadence</span><b class="mono">every 10s</b></div>
+          <div class="kv"><span>Job ledger</span><b class="mono" id="setLedger">&mdash;</b></div>
+          <div class="kv"><span>Health</span><b class="mono" id="setHealth">&mdash;</b></div>
+          <div class="hint section-gap">Tailscale is on by default. Enable the user service with <code>hpc-controller --install-user-service</code>.</div>
         </div>
       </div>
     </div>

@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
+from controller import telemetry
 from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, handle
 from lib import paths
 
@@ -415,6 +416,9 @@ def main(argv: list[str] | None = None) -> int:
         raise
 
     _write_runtime(os.getpid(), host, port)
+    # The scheduled telemetry pull is a thread in this process, not a daemon on
+    # the login node. It does nothing until an operator switches it on.
+    telemetry.start_scheduler()
     ts_url = _tailscale_serve(port) if args.tailscale else None
     _print_urls(host, port, ts_url=ts_url, pid=os.getpid())
     print("  Ctrl-C to stop.")
@@ -427,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
+        telemetry.stop_scheduler()
         _clear_runtime()
     return 0
 

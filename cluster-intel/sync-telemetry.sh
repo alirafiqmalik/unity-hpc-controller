@@ -80,4 +80,28 @@ fi
 # 3. Roll up under the SAME lock (we already hold it, so pass --no-lock).
 python3 "$ROLLUP" --no-lock
 
+# 4. The live queue signal. snapshot.csv is a sibling of the telemetry
+# directory on the cluster, it is one small file, and the dashboard header
+# reads it. The default source is that sibling; UNITY_SNAPSHOT_SRC overrides
+# it, and an empty value turns this step off. A cluster that does not publish
+# the file is normal, so a failure here is reported and never fatal: the
+# telemetry mirror and the rollup above are already done.
+if [ -z "${UNITY_SNAPSHOT_SRC+x}" ]; then
+    SNAP_SRC="$(printf '%s' "${SRC%/}" | sed 's#/telemetry$#/snapshot.csv#')"
+    [ "$SNAP_SRC" = "${SRC%/}" ] && SNAP_SRC=""
+else
+    SNAP_SRC="$UNITY_SNAPSHOT_SRC"
+fi
+if [ -n "$SNAP_SRC" ]; then
+    set +e
+    rsync -a "$SNAP_SRC" "$DATA_DIR/snapshot.csv"
+    SNAP_RC=$?
+    set -e
+    if [ "$SNAP_RC" -eq 0 ]; then
+        echo "sync: snapshot.csv updated from $SNAP_SRC"
+    else
+        echo "sync: no snapshot.csv at $SNAP_SRC (rc=$SNAP_RC) — header stays on the last one" >&2
+    fi
+fi
+
 echo "sync: done"
