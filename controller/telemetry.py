@@ -50,6 +50,7 @@ DEFAULTS = {
     "schedule_enabled": False,
     "interval_minutes": 60,
     "schedule_since_utc": "",
+    "script_mode": "once",
 }
 
 _lock = threading.Lock()
@@ -111,6 +112,10 @@ def settings() -> dict:
     out["schedule_enabled"] = bool(out.get("schedule_enabled"))
     out["interval_minutes"] = _clean_interval(out.get("interval_minutes"))
     out["schedule_since_utc"] = str(out.get("schedule_since_utc") or "")
+    try:
+        out["script_mode"] = cluster_session.clean_mode(out.get("script_mode"))
+    except ValueError:
+        out["script_mode"] = DEFAULTS["script_mode"]
     return out
 
 
@@ -163,6 +168,8 @@ def save_settings(**changes) -> dict:
         current["schedule_enabled"] = wanted
     if "schedule_since_utc" in changes:
         current["schedule_since_utc"] = str(changes["schedule_since_utc"] or "")
+    if "script_mode" in changes:
+        current["script_mode"] = cluster_session.clean_mode(changes["script_mode"])
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -488,6 +495,111 @@ def start_sync(reason: str = "manual", background: bool = True) -> dict:
     return {"ok": True, "started": True, "status": "started", "run": run}
 
 
+def _finish_script(run: dict, report: dict) -> dict:
+    """Record a script that did not run. The pull does not start."""
+    finished = _now()
+    started = _parse(run.get("started_utc")) or finished
+    run.update({
+        "finished_utc": _iso(finished),
+        "duration_s": round((finished - started).total_seconds(), 1),
+        "rc": report.get("rc", 1),
+        "status": "failed",
+        "output": str(report.get("error") or "script did not run")[-OUTPUT_KEEP:],
+    })
+    _append_history(run)
+    events.record(
+        "sync",
+        f"script {run.get('mode')} failed ({run['reason']})",
+        status="failed", rc=run["rc"], run_id=run["id"],
+    )
+    global _in_flight
+    with _lock:
+        if _in_flight is not None and _in_flight.get("id") == run["id"]:
+            _in_flight = None
+    return run
+
+
+def _execute_script(run: dict) -> dict:
+    """Run the saved cluster script, then the local pull. Never raises."""
+    try:
+        report = cluster_session.collect(
+            settings(), run["source"], mode=run.get("mode") or "once",
+        )
+    except Exception as exc:  # a script fault must not kill the caller (I6)
+        report = {"ok": False, "error": str(exc)}
+    if not report.get("ok"):
+        return _finish_script(run, report)
+    return _execute(run)
+
+
+def start_script(mode: str | None = None, reason: str = "manual",
+                 background: bool = True) -> dict:
+    """Run one cluster script, then pull.
+
+    `mode` defaults to the saved script. The schedule and the Run button
+    share this path. Returns at once when `background` is set.
+    """
+    global _in_flight
+    chosen = cluster_session.clean_mode(mode or settings()["script_mode"])
+    source = resolve_source()
+    if not source["configured"]:
+        return {
+            "ok": False, "started": False, "status": "unconfigured",
+            "message": "no telemetry source is configured",
+        }
+    with _lock:
+        if _in_flight is not None:
+            return {
+                "ok": True, "started": False, "status": "already-running",
+                "message": "a retrieval is already in flight",
+                "run": dict(_in_flight),
+            }
+        if sync_running():
+            return {
+                "ok": True, "started": False, "status": "already-running",
+                "message": "another process holds the sync lock",
+            }
+        run = {
+            "id": uuid.uuid4().hex[:12],
+            "reason": str(reason or "manual"),
+            "mode": chosen,
+            "source": source["value"],
+            "origin": source["origin"],
+            "started_utc": _iso(_now()),
+            "status": "running",
+        }
+        _in_flight = run
+    events.record(
+        "sync", f"script {chosen} started ({run['reason']})",
+        run_id=run["id"], mode=chosen,
+    )
+    if not background:
+        finished = _execute_script(dict(run))
+        ok = finished.get("status") != "failed"
+        return {"ok": ok, "started": ok, "status": finished.get("status"),
+                "run": finished}
+    thread = threading.Thread(
+        target=_execute_script, args=(dict(run),),
+        name=f"unity-telemetry-{run['id']}", daemon=True,
+    )
+    thread.start()
+    return {"ok": True, "started": True, "status": "started", "run": run}
+
+
+def close_session() -> dict:
+    """Close the cluster session for the configured source."""
+    source = resolve_source()
+    if not source["configured"]:
+        return {
+            "ok": False, "status": "unconfigured",
+            "message": "no telemetry source is configured",
+        }
+    report = cluster_session.close_session(source["value"])
+    if report.get("ok") and not report.get("skipped"):
+        events.record("sync", "cluster session closed", session=report.get("session"))
+    return report
+
+
 # --------------------------------------------------------------------------
 # the schedule
 
@@ -521,20 +633,15 @@ def _seconds_until_due(cfg: dict) -> float | None:
 
 
 def _fire_schedule(cfg: dict) -> bool:
-    """Sample in the cluster session, then pull. False when the sample did not run."""
-    source = resolve_source()
-    if not source["configured"]:
+    """Run the saved script in the cluster session, then pull."""
+    if not resolve_source()["configured"]:
         return False
-    report = cluster_session.collect(cfg, source["value"])
-    if not report.get("ok"):
-        events.record(
-            "sync",
-            "scheduled sample did not run",
-            error=str(report.get("error") or ""),
-        )
-        return False
-    start_sync(reason="schedule")
-    return True
+    result = start_script(
+        mode=cfg.get("script_mode") or "once",
+        reason="schedule",
+        background=False,
+    )
+    return bool(result.get("started"))
 
 
 def _scheduler_loop() -> None:
@@ -627,6 +734,8 @@ def status(limit: int = 10) -> dict:
                 cfg["interval_minutes"]
             ),
             "session": cluster_session.SESSION_NAME,
+            "script": cfg["script_mode"],
+            "scripts": list(cluster_session.MODES),
         },
         "stores": {
             "summaries_db": _freshness(paths.summaries_db()),

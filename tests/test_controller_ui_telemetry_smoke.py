@@ -147,6 +147,13 @@ def test_the_interval_control_saves(page):
     assert wait(page, "document.getElementById('telIdle').textContent.includes('37.5')")
 
 
+def test_the_script_control_sets_what_the_schedule_runs(page):
+    page.eval("document.getElementById('telScript').value='sample'")
+    page.eval("telSaveScript()")
+    assert wait(page, "fetch('/api/v1/telemetry').then(r=>r.json())"
+                      ".then(j=>j.telemetry.schedule.script==='sample')")
+
+
 def test_the_interval_control_refuses_a_value_out_of_range(page):
     page.eval("(()=>{document.getElementById('telInterval').value='2';})()")
     page.eval("telSaveInterval()")

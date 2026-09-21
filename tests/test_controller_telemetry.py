@@ -352,7 +352,7 @@ def test_the_schedule_thread_starts_once_and_stops():
 
 
 def test_the_schedule_thread_fires_a_due_retrieval(stub_script, monkeypatch):
-    monkeypatch.setattr(cluster_session, "collect", lambda cfg, source: {"ok": True})
+    monkeypatch.setattr(cluster_session, "collect", lambda *args, **kwargs: {"ok": True})
     telemetry.save_settings(source="unity:/work/a/b/telemetry/",
                             schedule_enabled=True, interval_minutes=5)
     # Backdate the clock so the first run is already due.
@@ -370,7 +370,7 @@ def test_the_schedule_thread_fires_a_due_retrieval(stub_script, monkeypatch):
 
 def test_turning_the_schedule_on_wakes_the_thread(stub_script, monkeypatch):
     """The thread sleeps until the due time. A settings write must wake it."""
-    monkeypatch.setattr(cluster_session, "collect", lambda cfg, source: {"ok": True})
+    monkeypatch.setattr(cluster_session, "collect", lambda *args, **kwargs: {"ok": True})
     telemetry.start_scheduler()
     past = datetime.now(timezone.utc) - timedelta(minutes=10)
     telemetry.save_settings(
@@ -391,12 +391,32 @@ def test_turning_the_schedule_on_wakes_the_thread(stub_script, monkeypatch):
 def test_a_failed_sample_does_not_start_a_pull(stub_script, monkeypatch):
     monkeypatch.setattr(
         cluster_session, "collect",
-        lambda cfg, source: {"ok": False, "error": "ssh down"},
+        lambda *args, **kwargs: {"ok": False, "error": "ssh down"},
     )
     telemetry.save_settings(source="unity:/work/a/b/telemetry/",
                             schedule_enabled=True, interval_minutes=30)
     assert telemetry._fire_schedule(telemetry.settings()) is False
-    assert telemetry.last_run() is None
+    run = telemetry.last_run()
+    assert run["status"] == "failed"
+    assert "ssh down" in run["output"]
+    assert "sync: done" not in (run.get("output") or "")
+
+
+def test_the_schedule_runs_the_saved_script(stub_script, monkeypatch):
+    seen = {}
+
+    def collect(cfg, source, mode="once", run=None):
+        seen["mode"] = mode
+        return {"ok": True}
+
+    monkeypatch.setattr(cluster_session, "collect", collect)
+    telemetry.save_settings(source="unity:/work/a/b/telemetry/",
+                            script_mode="prune", schedule_enabled=True,
+                            interval_minutes=5)
+    assert telemetry._fire_schedule(telemetry.settings()) is True
+    assert seen["mode"] == "prune"
+    assert telemetry.last_run()["mode"] == "prune"
+    assert telemetry.last_run()["reason"] == "schedule"
 
 
 def test_the_status_names_the_session_timeout():
@@ -502,6 +522,20 @@ def test_settings_patch_saves_and_answers_with_the_new_state():
     assert body["settings"]["interval_minutes"] == 20
     assert body["telemetry"]["schedule"]["enabled"] is True
     assert telemetry.settings()["source"] == "unity:/work/a/b/telemetry/"
+
+
+def test_a_bad_script_answers_400_and_changes_nothing():
+    resp = _req("POST", "/api/v1/telemetry/script", {"mode": "loop"})
+    assert resp.status == 400
+    assert telemetry.settings()["script_mode"] == "once"
+
+
+def test_settings_patch_saves_the_script_the_schedule_runs():
+    resp = _req("PATCH", "/api/v1/telemetry/settings", {"script_mode": "sample"})
+    assert resp.status == 200
+    body = _payload(resp)
+    assert body["settings"]["script_mode"] == "sample"
+    assert body["telemetry"]["schedule"]["script"] == "sample"
 
 
 def test_a_bad_interval_answers_400_and_changes_nothing():

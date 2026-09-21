@@ -157,6 +157,9 @@ function paint() {
   text('telNext', sched.enabled ? ago(sched.next_run_utc) : 'schedule is off');
   text('telIdle', idleText(sched.inactivity_timeout_s));
   fill('telInterval', sched.interval_minutes || 60);
+  fill('telScript', sched.script || 'once');
+  const scriptBtn = document.getElementById('telScriptBtn');
+  if (scriptBtn) scriptBtn.disabled = !!tel.running || !src.configured;
   fill('telSourceInput', src.origin === 'settings' ? src.value : '');
 
   paintHistory(tel.history || []);
@@ -186,7 +189,7 @@ function paintHistory(rows) {
   }
   box.innerHTML = rows.map(r => `<div class="tel-run">
     ${pill(r.status)}
-    <span class="rs">${esc(r.reason || '')}${r.duration_s != null ? ' · ' + r.duration_s + 's' : ''}${r.rc != null ? ' · rc ' + r.rc : ''}</span>
+    <span class="rs">${esc(r.reason || '')}${r.mode ? ' · ' + esc(r.mode) : ''}${r.duration_s != null ? ' · ' + r.duration_s + 's' : ''}${r.rc != null ? ' · rc ' + r.rc : ''}</span>
     <span class="t">${esc(ago(r.finished_utc || r.started_utc))}</span>
   </div>`).join('');
 }
@@ -246,6 +249,45 @@ export async function telSaveInterval() {
   const minutes = Number(el && el.value);
   if (!Number.isFinite(minutes)) { toast('interval must be a number'); return; }
   await save({ interval_minutes: Math.round(minutes) }, 'Interval saved');
+}
+
+/** Save which cluster script the schedule runs. Bound from an inline handler. */
+export async function telSaveScript() {
+  const el = document.getElementById('telScript');
+  const mode = el && el.value;
+  await save({ script_mode: mode }, 'Script saved');
+}
+
+/** Run the selected script now, then pull. Bound from an inline handler. */
+export async function telRunScript() {
+  const el = document.getElementById('telScript');
+  const mode = (el && el.value) || 'once';
+  try {
+    await api('/api/v1/telemetry/settings', {
+      method: 'PATCH', body: JSON.stringify({ script_mode: mode }),
+    });
+    const answer = await api('/api/v1/telemetry/script', {
+      method: 'POST', body: JSON.stringify({ mode: mode, reason: 'manual' }),
+    });
+    if (answer.started) toast('Script started');
+    else toast(answer.message || answer.error || answer.status || 'not started');
+  } catch (e) {
+    toast(String((e && e.message) || e));
+  }
+  load();
+}
+
+/** Close the login-node session. Bound from an inline handler. */
+export async function telCloseSession() {
+  try {
+    const answer = await api('/api/v1/telemetry/session', {
+      method: 'POST', body: JSON.stringify({ action: 'close' }),
+    });
+    if (answer.ok) toast(answer.skipped ? 'No remote session' : 'Session closed');
+    else toast(answer.message || answer.error || 'not closed');
+  } catch (e) {
+    toast(String((e && e.message) || e));
+  }
 }
 
 /** Save the telemetry source. Bound from an inline handler. */

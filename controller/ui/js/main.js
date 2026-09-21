@@ -20,7 +20,8 @@ import { dispatchRun, onDispProject, renderPreview } from './pages/dispatch.js';
 import { render as renderJobs } from './pages/jobs.js';
 import { exportUsers } from './pages/users.js';
 import {
-  telSaveInterval, telSaveSource, telSchedule, telSync,
+  telCloseSession, telRunScript, telSaveInterval, telSaveScript,
+  telSaveSource, telSchedule, telSync,
 } from './pages/settings.js';
 
 /**
@@ -41,6 +42,7 @@ Object.assign(window, {
   dispatchRun, onDispProject, renderPreview,
   exportUsers,
   telSync, telSchedule, telSaveInterval, telSaveSource,
+  telSaveScript, telRunScript, telCloseSession,
 });
 
 const nav = document.getElementById('nav');

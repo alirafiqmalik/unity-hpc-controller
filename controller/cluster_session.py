@@ -11,6 +11,8 @@ import shlex
 import subprocess
 
 SESSION_NAME = "unity-hpc"
+#: Scripts the panel and the schedule may run. `loop` stays manual.
+MODES = ("once", "sample", "prune")
 #: How long one sample may run before the SSH call gives up, in seconds.
 SAMPLE_WAIT_S = 600
 _MIN_INTERVAL_MINUTES = 5
@@ -53,18 +55,30 @@ def parse_remote_source(source: str) -> tuple[str, str] | None:
     return host, path
 
 
-def remote_invocation(session: str, cid: str, timeout_s: int, wait_s: int = SAMPLE_WAIT_S) -> str:
-    """One remote shell script: open the session, run `once`, wait for it.
+def clean_mode(mode: str | None) -> str:
+    """`once`, `sample`, or `prune`. Anything else is refused."""
+    text = str(mode or "once").strip()
+    if text not in MODES:
+        raise ValueError("script must be once, sample, or prune")
+    return text
+
+
+def remote_invocation(
+    session: str, cid: str, timeout_s: int, mode: str = "once",
+    wait_s: int = SAMPLE_WAIT_S,
+) -> str:
+    """One remote shell script: open the session, run one mode, wait for it.
 
     The sample runs inside the tmux session, so the idle timer resets when
     the command starts and starts again when the prompt returns. The SSH
     call waits for the exit file so the local pull does not race the sample.
     """
+    chosen = clean_mode(mode)
     qname = shlex.quote(session)
     line = (
         f"export TMOUT={int(timeout_s)}; "
         f"UNITY_CID={shlex.quote(cid)} "
-        f"bash {shlex.quote(cid + '/collector.sh')} once "
+        f"bash {shlex.quote(cid + '/collector.sh')} {chosen} "
         f"> {_LOG} 2>&1; echo $? > {_MARK}"
     )
     qline = shlex.quote(line)
@@ -95,7 +109,7 @@ def ssh_run(host: str, script: str, timeout_s: int) -> subprocess.CompletedProce
     )
 
 
-def collect(cfg: dict, source: str, run=None) -> dict:
+def collect(cfg: dict, source: str, mode: str = "once", run=None) -> dict:
     """Run one sample in the cluster session.
 
     A local source has no login node, so this is a no-op success and the
@@ -106,8 +120,9 @@ def collect(cfg: dict, source: str, run=None) -> dict:
     if parsed is None:
         return {"ok": True, "skipped": "local"}
     host, cid = parsed
+    chosen = clean_mode(mode)
     timeout_s = inactivity_timeout_s(cfg.get("interval_minutes"))
-    script = remote_invocation(SESSION_NAME, cid, timeout_s)
+    script = remote_invocation(SESSION_NAME, cid, timeout_s, mode=chosen)
     runner = run or ssh_run
     try:
         proc = runner(host, script, SAMPLE_WAIT_S + 30)
@@ -118,7 +133,27 @@ def collect(cfg: dict, source: str, run=None) -> dict:
         return {"ok": False, "error": err[-500:], "rc": proc.returncode}
     return {
         "ok": True,
+        "mode": chosen,
         "timeout_s": timeout_s,
         "session": SESSION_NAME,
         "host": host,
     }
+
+
+def close_session(source: str, run=None) -> dict:
+    """End the cluster session. A missing session is already closed."""
+    parsed = parse_remote_source(source)
+    if parsed is None:
+        return {"ok": True, "skipped": "local"}
+    host, _cid = parsed
+    qname = shlex.quote(SESSION_NAME)
+    script = f"tmux kill-session -t {qname} 2>/dev/null || true\n"
+    runner = run or ssh_run
+    try:
+        proc = runner(host, script, 30)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    if proc.returncode != 0:
+        err = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        return {"ok": False, "error": err[-500:], "rc": proc.returncode}
+    return {"ok": True, "session": SESSION_NAME, "closed": True}

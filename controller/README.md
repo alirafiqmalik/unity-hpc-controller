@@ -30,12 +30,15 @@ same lock. It never adds a second one.
 |---|---|
 | `GET /api/v1/telemetry` | source, whether a retrieval runs, store freshness, rollup age, schedule, history |
 | `POST /api/v1/telemetry/sync` | start one retrieval; `202` when it starts, `200` with a reason when it does not |
-| `PATCH /api/v1/telemetry/settings` | `source`, `schedule_enabled`, `interval_minutes` |
+| `POST /api/v1/telemetry/script` | run `once`, `sample`, or `prune` in the cluster session, then pull |
+| `POST /api/v1/telemetry/session` | `{"action":"close"}` ends the cluster session |
+| `PATCH /api/v1/telemetry/settings` | `source`, `schedule_enabled`, `interval_minutes`, `script_mode` |
 
 A retrieval runs in its own thread, so the HTTP handler never waits for a pull.
 The schedule is one thread in this process. It sleeps until the next run is
-due. A due run sends `collector.sh once` into the `unity-hpc` tmux session,
-waits for that sample, then pulls. The session closes after a quiet period of
+due. A due run sends the saved script (`once`, `sample`, or `prune`) into the
+`unity-hpc` tmux session, waits for it, then pulls. Run script on the Settings
+tab uses that same path. The session closes after a quiet period of
 one and a half intervals. Settings live in
 `$UNITY_HPC_DATA/controller/telemetry.json`, not in the browser.
 

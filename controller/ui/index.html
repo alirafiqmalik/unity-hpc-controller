@@ -270,12 +270,25 @@
             <input id="telInterval" type="number" min="5" max="1440" step="5" value="60">
             <button class="btn sm" onclick="telSaveInterval()">Save</button>
           </div>
+          <label for="telScript">Script</label>
+          <div class="tel-row">
+            <select id="telScript">
+              <option value="once">once — sample and prune</option>
+              <option value="sample">sample</option>
+              <option value="prune">prune</option>
+            </select>
+            <button class="btn sm" onclick="telSaveScript()">Save</button>
+          </div>
+          <div class="actions">
+            <button class="btn sm" id="telScriptBtn" onclick="telRunScript()">Run script</button>
+            <button class="btn sm ghost" id="telCloseBtn" onclick="telCloseSession()">Close session</button>
+          </div>
           <label for="telSourceInput">Telemetry source</label>
           <div class="tel-row">
             <input id="telSourceInput" placeholder="unity:/work/&lt;account&gt;/&lt;user&gt;/cluster-intel/telemetry/">
             <button class="btn sm" onclick="telSaveSource()">Save</button>
           </div>
-          <div class="hint section-gap">Each scheduled run sends one sample into the cluster session, then pulls. The session closes after a quiet period of one and a half intervals. It stops when this controller stops.</div>
+          <div class="hint section-gap">The schedule runs the saved script in the cluster session, then pulls. Run script does that step now. Close session ends the login-node shell. The shell also closes after a quiet period of one and a half intervals.</div>
         </div>
       </div>
       <div>

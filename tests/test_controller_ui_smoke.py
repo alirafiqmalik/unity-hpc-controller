@@ -40,6 +40,7 @@ BRIDGE = [
     "dispatchRun", "onDispProject", "renderPreview",
     "exportUsers",
     "telSync", "telSchedule", "telSaveInterval", "telSaveSource",
+    "telSaveScript", "telRunScript", "telCloseSession",
 ]
 
 TRAP = """

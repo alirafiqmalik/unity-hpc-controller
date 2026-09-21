@@ -36,6 +36,23 @@ def test_the_remote_command_samples_once_and_sets_the_idle_timer():
     assert "loop" not in script
 
 
+def test_the_remote_command_can_run_sample_or_prune():
+    sample = cluster_session.remote_invocation("unity-hpc", "/work/a/b", 2700, mode="sample")
+    prune = cluster_session.remote_invocation("unity-hpc", "/work/a/b", 2700, mode="prune")
+    assert "collector.sh sample" in sample
+    assert "collector.sh prune" in prune
+    assert "collector.sh once" not in sample
+
+
+def test_loop_is_not_a_panel_script():
+    try:
+        cluster_session.clean_mode("loop")
+    except ValueError as exc:
+        assert "once, sample, or prune" in str(exc)
+    else:
+        raise AssertionError("loop was accepted")
+
+
 def test_collect_skips_a_local_source_without_calling_ssh():
     calls = []
     report = cluster_session.collect(

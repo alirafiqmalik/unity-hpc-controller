@@ -122,6 +122,20 @@ def _route(method: str, path: str, req: Request) -> Response:
             limit = 10
         return _json(200, {"telemetry": telemetry.status(limit)})
 
+    if path == "/api/v1/telemetry/script" and method == "POST":
+        body = _read_json(req)
+        result = telemetry.start_script(
+            mode=body.get("mode"),
+            reason=body.get("reason") or "manual",
+        )
+        return _json(202 if result.get("started") else 200, result)
+
+    if path == "/api/v1/telemetry/session" and method == "POST":
+        body = _read_json(req)
+        if body.get("action") != "close":
+            raise ValueError("action must be close")
+        return _json(200, telemetry.close_session())
+
     if path == "/api/v1/telemetry/sync" and method == "POST":
         body = _read_json(req)
         result = telemetry.start_sync(reason=body.get("reason") or "manual")
@@ -131,7 +145,7 @@ def _route(method: str, path: str, req: Request) -> Response:
 
     if path == "/api/v1/telemetry/settings" and method == "PATCH":
         body = _read_json(req)
-        keys = ("source", "schedule_enabled", "interval_minutes")
+        keys = ("source", "schedule_enabled", "interval_minutes", "script_mode")
         saved = telemetry.save_settings(**{k: body[k] for k in keys if k in body})
         events.record("configure", "updated telemetry retrieval settings")
         return _json(200, {"ok": True, "settings": saved,
