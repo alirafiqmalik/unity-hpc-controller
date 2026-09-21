@@ -35,9 +35,33 @@ def cluster_config() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+#: A snapshot older than this is history, not the live cluster. The collector
+#: samples every few seconds, so minutes of silence already mean it stopped.
+LIVE_MAX_AGE_S = 900
+
+
+def _age_seconds(stamp: str) -> int | None:
+    """Seconds since `stamp`, read as UTC. None when it cannot be read.
+
+    The collector writes `2026-07-24 03:24:21` with no zone marker. It is UTC,
+    but a reader that assumes local time is wrong by the local offset, so the
+    zone is applied here and never in the browser.
+    """
+    if not stamp:
+        return None
+    text = str(stamp).strip().replace("Z", "").replace("T", " ")
+    try:
+        when = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    when = when.replace(tzinfo=timezone.utc)
+    return int(max(0, (datetime.now(timezone.utc) - when).total_seconds()))
+
+
 def live_snapshot() -> dict:
     """Latest KPIs from snapshot.csv, plus a short queue trend."""
-    empty = {"available": False, "latest": {}, "trend": []}
+    empty = {"available": False, "latest": {}, "trend": [],
+             "age_s": None, "fresh": False}
     csv_path = paths.snapshot_csv()
     if not csv_path.exists():
         return empty
@@ -68,7 +92,14 @@ def live_snapshot() -> dict:
         "free_nodes": _num(last, "free_nodes"),
         "gpu_types_free": last.get("gpu_types_free", "") or "",
     }
-    return {"available": True, "latest": latest, "trend": trend}
+    age_s = _age_seconds(latest["timestamp_utc"])
+    return {
+        "available": True,
+        "latest": latest,
+        "trend": trend,
+        "age_s": age_s,
+        "fresh": age_s is not None and age_s <= LIVE_MAX_AGE_S,
+    }
 
 
 def partitions() -> list[dict]:
@@ -92,9 +123,29 @@ def partitions() -> list[dict]:
     return out
 
 
+def _hours_before(stamp: str, hours: int) -> str:
+    """The slot key `hours` before an ISO hour key."""
+    try:
+        base = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError):
+        return stamp
+    return (base - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def usage(hours: int = 24) -> dict:
-    """GPU util series from summaries.db. Empty when the rollup is absent."""
-    empty = {"available": False, "slots": [], "series": {}, "by_type": []}
+    """GPU util series from summaries.db. Empty when the rollup is absent.
+
+    The window is the last `hours` up to now. When the rollup holds nothing that
+    new — the retrieval has not run for a while, or the cluster-side collector
+    stopped — the window slides back to the last `hours` of data that exists,
+    and `window` says `latest-available`. The rows are the same real rows
+    either way; `freshness_utc` and `stale_s` say how old they are.
+    """
+    empty = {"available": False, "slots": [], "series": {}, "by_type": [],
+             "window": "recent", "hours": hours, "freshness_utc": None,
+             "stale_s": None}
     db = paths.summaries_db()
     if not db.exists():
         return empty
@@ -102,21 +153,32 @@ def usage(hours: int = 24) -> dict:
         hours = max(1, min(int(hours), 24 * 3650))
     except (TypeError, ValueError):
         hours = 24
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
+    empty["hours"] = hours
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    window = "recent"
+    query = (
+        "SELECT hour_utc AS slot, resource_id AS gpu_type, "
+        "ROUND(util_mean * 100.0, 1) AS util "
+        "FROM hourly_resource "
+        "WHERE resource_kind = 'gpu_type' AND hour_utc >= ? "
+        "ORDER BY hour_utc, resource_id"
     )
     try:
         con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
         try:
-            rows = con.execute(
-                "SELECT hour_utc AS slot, resource_id AS gpu_type, "
-                "ROUND(util_mean * 100.0, 1) AS util "
-                "FROM hourly_resource "
-                "WHERE resource_kind = 'gpu_type' AND hour_utc >= ? "
-                "ORDER BY hour_utc, resource_id",
-                (cutoff,),
-            ).fetchall()
+            rows = con.execute(query, (cutoff,)).fetchall()
+            if not rows:
+                newest = con.execute(
+                    "SELECT MAX(hour_utc) FROM hourly_resource "
+                    "WHERE resource_kind = 'gpu_type'"
+                ).fetchone()[0]
+                if newest:
+                    window = "latest-available"
+                    rows = con.execute(
+                        query, (_hours_before(newest, hours),)
+                    ).fetchall()
         finally:
             con.close()
     except sqlite3.Error:
@@ -147,12 +209,25 @@ def usage(hours: int = 24) -> dict:
             "peak": max(present),
         })
     by_type.sort(key=lambda x: x["avg"], reverse=True)
+    newest_slot = slots[-1] if slots else None
+    stale_s = None
+    if newest_slot:
+        try:
+            when = datetime.strptime(newest_slot, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            stale_s = int(max(0, (now - when).total_seconds()))
+        except ValueError:
+            stale_s = None
     return {
         "available": True,
         "slots": slots,
         "series": series,
         "by_type": by_type,
-        "freshness_utc": slots[-1] if slots else None,
+        "window": window,
+        "hours": hours,
+        "freshness_utc": newest_slot,
+        "stale_s": stale_s,
     }
 
 
