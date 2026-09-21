@@ -29,7 +29,7 @@ Operator runbooks for recon, fetch, watch, sweep, and setup live under
 
 ## 1b. Controller
 
-`scripts/hpc-controller` serves the API and `controller/ui/index.html`.
+`scripts/hpc-controller` serves the API and the dashboard in `controller/ui/`.
 It starts in the background, binds localhost, and runs `tailscale serve`.
 `--fg` stays in the terminal; `--no-tailscale` skips HTTPS publishing.
 The registry is `$UNITY_HPC_DATA/controller/projects.json`. Dispatch is
