@@ -86,3 +86,26 @@ An optional `unityHPC/bootstrap.sh`. If the file exists, the job template
 sources it under one `flock` so concurrent tasks do not race. The harness
 does not own a pip convention.
 _Avoid_: VENV_BOOTSTRAP, requirements.txt
+
+**Controller**:
+The always-on process on this machine. It owns the project registry, the
+HTTP interface, the dashboard, and every call to `run.sh`. It is not a
+login-node process and not the watcher.
+_Avoid_: daemon, monitor, MCP server, plugin
+
+**Attached project**:
+A local directory registered with the controller. Identity is its slug.
+The controller reaches its `unityHPC/run.sh` and its ledger through that
+registration.
+_Avoid_: repo, workspace, integration
+
+**Dispatch**:
+A run request sent to the controller. The controller calls `run.sh`. A
+dispatch that does not go through the controller is outside the contract.
+_Avoid_: submit (that is `run.sh`'s act), sbatch
+
+**Plugin**:
+The three LLM-facing skills (`connect`, `dispatch`, `doctor`). They write
+wiring and HTTP to the controller. They do not SSH.
+_Avoid_: agent, MCP, marketplace plugin (the install unit is still this
+repo; this term is the thin skill catalog)
