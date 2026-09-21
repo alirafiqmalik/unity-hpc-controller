@@ -68,5 +68,14 @@ def events_log() -> Path:
     return controller_dir() / "events.jsonl"
 
 
+def controller_runtime() -> Path:
+    """PID/host/port of the running controller, if any."""
+    return controller_dir() / "runtime.json"
+
+
+def controller_log() -> Path:
+    return controller_dir() / "controller.log"
+
+
 def snapshot_csv() -> Path:
     return data_dir() / "snapshot.csv"

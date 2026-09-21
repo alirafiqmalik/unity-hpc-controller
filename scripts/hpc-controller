@@ -2,19 +2,18 @@
 # hpc-controller — start the Unity HPC controller (API + dashboard).
 #
 # Usage:
-#   hpc-controller                      start on 0.0.0.0:8300
+#   hpc-controller                      background + Tailscale HTTPS (default)
+#   hpc-controller --status             pid, local URL, tailnet URL
+#   hpc-controller --stop               stop the background process
+#   hpc-controller --fg                 stay in the terminal
+#   hpc-controller --no-tailscale       localhost only (no `tailscale serve`)
 #   hpc-controller --port 9000          pick a port
-#   hpc-controller --host 127.0.0.1     bind locally only
-#   hpc-controller --tailscale          localhost + `tailscale serve` (HTTPS, tailnet-only)
 #   hpc-controller --open               also open it in a browser
 #   hpc-controller --install-user-service   write a systemd --user unit and exit
 #
-# View over Tailscale:
-#   hpc-controller --tailscale
-#   then open the https://<machine>.<tailnet>.ts.net URL it prints.
-#   Do not use `tailscale funnel` — that publishes the dashboard to the internet.
+# Do not use `tailscale funnel` — that publishes the dashboard to the internet.
 #
-# Always-on:
+# Always-on across reboot:
 #   hpc-controller --install-user-service
 #   systemctl --user enable --now unity-hpc-controller
 set -euo pipefail

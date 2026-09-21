@@ -1,23 +1,32 @@
 #!/usr/bin/env python3
 """Serve the Unity HPC controller (API + dashboard). Stdlib only.
 
-    python3 -m controller.serve
-    python3 -m controller.serve --port 8300 --host 127.0.0.1
-    python3 -m controller.serve --tailscale
+    hpc-controller                 # background + Tailscale HTTPS (default)
+    hpc-controller --status
+    hpc-controller --stop
+    hpc-controller --fg            # stay in the terminal
+    hpc-controller --no-tailscale  # localhost only
 """
 
 from __future__ import annotations
 
 import argparse
 import errno
+import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
 
 from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, handle
+from lib import paths
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -63,14 +72,70 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
 
-def _tailscale_serve(port: int) -> str | None:
-    if shutil.which("tailscale") is None:
-        print("tailscale not found — serving on localhost only", file=sys.stderr)
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_runtime() -> dict | None:
+    path = paths.controller_runtime()
+    if not path.is_file():
         return None
-    proc = subprocess.run(
-        ["tailscale", "serve", "--bg", str(port)],
-        capture_output=True, text=True,
-    )
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or "pid" not in data:
+        return None
+    return data
+
+
+def _write_runtime(pid: int, host: str, port: int) -> None:
+    dest = paths.controller_runtime()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps({"pid": pid, "host": host, "port": port}) + "\n")
+
+
+def _clear_runtime() -> None:
+    try:
+        paths.controller_runtime().unlink()
+    except OSError:
+        pass
+
+
+def _health_ok(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> bool:
+    del host  # health is always the loopback API, even when bind is 0.0.0.0
+    url = f"http://127.0.0.1:{port}/api/v1/health"
+    try:
+        with urllib.request.urlopen(url, timeout=0.4) as resp:
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read().decode())
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError):
+        return False
+    return body.get("ok") is True and body.get("service") == "unity-hpc-controller"
+
+
+def _wait_healthy(host: str = "127.0.0.1", port: int = DEFAULT_PORT,
+                  timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _health_ok(host=host, port=port):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _tailscale_https_url() -> str | None:
+    if shutil.which("tailscale") is None:
+        return None
     status = subprocess.run(
         ["tailscale", "serve", "status"],
         capture_output=True, text=True,
@@ -79,11 +144,23 @@ def _tailscale_serve(port: int) -> str | None:
         tok for tok in (status.stdout or "").split()
         if tok.startswith("https://")
     ]
-    if proc.returncode != 0 and not urls:
+    return urls[0] if urls else None
+
+
+def _tailscale_serve(port: int) -> str | None:
+    if shutil.which("tailscale") is None:
+        print("tailscale not found — serving on localhost only", file=sys.stderr)
+        return None
+    proc = subprocess.run(
+        ["tailscale", "serve", "--bg", str(port)],
+        capture_output=True, text=True,
+    )
+    url = _tailscale_https_url()
+    if proc.returncode != 0 and not url:
         print("could not start `tailscale serve`; port is still reachable directly",
               file=sys.stderr)
         return None
-    return urls[0] if urls else None
+    return url
 
 
 def _tailscale_ip() -> str | None:
@@ -98,6 +175,121 @@ def _tailscale_ip() -> str | None:
     return line[0] if line else None
 
 
+def _print_urls(host: str, port: int, ts_url: str | None = None,
+                pid: int | None = None) -> None:
+    print(f"Unity HPC controller → http://{host}:{port}")
+    print(f"  local : http://127.0.0.1:{port}")
+    if pid is not None:
+        print(f"  pid   : {pid}")
+    ts_ip = _tailscale_ip()
+    if ts_ip:
+        print(f"  tailnet: http://{ts_ip}:{port}")
+    if ts_url:
+        print(f"  serve : {ts_url}")
+    log = paths.controller_log()
+    if log.exists():
+        print(f"  log   : {log}")
+
+
+def _open_browser(url: str) -> None:
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _controller_running(port: int) -> tuple[bool, dict | None]:
+    runtime = _read_runtime()
+    if runtime is None:
+        return False, None
+    try:
+        pid = int(runtime["pid"])
+        rt_port = int(runtime.get("port", port))
+    except (TypeError, ValueError):
+        return False, runtime
+    alive = _pid_alive(pid)
+    healthy = _health_ok(port=rt_port)
+    if alive or healthy:
+        return True, runtime
+    return False, runtime
+
+
+def _spawn_background(host: str, port: int, tailscale: bool) -> subprocess.Popen:
+    log = paths.controller_log()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable, "-m", "controller.serve",
+        "--fg", "--host", host, "--port", str(port),
+    ]
+    if not tailscale:
+        cmd.append("--no-tailscale")
+    env = os.environ.copy()
+    extra = str(REPO)
+    env["PYTHONPATH"] = extra + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    with log.open("a") as fh:
+        return subprocess.Popen(
+            cmd,
+            stdout=fh,
+            stderr=fh,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(REPO),
+            env=env,
+        )
+
+
+def _stop() -> int:
+    runtime = _read_runtime()
+    if runtime is None:
+        print("controller is not running")
+        return 0
+    try:
+        pid = int(runtime["pid"])
+    except (TypeError, ValueError):
+        _clear_runtime()
+        print("controller is not running")
+        return 0
+    if not _pid_alive(pid):
+        _clear_runtime()
+        print("controller is not running")
+        return 0
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.05)
+    _clear_runtime()
+    print(f"stopped pid {pid}")
+    return 0
+
+
+def _status() -> int:
+    runtime = _read_runtime()
+    port = DEFAULT_PORT
+    host = DEFAULT_HOST
+    if runtime:
+        try:
+            port = int(runtime.get("port", port))
+            host = str(runtime.get("host") or host)
+        except (TypeError, ValueError):
+            pass
+    running, rt = _controller_running(port)
+    if not running:
+        print("controller is not running")
+        return 0
+    pid = None
+    if rt:
+        try:
+            pid = int(rt["pid"])
+        except (TypeError, ValueError, KeyError):
+            pid = None
+    print("controller is running")
+    _print_urls(host, port, ts_url=_tailscale_https_url(), pid=pid)
+    return 0
+
+
 def install_user_service(port: int) -> int:
     """Write a systemd --user unit that keeps the controller up."""
     dest_dir = Path.home() / ".config" / "systemd" / "user"
@@ -110,7 +302,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={python} -m controller.serve --host 127.0.0.1 --port {port}
+ExecStart={python} -m controller.serve --fg --port {port}
 WorkingDirectory={REPO}
 Restart=on-failure
 RestartSec=5
@@ -122,21 +314,34 @@ WantedBy=default.target
     print(f"wrote {dest}")
     print("enable with:  systemctl --user daemon-reload")
     print("              systemctl --user enable --now unity-hpc-controller")
-    print(f"then:         hpc-controller --tailscale   # or tailscale serve --bg {port}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="hpc-controller",
-        description="Unity HPC controller — API + dashboard (Tailscale-friendly).",
+        description=(
+            "Unity HPC controller — API + dashboard. "
+            "Starts in the background and publishes over Tailscale by default."
+        ),
+        epilog="Do not use `tailscale funnel` — that publishes the dashboard to the internet.",
     )
     ap.add_argument("--host", default=DEFAULT_HOST,
                     help=f"bind address (default {DEFAULT_HOST})")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help=f"port (default {DEFAULT_PORT})")
-    ap.add_argument("--tailscale", action="store_true",
-                    help="bind localhost and publish via `tailscale serve`")
+    ap.add_argument(
+        "--tailscale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="publish via `tailscale serve` (default: on)",
+    )
+    ap.add_argument("--fg", "--foreground", action="store_true",
+                    help="stay in the foreground (default is background)")
+    ap.add_argument("--stop", action="store_true",
+                    help="stop the background controller")
+    ap.add_argument("--status", action="store_true",
+                    help="print whether the controller is running, and its URLs")
     ap.add_argument("--open", action="store_true",
                     help="open the dashboard in a local browser")
     ap.add_argument("--install-user-service", action="store_true",
@@ -145,44 +350,84 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.install_user_service:
         return install_user_service(args.port)
+    if args.stop:
+        return _stop()
+    if args.status:
+        return _status()
 
-    host = "127.0.0.1" if args.tailscale else args.host
+    host = args.host
+    port = args.port
+    running, runtime = _controller_running(port)
+    if running and not args.fg:
+        print("already running")
+        rt_host = host
+        rt_port = port
+        pid = None
+        if runtime:
+            rt_host = str(runtime.get("host") or host)
+            try:
+                rt_port = int(runtime.get("port", port))
+                pid = int(runtime["pid"])
+            except (TypeError, ValueError, KeyError):
+                pid = runtime.get("pid") if runtime else None
+        ts_url = _tailscale_https_url()
+        _print_urls(rt_host, rt_port, ts_url=ts_url, pid=pid)
+        if args.open:
+            _open_browser(ts_url or f"http://127.0.0.1:{rt_port}")
+        return 0
+
+    if not args.fg:
+        if runtime and not running:
+            _clear_runtime()
+        proc = _spawn_background(host, port, args.tailscale)
+        _write_runtime(proc.pid, host, port)
+        if proc.poll() is not None:
+            print(
+                f"failed to start the controller; see {paths.controller_log()}",
+                file=sys.stderr,
+            )
+            _clear_runtime()
+            return 1
+        if not _wait_healthy(host=host, port=port):
+            print(
+                f"controller started (pid {proc.pid}) but is not healthy yet; "
+                f"see {paths.controller_log()}",
+                file=sys.stderr,
+            )
+            return 1
+        ts_url = _tailscale_https_url() if args.tailscale else None
+        _print_urls(host, port, ts_url=ts_url, pid=proc.pid)
+        print("  stop  : hpc-controller --stop")
+        if args.open:
+            _open_browser(ts_url or f"http://127.0.0.1:{port}")
+        return 0
+
     try:
-        srv = ThreadingHTTPServer((host, args.port), Handler)
+        srv = ThreadingHTTPServer((host, port), Handler)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             print(
-                f"Controller cannot bind {host}:{args.port}: address already in use. "
+                f"Controller cannot bind {host}:{port}: address already in use. "
                 f"Stop the existing server or choose --port <unused-port>.",
                 file=sys.stderr,
             )
             return 2
         raise
 
-    print(f"Unity HPC controller → http://{host}:{args.port}")
-    print(f"  local : http://127.0.0.1:{args.port}")
-    ts_ip = _tailscale_ip()
-    if ts_ip and not args.tailscale:
-        print(f"  tailnet: http://{ts_ip}:{args.port}")
-    ts_url = None
-    if args.tailscale:
-        ts_url = _tailscale_serve(args.port)
-        if ts_url:
-            print(f"  serve : {ts_url}")
+    _write_runtime(os.getpid(), host, port)
+    ts_url = _tailscale_serve(port) if args.tailscale else None
+    _print_urls(host, port, ts_url=ts_url, pid=os.getpid())
     print("  Ctrl-C to stop.")
 
     if args.open:
-        url = ts_url or f"http://127.0.0.1:{args.port}"
-        try:
-            import webbrowser
-            webbrowser.open(url)
-        except Exception:
-            pass
+        _open_browser(ts_url or f"http://127.0.0.1:{port}")
 
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped.")
+    finally:
+        _clear_runtime()
     return 0
 
 

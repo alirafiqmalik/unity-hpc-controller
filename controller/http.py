@@ -13,7 +13,7 @@ from controller import dispatch, events, registry, snapshot
 from controller.dispatch import DispatchError
 from controller.registry import RegistryError
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8300
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
