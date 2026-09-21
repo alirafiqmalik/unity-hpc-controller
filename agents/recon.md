@@ -3,6 +3,9 @@ name: recon
 description: "Autonomous cluster reconnaissance agent — gathers partition limits, GPU types and account quotas, then merges them into the shared cluster-config.json in $UNITY_HPC_DATA."
 ---
 
+Humans should prefer the controller UI, or the recon runbook at
+`controller/ops/recon.md`.
+
 # Recon Agent
 
 You are a reconnaissance agent for the Unity HPC cluster. You gather the cluster

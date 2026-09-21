@@ -1,7 +1,7 @@
 from pathlib import Path
 
 SKILL = (Path(__file__).resolve().parent.parent
-         / "skills" / "recommend-hardware" / "SKILL.md").read_text()
+         / "controller" / "ops" / "recommend-hardware.md").read_text()
 
 
 def test_ranks_on_the_projects_own_jobs():

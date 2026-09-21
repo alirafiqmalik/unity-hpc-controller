@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-SKILL = Path(__file__).resolve().parent.parent / "skills" / "setup" / "SKILL.md"
+SKILL = Path(__file__).resolve().parent.parent / "skills" / "connect" / "SKILL.md"
 
 
 @pytest.fixture
@@ -63,3 +63,8 @@ def test_setup_is_rerunnable(text):
 def test_setup_documents_the_noninteractive_path(text):
     assert "UNITY_HPC_NONINTERACTIVE=1" in text
     assert "--collector" in text
+
+
+def test_connect_mentions_controller_attach(text):
+    assert "/api/v1/projects" in text
+    assert "hpc-controller" in text

@@ -297,7 +297,7 @@ def test_collector_dispatches_catchup_via_parser():
 
 
 def test_setup_skill_deploys_the_new_collector():
-    text = (REPO_ROOT / "skills" / "setup" / "SKILL.md").read_text()
+    text = (REPO_ROOT / "controller" / "ops" / "setup.md").read_text()
     assert "collector.sh" in text
     assert "collector_parse.py" in text
     assert "sacct-collector.sh" not in text
@@ -321,11 +321,11 @@ def test_collector_is_singleton_guarded():
     # test_once_exits_cleanly_when_lock_held / test_once_writes_when_lock_free
     # for the behavioral proof. `tmux has-session` is a deploy-time
     # operator convention, not a guard collector.sh itself performs — that
-    # lives in the deployment ssh command in skills/setup/SKILL.md.
+    # lives in the deployment ssh command in skills/connect/SKILL.md.
     text = COLLECTOR.read_text()
     assert "flock" in text
     assert "collector.lock" in text
-    setup_text = (REPO_ROOT / "skills" / "setup" / "SKILL.md").read_text()
+    setup_text = (REPO_ROOT / "skills" / "connect" / "SKILL.md").read_text()
     assert "tmux has-session" in setup_text
 
 

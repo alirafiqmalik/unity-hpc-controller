@@ -49,7 +49,7 @@ def test_generated_files_carry_provenance_header(tmp_project):
         if action.path.name == ".env":
             continue
         head = "\n".join(action.content.splitlines()[:3])
-        assert "/unity-hpc:setup" in head, f"{action.path.name} lacks provenance"
+        assert "/unity-hpc:connect" in head, f"{action.path.name} lacks provenance"
 
 
 # parametrized over TYPES itself, not a copy of it: a name added to TYPES with

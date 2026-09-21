@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-SKILL = Path(__file__).resolve().parent.parent / "skills" / "recon" / "SKILL.md"
+SKILL = Path(__file__).resolve().parent.parent / "controller" / "ops" / "recon.md"
 
 
 @pytest.fixture

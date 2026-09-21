@@ -76,7 +76,7 @@ def test_missing_scaffold_gives_actionable_message(server, tmp_project, monkeypa
     monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
     out = server._unity_submit("baseline", "")
     assert "No such file or directory" not in out
-    assert "/unity-hpc:setup" in out
+    assert "/unity-hpc:connect" in out
     assert "unityHPC/run.sh" in out
 
 
@@ -123,7 +123,7 @@ def test_a_dispatcher_that_predates_overrides_says_so(server, tmp_project,
     unity = materialise(tmp_project, "cpu")
     unity.joinpath("run.sh").write_text('#!/usr/bin/env bash\necho old\n')
     out = server._unity_submit("smoke", "", None, {"SLURM_GPUS": ""})
-    assert "/unity-hpc:setup" in out
+    assert "/unity-hpc:connect" in out
     assert "predates" in out
 
 
@@ -152,7 +152,7 @@ def test_submit_tool_is_not_ml_specific(server):
 
 
 def test_no_tool_takes_a_primitive_or_type_parameter(server):
-    """Primitive is a scaffold fact fixed at /unity-hpc:setup, not something an
+    """Primitive is a scaffold fact fixed at /unity-hpc:connect, not something an
     MCP caller chooses per call (design-decisions.md §3.11)."""
     tools = asyncio.run(server.list_tools())
     for tool in tools:
@@ -168,7 +168,7 @@ def test_array_missing_scaffold_gives_actionable_message(server, tmp_project,
     manifest.write_text("baseline\n")
     out = server._unity_array(str(manifest))
     assert "No such file or directory" not in out
-    assert "/unity-hpc:setup" in out
+    assert "/unity-hpc:connect" in out
     assert "unityHPC/run.sh" in out
 
 
@@ -213,7 +213,7 @@ def test_cancel_missing_scaffold_gives_actionable_message(server, tmp_project,
     monkeypatch.setenv("PROJECT_DIR", str(tmp_project))
     out = server._unity_cancel()
     assert "No such file or directory" not in out
-    assert "/unity-hpc:setup" in out
+    assert "/unity-hpc:connect" in out
     assert "unityHPC/run.sh" in out
 
 

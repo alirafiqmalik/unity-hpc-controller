@@ -220,7 +220,7 @@ def test_an_unstamped_scaffold_is_reported_stale(server, tmp_project,
     stale = [p for p in report["problems"] if p["issue"] == "scaffold_stale"]
     assert stale, report["problems"]
     assert "unstamped" in stale[0]["detail"]
-    assert "setup" in stale[0]["fix"]
+    assert "connect" in stale[0]["fix"]
     assert report["project"]["scaffold_version"] is None
 
 

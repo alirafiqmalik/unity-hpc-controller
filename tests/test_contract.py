@@ -92,7 +92,7 @@ def test_skill_named_response_fields_are_emitted_by_the_named_tool():
         missing = [field for field in fields if f'"{field}"' not in source]
         assert not missing, f"{tool} does not emit its documented fields: {missing}"
 
-    run = (REPO_ROOT / "skills" / "run" / "SKILL.md").read_text()
+    run = (REPO_ROOT / "controller" / "ops" / "run.md").read_text()
     assert "current_pending" not in run and "current_running" not in run
     assert "best_hours_utc" in run and "worst_hours_utc" in run
 
@@ -152,8 +152,8 @@ _DOMAIN_METRICS = ("val_bpb", "mfu_percent", "peak_vram_mb", "training_seconds",
                    "total_tokens_M", "num_params_M", "memory_gb")
 
 #: Where a domain metric may legitimately appear as an example.
-_EXAMPLE_FILES = {"lib/metrics.py", "skills/setup/SKILL.md", "skills/fetch/SKILL.md",
-                  "skills/log-result/SKILL.md", "README.md"}
+_EXAMPLE_FILES = {"lib/metrics.py", "controller/ops/setup.md", "controller/ops/fetch.md",
+                  "controller/ops/log-result.md", "README.md"}
 
 
 def _core_files():

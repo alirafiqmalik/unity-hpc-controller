@@ -547,7 +547,7 @@ def _unity_results_tsv(limit: int | None = None, offset: int | None = None) -> s
 
     tsv = _project_dir() / "results.tsv"
     if not tsv.exists():
-        return "results.tsv not found. Run /unity-hpc:setup to initialise it."
+        return "results.tsv not found. Run /unity-hpc:connect to initialise it."
     lines = [l for l in tsv.read_text().splitlines() if l.strip()]
     if not lines:
         return "results.tsv is empty."
@@ -589,7 +589,7 @@ def _overridable(runner: Path) -> set[str]:
 def _missing_scaffold_message(runner: Path) -> str:
     return (
         f"No job scaffold in this project: {runner} does not exist.\n"
-        "Run /unity-hpc:setup to generate unityHPC/{run.sh,job_template.sh,"
+        "Run /unity-hpc:connect to generate unityHPC/{run.sh,job_template.sh,"
         "sync.sh,.env} for this project (it will ask whether the project is "
         "cpu, gpu or ml).\n"
         "If you keep your dispatcher elsewhere, point PROJECT_DIR at the "
@@ -613,7 +613,7 @@ def _unity_submit(exp: str, extra_args: str, campaign: str | None = None,
         if not allowed:
             return ("unity_submit: this project's unityHPC/run.sh does not declare "
                     "which values can be overridden per invocation, so it probably "
-                    "predates the feature.\nRe-run /unity-hpc:setup to regenerate "
+                    "predates the feature.\nRe-run /unity-hpc:connect to regenerate "
                     "the dispatcher (your .env is preserved), or submit from a "
                     "shell: NAME=value bash unityHPC/run.sh run <exp>")
         unknown = sorted(k for k in env if k not in allowed)
@@ -1179,7 +1179,7 @@ def _unity_doctor() -> str:
                 f"added since are absent here. If you edited it deliberately, that "
                 f"edit is what is being reported."
             ),
-            "fix": "Re-run /unity-hpc:setup (or hpc-scaffold --type <type>). "
+            "fix": "Re-run /unity-hpc:connect (or hpc-scaffold --type <type>). "
                    "Your .env is preserved; the old run.sh is kept in "
                    "unityHPC/.pre-redesign/.",
         })

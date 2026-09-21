@@ -1,0 +1,1 @@
+These are operator runbooks, not loaded into LLM sessions. The plugin skills are connect, dispatch, and doctor. Humans should use the controller UI; these files keep the old step-by-step procedures (setup, run, sweep, fetch, recon, and the rest) for when an operator needs them at a shell.
