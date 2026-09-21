@@ -17,13 +17,15 @@ See `docs/two-component-architecture.md` for the layer map and
 ## Controller (this machine)
 
 ```bash
-scripts/hpc-controller                 # http://127.0.0.1:8300
-scripts/hpc-controller --tailscale     # localhost + HTTPS on your tailnet
+scripts/hpc-controller                 # background, localhost + Tailscale HTTPS
+scripts/hpc-controller --status        # pid and URLs
+scripts/hpc-controller --stop          # stop the background process
+scripts/hpc-controller --fg            # stay in the terminal
 scripts/hpc-controller --install-user-service   # systemd --user unit, then:
 # systemctl --user enable --now unity-hpc-controller
 ```
 
-Do not use `tailscale funnel`. The dashboard is private.
+Do not use `tailscale funnel`. The dashboard is private. `--no-tailscale` keeps it on localhost only.
 
 Open the UI, attach a project from the Projects tab (or from
 `/unity-hpc:connect` in an agent), then configure / run / stop / fetch from
@@ -355,7 +357,7 @@ marks its project-specific lines, and a CPU project deletes them.
 | `hpc-usage` | Terminal plots of cluster usage (plotext), selectable by GPU and window |
 | `hpc-tmux` | Manage the tmux sessions on the cluster |
 | `hpc-logs` · `hpc-ssh` · `hpc-compare` · `hpc-cleanup` | small utilities |
-| `hpc-controller` | Always-on API + dashboard (`--tailscale`, `--install-user-service`) |
+| `hpc-controller` | Always-on API + dashboard (background + Tailscale by default) |
 | `hpc-scaffold` | Generate `unityHPC/{run.sh,job_template.sh,sync.sh,.env}` for a project type |
 
 ## cluster-intel — usage history and analysis

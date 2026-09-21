@@ -30,9 +30,10 @@ Operator runbooks for recon, fetch, watch, sweep, and setup live under
 ## 1b. Controller
 
 `scripts/hpc-controller` serves the API and `controller/ui/index.html`.
-`--tailscale` binds localhost and runs `tailscale serve`. The registry is
-`$UNITY_HPC_DATA/controller/projects.json`. Dispatch is `run.sh`, never a
-second writer.
+It starts in the background, binds localhost, and runs `tailscale serve`.
+`--fg` stays in the terminal; `--no-tailscale` skips HTTPS publishing.
+The registry is `$UNITY_HPC_DATA/controller/projects.json`. Dispatch is
+`run.sh`, never a second writer.
 
 HTTP (tests call `controller.http.handle`, no sockets):
 
@@ -102,9 +103,10 @@ are `run`, `array`, `render`, `sync`, `status`, `jobs`, `logs`, `fetch` and
 **cluster-intel** — `collector.sh`, `collector_parse.py`, `rollup.py`,
 `sync-telemetry.sh`, `migrate.py`, `backfill_hardware.py`, `dashboard/`.
 
-**CLI scripts** (`scripts/`) — `hpc-scaffold`, `hpc-status`, `hpc-results`,
-`hpc-logs`, `hpc-ssh`, `hpc-tmux`, `hpc-usage`, `hpc-compare`, `hpc-dashboard`,
-`hpc-cleanup`, `hpc-sync-telemetry`, `hpc-retention-gate`, `hpc-config-write`.
+**CLI scripts** (`scripts/`) — `hpc-controller`, `hpc-scaffold`, `hpc-status`,
+`hpc-results`, `hpc-logs`, `hpc-ssh`, `hpc-tmux`, `hpc-usage`, `hpc-compare`,
+`hpc-dashboard`, `hpc-cleanup`, `hpc-sync-telemetry`, `hpc-retention-gate`,
+`hpc-config-write`.
 
 **Templates** (`templates/scaffold/`) — `common/{run.sh,sync.sh}`, plus typed
 `cpu|gpu|ml/{env.example,job_template.sh}`. Five primitives map onto these three

@@ -19,4 +19,4 @@ curl -sS -X POST "${controller}/api/v1/projects/${slug}/runs" \
   -d '{"exp":"<exp>"}'
 ```
 
-**3. Print the controller output.** If health fails (`GET /api/v1/health`), tell the user to start `hpc-controller` or `hpc-controller --tailscale`.
+**3. Print the controller output.** If health fails (`GET /api/v1/health`), tell the user to start `hpc-controller`.

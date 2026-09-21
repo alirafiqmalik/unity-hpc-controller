@@ -15,7 +15,7 @@ Do the steps in order. Every step is safe to re-run.
 curl -sS "${UNITY_CONTROLLER:-http://127.0.0.1:8300}/api/v1/health"
 ```
 
-If this fails, tell the user to run `hpc-controller` or `hpc-controller --tailscale`. Stop.
+If this fails, tell the user to run `hpc-controller`. That starts the controller in the background and publishes it over Tailscale. Stop.
 
 **2. Get the primitive**
 

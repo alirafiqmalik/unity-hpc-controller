@@ -26,8 +26,8 @@ Done when `tests/test_controller_*.py` pass without a live cluster.
 ## 3. CLI + Tailscale
 
 - `scripts/hpc-controller` serves the API and UI
-- `--tailscale` binds localhost and runs `tailscale serve`
-- Optional systemd user unit for always-on
+- Default start is background + `tailscale serve` on localhost
+- Optional systemd user unit for always-on (`--fg` so systemd tracks the process)
 
 Done when `hpc-controller --help` documents host, port, and Tailscale,
 and a local GET `/api/v1/health` succeeds.

@@ -45,7 +45,7 @@ directly; it POSTs to the same HTTP interface the plugin uses.
 - Project registry at `$UNITY_HPC_DATA/controller/projects.json`
 - Cluster snapshot from `cluster-config.json`, `snapshot.csv`, `summaries.db`
 - Dispatch, cancel, fetch, sync — by invoking the attached project's `run.sh`
-- The dashboard at `:8300`, bound for Tailscale
+- The dashboard at `:8300`, published over Tailscale by default
 - Operator runbooks under `controller/ops/` (the old skill bodies)
 
 **Plugin** (loaded into an LLM session)
