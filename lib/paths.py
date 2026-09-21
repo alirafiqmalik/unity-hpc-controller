@@ -50,3 +50,23 @@ def sync_lock() -> Path:
 
 def archive_dir() -> Path:
     return data_dir() / "archive"
+
+
+def controller_dir() -> Path:
+    return data_dir() / "controller"
+
+
+def projects_registry() -> Path:
+    return controller_dir() / "projects.json"
+
+
+def projects_lock() -> Path:
+    return controller_dir() / "projects.json.lock"
+
+
+def events_log() -> Path:
+    return controller_dir() / "events.jsonl"
+
+
+def snapshot_csv() -> Path:
+    return data_dir() / "snapshot.csv"

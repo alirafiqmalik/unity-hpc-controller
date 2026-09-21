@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# hpc-controller — start the Unity HPC controller (API + dashboard).
+#
+# Usage:
+#   hpc-controller                      start on 0.0.0.0:8300
+#   hpc-controller --port 9000          pick a port
+#   hpc-controller --host 127.0.0.1     bind locally only
+#   hpc-controller --tailscale          localhost + `tailscale serve` (HTTPS, tailnet-only)
+#   hpc-controller --open               also open it in a browser
+#   hpc-controller --install-user-service   write a systemd --user unit and exit
+#
+# View over Tailscale:
+#   hpc-controller --tailscale
+#   then open the https://<machine>.<tailnet>.ts.net URL it prints.
+#   Do not use `tailscale funnel` — that publishes the dashboard to the internet.
+#
+# Always-on:
+#   hpc-controller --install-user-service
+#   systemctl --user enable --now unity-hpc-controller
+set -euo pipefail
+
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${PLUGIN_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m controller.serve "$@"

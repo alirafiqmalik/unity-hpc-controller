@@ -1,7 +1,7 @@
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SEARCHED = ("skills", "agents", "templates", "scripts", "mcp")
+SEARCHED = ("skills", "agents", "templates", "scripts", "mcp", "controller")
 
 
 def _text_files():

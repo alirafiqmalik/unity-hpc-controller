@@ -14,7 +14,7 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
-CODE_DIRS = ("lib", "scripts", "mcp", "bin", "tests")
+CODE_DIRS = ("lib", "scripts", "mcp", "bin", "tests", "controller")
 AGENT_DIR = "agents"
 BANNED = ("pi_taqi_umass_edu", "ahmalik", "autoresearch")
 

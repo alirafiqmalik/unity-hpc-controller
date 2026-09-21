@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Unity HPC Controller</title>
+<style>
+:root{
+  --bg:#0b0e13; --panel:#12161d; --panel-2:#171d27; --border:#232b38;
+  --ink:#e6e9ee; --ink-2:#aab3c0; --muted:#7c8698;
+  --accent:#34d399; --accent-dim:rgba(52,211,153,.12);
+  --blue:#60a5fa; --amber:#fbbf24; --red:#f87171; --violet:#a78bfa;
+  --run:#34d399; --pend:#fbbf24; --done:#60a5fa; --fail:#f87171;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --sans:-apple-system,'Segoe UI',Inter,Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:13.5px;line-height:1.45}
+a{color:var(--blue);text-decoration:none}
+
+header{display:flex;align-items:center;gap:14px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--panel);position:sticky;top:0;z-index:50}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;font-size:15px}
+.logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,var(--accent),#0ea5e9);display:grid;place-items:center;color:#06110c;font-weight:800;font-size:13px}
+.brand small{color:var(--muted);font-weight:500;font-size:12px}
+.env-pill{margin-left:6px;font-size:11px;padding:3px 9px;border-radius:999px;background:var(--accent-dim);color:var(--accent);border:1px solid rgba(52,211,153,.35);display:flex;align-items:center;gap:6px}
+.env-pill.off{background:rgba(248,113,113,.12);color:var(--red);border-color:rgba(248,113,113,.35)}
+.env-pill.off .dot{background:var(--red);animation:none;box-shadow:none}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 0 var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)}70%{box-shadow:0 0 0 7px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
+.th{margin-left:auto;display:flex;align-items:center;gap:14px;color:var(--ink-2);font-size:12.5px}
+.clock{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.icon-btn{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);color:var(--ink-2);cursor:pointer;font-size:14px}
+.icon-btn:hover{border-color:var(--ink-2);color:var(--ink)}
+
+nav{display:flex;gap:2px;padding:0 20px;background:var(--panel);border-bottom:1px solid var(--border);position:sticky;top:47px;z-index:40;overflow-x:auto}
+.tab{padding:11px 16px;font-size:13px;font-weight:550;color:var(--ink-2);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;display:flex;align-items:center;gap:7px}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--ink);border-bottom-color:var(--accent)}
+.tab .badge{font-size:10.5px;background:var(--panel-2);border:1px solid var(--border);border-radius:99px;padding:1px 7px;color:var(--muted)}
+.tab.active .badge{background:var(--accent-dim);color:var(--accent);border-color:rgba(52,211,153,.3)}
+
+main{padding:22px 24px;max-width:1440px;margin:0 auto}
+.page{display:none}
+.page.active{display:block;animation:fade .25s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.page-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:8px}
+.page-head h1{font-size:19px;font-weight:650}
+.page-head .sub{color:var(--muted);font-size:12.5px}
+
+.grid{display:grid;gap:14px}
+.g4{grid-template-columns:repeat(4,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g2-1{grid-template-columns:2fr 1fr}
+.g1-2{grid-template-columns:1fr 2fr}
+@media(max-width:1000px){.g4,.g3,.g2,.g2-1,.g1-2{grid-template-columns:1fr}}
+
+.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+.card h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);font-weight:600;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+.card h3 .right{font-size:11px;text-transform:none;letter-spacing:0;color:var(--muted);font-weight:500}
+.card.proj-card{cursor:pointer;transition:border-color .12s}
+.card.proj-card:hover{border-color:var(--accent)}
+
+.kpi .lbl{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+.kpi .val{font-size:30px;font-weight:680;font-variant-numeric:tabular-nums;margin-top:6px}
+.kpi .val .unit{font-size:13px;color:var(--ink-2);font-weight:500;margin-left:3px}
+.kpi .delta{font-size:11.5px;margin-top:4px;color:var(--muted)}
+.kpi .delta.up{color:var(--accent)}
+.kpi .delta.dn{color:var(--red)}
+
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12.5px;vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+tbody tr{cursor:pointer;transition:background .12s}
+tbody tr:hover{background:var(--panel-2)}
+.mono{font-family:var(--mono);font-size:12px}
+
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2.5px 9px;border-radius:999px;border:1px solid transparent}
+.pill.run{color:var(--run);background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.3)}
+.pill.pend{color:var(--pend);background:rgba(251,191,36,.1);border-color:rgba(251,191,36,.3)}
+.pill.done{color:var(--done);background:rgba(96,165,250,.1);border-color:rgba(96,165,250,.3)}
+.pill.fail{color:var(--fail);background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.3)}
+.pill.grey{color:var(--ink-2);background:var(--panel-2);border-color:var(--border)}
+.pill.violet{color:var(--violet);background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3)}
+.pill .d{width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.run .d{animation:pulse 2s infinite}
+
+.bar{height:7px;border-radius:99px;background:var(--panel-2);overflow:hidden;min-width:80px}
+.bar>i{display:block;height:100%;border-radius:99px;background:var(--accent)}
+.bar.warn>i{background:var(--amber)}
+.bar.hot>i{background:var(--red)}
+.bar-row{display:flex;align-items:center;gap:9px}
+.bar-row .pct{font-size:11.5px;color:var(--ink-2);min-width:36px;text-align:right}
+
+.heat{display:grid;grid-template-columns:repeat(8,1fr);gap:5px}
+.cell{border-radius:5px;padding:8px 6px;font-size:10.5px;font-family:var(--mono);text-align:center;cursor:pointer;border:1px solid transparent}
+.cell:hover{border-color:var(--ink-2)}
+.cell small{display:block;opacity:.75;font-size:9.5px}
+
+.btn{display:inline-flex;align-items:center;gap:7px;padding:8px 15px;border-radius:8px;border:1px solid var(--border);background:var(--panel-2);color:var(--ink);font-size:12.5px;font-weight:550;cursor:pointer;font-family:var(--sans)}
+.btn:hover{border-color:var(--ink-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#06130d;font-weight:650}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent}
+.btn.sm{padding:5px 11px;font-size:11.5px}
+.btn.danger{border-color:rgba(248,113,113,.45);color:var(--red)}
+
+label{display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin:14px 0 5px;text-transform:uppercase;letter-spacing:.04em}
+input,select,textarea{width:100%;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;color:var(--ink);padding:9px 11px;font-size:13px;font-family:var(--sans);outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+textarea{font-family:var(--mono);font-size:12px;resize:vertical}
+.f-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.f-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+@media(max-width:700px){.f-row,.f-row3{grid-template-columns:1fr}}
+.check{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:var(--ink);text-transform:none;letter-spacing:0;font-weight:550;cursor:pointer}
+.check input{width:auto}
+
+pre{background:#0d1117;border:1px solid var(--border);border-radius:10px;padding:13px 15px;font-family:var(--mono);font-size:12px;line-height:1.55;color:#c9d1d9;overflow-x:auto;position:relative;white-space:pre-wrap;word-break:break-word}
+pre .c{color:#7c8698}pre .k{color:var(--accent)}pre .s{color:#79c0ff}pre .n{color:var(--amber)}
+.copy-btn{position:absolute;top:8px;right:8px;font-size:11px;background:var(--panel-2);border:1px solid var(--border);color:var(--ink-2);border-radius:6px;padding:3px 9px;cursor:pointer;z-index:2}
+.copy-btn:hover{color:var(--ink)}
+
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{padding:6px 13px;border-radius:999px;border:1px solid var(--border);background:var(--panel-2);font-size:12px;color:var(--ink-2);cursor:pointer;font-weight:550}
+.chip:hover{color:var(--ink)}
+.chip.on{background:var(--accent-dim);border-color:rgba(52,211,153,.4);color:var(--accent)}
+
+.section-gap{margin-top:14px}
+.hint{font-size:11.5px;color:var(--muted)}
+.stack{display:flex;flex-direction:column;gap:0}
+.feed-item{display:flex;gap:11px;padding:9px 2px;border-bottom:1px solid var(--border);font-size:12.5px}
+.feed-item:last-child{border-bottom:none}
+.feed-ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:12px;flex-shrink:0}
+.feed-item .t{color:var(--muted);font-size:11px;font-family:var(--mono);margin-left:auto;white-space:nowrap}
+.kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px;gap:12px}
+.kv:last-child{border-bottom:none}
+.kv b{font-weight:600;font-variant-numeric:tabular-nums}
+.kv span{color:var(--muted)}
+
+.drawer{position:fixed;top:0;right:-460px;width:460px;max-width:92vw;height:100%;background:var(--panel);border-left:1px solid var(--border);z-index:100;transition:right .25s ease;padding:20px;overflow-y:auto;box-shadow:-20px 0 60px rgba(0,0,0,.5)}
+.drawer.open{right:0}
+.drawer h2{font-size:16px;margin-bottom:2px}
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:90;display:none}
+.overlay.on{display:block}
+.grey-scroll::-webkit-scrollbar{width:8px;height:8px}
+.grey-scroll::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px}
+
+canvas{width:100%;display:block}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:8px;flex-wrap:wrap}
+.legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px}
+
+.empty{padding:18px 8px;color:var(--muted);font-size:13px;line-height:1.55}
+.empty code,.hint code{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
+.proj-path{font-family:var(--mono);font-size:11.5px;color:var(--muted);word-break:break-all;margin:6px 0 10px}
+.proj-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="logo">U</div>Unity HPC Controller
+    <span class="env-pill off" id="envPill"><span class="dot"></span><span id="envLabel">connecting…</span></span>
+  </div>
+  <div class="th">
+    <span class="hint">Last sync <span class="mono" id="lastSync">—</span></span>
+    <span class="clock" id="clock">--:--:--</span>
+    <button class="icon-btn" title="Settings" onclick="go('settings')">&#9881;</button>
+  </div>
+</header>
+
+<nav id="nav"></nav>
+
+<main>
+  <section class="page" id="pg-overview">
+    <div class="page-head">
+      <div><h1>Cluster Overview</h1><div class="sub" id="ovSub">auto-refresh 10s</div></div>
+      <div><button class="btn sm" onclick="go('dispatch')">&#9654; Dispatch run</button> <button class="btn sm ghost" onclick="go('projects')">+ Attach project</button></div>
+    </div>
+    <div class="grid g4" id="ovKpis"></div>
+    <div class="grid g2-1 section-gap">
+      <div class="card">
+        <h3>Partitions <span class="right">from cluster-config.json</span></h3>
+        <div class="heat" id="heat"></div>
+      </div>
+      <div class="card">
+        <h3>Controller events <span class="right" id="alertHead"></span></h3>
+        <div class="stack" id="alerts"></div>
+      </div>
+    </div>
+    <div class="grid g2 section-gap">
+      <div class="card">
+        <h3>GPU utilization</h3>
+        <canvas id="chartUtil" height="150"></canvas>
+        <div class="empty" id="chartUtilEmpty" hidden></div>
+        <div class="legend" id="chartUtilLegend"></div>
+      </div>
+      <div class="card">
+        <h3>Recent activity <span class="right">$UNITY_HPC_DATA/controller/events.jsonl</span></h3>
+        <div class="stack" id="feed"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="pg-queue">
+    <div class="page-head">
+      <div><h1>Queue &amp; Partitions</h1><div class="sub">live snapshot.csv + cluster-config.json</div></div>
+      <button class="btn sm" onclick="refresh({toastOk:true})">&#8635; Refresh</button>
+    </div>
+    <div class="grid g4" id="parts"></div>
+    <div class="grid g2-1 section-gap">
+      <div class="card">
+        <h3>Pending jobs <span class="right">attached project ledgers</span></h3>
+        <div id="pendWrap">
+          <table><thead><tr><th>Job ID</th><th>Project</th><th>Exp</th><th>Partition</th><th>Status</th></tr></thead>
+          <tbody id="pendRows"></tbody></table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Queue depth</h3>
+        <canvas id="chartQ" height="170"></canvas>
+        <div class="empty" id="chartQEmpty" hidden></div>
+        <div class="legend" id="chartQLegend"></div>
+        <div class="section-gap"></div>
+        <h3>Pending reasons</h3>
+        <div id="reasons"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="pg-jobs">
+    <div class="page-head">
+      <div><h1>Jobs</h1><div class="sub">ledgers of attached projects · click a row for detail</div></div>
+      <div class="chips" id="jobChips"></div>
+    </div>
+    <div class="card" id="jobTableWrap">
+      <table><thead><tr><th></th><th>Job</th><th>Project / Campaign</th><th>Status</th><th>Partition</th><th>Hardware</th><th>Elapsed</th></tr></thead>
+      <tbody id="jobRows"></tbody></table>
+    </div>
+  </section>
+
+  <section class="page" id="pg-users">
+    <div class="page-head">
+      <div><h1>Users &amp; Fairshare</h1><div class="sub">per-user consumption is not in the controller API</div></div>
+    </div>
+    <div class="card" id="usersCard"></div>
+  </section>
+
+  <section class="page" id="pg-analytics">
+    <div class="page-head">
+      <div><h1>Usage Analytics</h1><div class="sub">summaries.db via hpc-sync-telemetry</div></div>
+      <div class="chips" id="anChips">
+        <span class="chip on" data-h="24">24h</span>
+        <span class="chip" data-h="168">7d</span>
+        <span class="chip" data-h="720">30d</span>
+      </div>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Cluster util by GPU type</h3>
+        <canvas id="chartAn" height="180"></canvas>
+        <div class="empty" id="chartAnEmpty" hidden></div>
+        <div class="legend" id="chartAnLegend"></div>
+      </div>
+      <div class="card">
+        <h3>Job outcomes <span class="right">task_run in summaries.db</span></h3>
+        <div id="outcomesBox"></div>
+      </div>
+    </div>
+    <div class="card section-gap">
+      <h3>Jobs by attached project</h3>
+      <div id="projBars"></div>
+    </div>
+  </section>
+
+  <section class="page" id="pg-dispatch">
+    <div class="page-head">
+      <div><h1>Dispatch Run</h1><div class="sub">POST /api/v1/projects/{slug}/runs · the controller calls run.sh</div></div>
+      <span class="pill grey">same origin · no auth tokens</span>
+    </div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Run request</h3>
+        <label>Project</label>
+        <select id="dispProject" onchange="renderPreview()"></select>
+        <div class="f-row">
+          <div><label>Exp</label><input id="dispExp" value="" placeholder="smoke" oninput="renderPreview()"></div>
+          <div><label>Campaign</label><input id="dispCampaign" value="" placeholder="optional" oninput="renderPreview()"></div>
+        </div>
+        <label class="check"><input type="checkbox" id="dispDry" onchange="renderPreview()"> dry_run (preview only, no sbatch)</label>
+        <div class="f-row3">
+          <div><label>JOB_COMMAND</label><input id="dispCmd" placeholder="optional override" oninput="renderPreview()"></div>
+          <div><label>WALLTIME</label><input id="dispWall" placeholder="HH:MM:SS" oninput="renderPreview()"></div>
+          <div><label>SLURM_PARTITION</label><input id="dispPart" placeholder="optional" oninput="renderPreview()"></div>
+        </div>
+        <div class="section-gap actions">
+          <button class="btn primary" onclick="dispatchRun(false)">&#9654; Dispatch</button>
+          <button class="btn" onclick="dispatchRun(true)">Validate (dry-run)</button>
+        </div>
+        <div class="hint section-gap">Overrides are passed as env to run.sh. Only keys in UNITY_OVERRIDABLE are accepted.</div>
+      </div>
+      <div>
+        <div class="card">
+          <h3>Request preview <span class="right">POST body</span></h3>
+          <pre id="dispatchPrev" class="grey-scroll"></pre>
+        </div>
+        <div class="card section-gap">
+          <h3>Recently dispatched <span class="right">controller events</span></h3>
+          <div class="stack" id="dispList"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="pg-projects">
+    <div class="page-head">
+      <div><h1>Projects</h1><div class="sub">GET /api/v1/projects · click a card to configure, run, fetch, sync, or detach</div></div>
+    </div>
+    <div class="grid g3" id="projCards"></div>
+    <div class="card section-gap">
+      <h3>Attach a path</h3>
+      <div class="f-row3">
+        <div><label>Path</label><input id="attachPath" placeholder="/home/you/proj"></div>
+        <div><label>Slug (optional)</label><input id="attachSlug" placeholder="derived from path"></div>
+        <div>
+          <label>Primitive</label>
+          <select id="attachPrim">
+            <option value="cpu">cpu</option>
+            <option value="gpu">gpu</option>
+            <option value="ml">ml</option>
+            <option value="multi-cpu">multi-cpu</option>
+            <option value="multi-gpu">multi-gpu</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" onclick="attachProject()">Attach</button>
+      </div>
+      <div class="hint section-gap">Or run <code>/unity-hpc:connect</code> in a coding agent. The path must exist on this machine and should contain <code>unityHPC/run.sh</code> after scaffold.</div>
+    </div>
+  </section>
+
+  <section class="page" id="pg-settings">
+    <div class="page-head"><div><h1>Settings</h1><div class="sub" id="setSub">controller HTTP API</div></div></div>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Controller bind</h3>
+        <div id="setBind"></div>
+      </div>
+      <div class="card">
+        <h3>Tailscale</h3>
+        <p class="hint">Serve on this machine, then view from any device on your tailnet. Do not use <code>tailscale funnel</code> — that publishes the dashboard to the public internet.</p>
+        <div class="kv"><span>Direct tailnet</span><b class="mono">python3 -m controller.serve --host 0.0.0.0</b></div>
+        <div class="kv"><span>HTTPS via serve</span><b class="mono">python3 -m controller.serve --tailscale</b></div>
+        <div class="kv"><span>Or</span><b class="mono">tailscale serve --bg 8300</b></div>
+      </div>
+      <div class="card">
+        <h3>Poll cadence &amp; data</h3>
+        <div class="kv"><span>Dashboard poll</span><b>every 10s</b></div>
+        <div class="kv"><span>Live KPIs</span><b class="mono">snapshot.csv</b></div>
+        <div class="kv"><span>Usage rollup</span><b class="mono">summaries.db · hpc-sync-telemetry</b></div>
+        <div class="kv"><span>Registry</span><b class="mono">$UNITY_HPC_DATA/controller</b></div>
+        <p class="hint section-gap">Default data dir is <code>~/.local/share/unity-hpc/controller</code> (<code>projects.json</code>, <code>events.jsonl</code>). Override with <code>$UNITY_HPC_DATA</code>.</p>
+      </div>
+      <div class="card">
+        <h3>Auth</h3>
+        <p class="hint">The plugin uses HTTP with no tokens on localhost. This page is same-origin with the API. There is no API token, no agent key, and no copy-token control.</p>
+        <div class="kv"><span>Health</span><b class="mono" id="setHealth">—</b></div>
+        <div class="kv"><span>Attached projects</span><b class="mono" id="setNproj">—</b></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="overlay" id="ovl" onclick="closeDrawer()"></div>
+<aside class="drawer grey-scroll" id="drawer"></aside>
+
+<script>
+const TABS=[['overview','Overview'],['queue','Queue'],['jobs','Jobs'],['users','Users'],['analytics','Analytics'],['dispatch','Dispatch'],['projects','Projects'],['settings','Settings']];
+const CHART_COLORS=['#34d399','#60a5fa','#a78bfa','#fbbf24','#f87171'];
+const FAIL_STATES=['FAILED','TIMEOUT','OUT_OF_MEMORY','NODE_FAIL','BOOT_FAIL','DEADLINE','PREEMPTED','REVOKED'];
+const PRIMITIVES=['cpu','gpu','ml','multi-cpu','multi-gpu'];
+
+const state={
+  page:'overview',
+  hours:24,
+  jfilter:'all',
+  health:null,
+  cluster:null,
+  queue:null,
+  usage:null,
+  jobs:[],
+  events:[],
+  projects:[],
+  error:null,
+  drawerSlug:null,
+};
+
+const nav=document.getElementById('nav');
+nav.innerHTML=TABS.map(t=>`<div class="tab" data-t="${t[0]}" onclick="go('${t[0]}')">${t[1]}${t[0]==='jobs'?'<span class="badge" id="jobsBadge">0</span>':''}</div>`).join('');
+
+function go(name){
+  state.page=name;
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.t===name));
+  document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='pg-'+name));
+  window.scrollTo({top:0});
+  render();
+}
+
+function chipSel(el){el.parentElement.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));el.classList.add('on');}
+
+async function api(path, opts) {
+  const r = await fetch(path, {headers:{'content-type':'application/json'}, ...opts});
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.error||r.statusText);
+  return j;
+}
+
+function toast(msg){
+  const t=document.createElement('div');
+  t.style.cssText='position:fixed;bottom:16px;right:16px;background:var(--panel-2);border:1px solid var(--accent);color:var(--ink);padding:10px 16px;border-radius:9px;font-size:12.5px;z-index:200;box-shadow:0 8px 30px rgba(0,0,0,.4);max-width:420px';
+  t.textContent=msg;document.body.appendChild(t);
+  setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity .3s';},1800);setTimeout(()=>t.remove(),2200);
+}
+
+function esc(s){
+  return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function jq(s){return JSON.stringify(String(s??''));}
+function copyPre(btn){
+  const text=btn.parentElement.innerText.replace(/^Copy\n/,'');
+  navigator.clipboard&&navigator.clipboard.writeText(text);
+  btn.textContent='Copied!';setTimeout(()=>btn.textContent='Copy',1200);
+}
+
+function ago(iso){
+  if(!iso) return 'never';
+  const t=Date.parse(iso);
+  if(Number.isNaN(t)) return String(iso);
+  const s=Math.max(0,(Date.now()-t)/1000);
+  if(s<60) return Math.round(s)+'s ago';
+  if(s<3600) return Math.round(s/60)+'m ago';
+  if(s<86400) return (s/3600).toFixed(1)+'h ago';
+  return iso.replace('T',' ').replace('Z',' UTC');
+}
+function fmtElapsed(s){
+  if(s==null||s==='') return '—';
+  s=Number(s);
+  if(!Number.isFinite(s)) return '—';
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60);
+  return (h>0?h+':':'')+String(m).padStart(h>0?2:1,'0')+':'+String(sec).padStart(2,'0');
+}
+function stUpper(j){return String((j&&j.status)||'').toUpperCase();}
+function pillFor(st){
+  const u=String(st||'').toUpperCase();
+  if(u==='RUNNING') return ['run','Running'];
+  if(u==='PENDING') return ['pend','Pending'];
+  if(u==='COMPLETED') return ['done','Completed'];
+  if(u==='CANCELLED') return ['grey','Cancelled'];
+  if(FAIL_STATES.includes(u)) return ['fail', u.replaceAll('_',' ')];
+  return ['grey', u||'unknown'];
+}
+function jobCount(counts, names){
+  const c=counts||{};
+  let n=0;
+  for(const k of Object.keys(c)){
+    if(names.includes(String(k).toUpperCase())) n+=Number(c[k])||0;
+  }
+  return n;
+}
+function emptyHtml(msg){return `<div class="empty">${msg}</div>`;}
+function live(){return (state.cluster&&state.cluster.live)||{available:false,latest:{},trend:[]};}
+function latest(){return live().latest||{};}
+
+async function refresh(opts){
+  opts=opts||{};
+  const settled=await Promise.allSettled([
+    api('/api/v1/health'),
+    api('/api/v1/cluster'),
+    api('/api/v1/cluster/queue'),
+    api('/api/v1/cluster/usage?hours='+state.hours),
+    api('/api/v1/jobs'),
+    api('/api/v1/events'),
+    fetch('/api/v1/projects').then(async r=>{
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok) throw new Error(j.error||r.statusText);
+      return j;
+    }),
+  ]);
+  const pick=(i,fallback)=>{
+    const s=settled[i];
+    return s.status==='fulfilled'?s.value:fallback;
+  };
+  const failed=settled.filter(s=>s.status==='rejected');
+  state.error=failed.length===settled.length?(failed[0].reason&&failed[0].reason.message)||'controller unreachable':null;
+  state.health=pick(0,null);
+  state.cluster=pick(1,null);
+  state.queue=pick(2,null);
+  state.usage=pick(3,null);
+  state.jobs=(pick(4,{jobs:[]}).jobs)||[];
+  state.events=(pick(5,{events:[]}).events)||[];
+  state.projects=(pick(6,{projects:[]}).projects)||[];
+  if(state.error) toast(state.error);
+  else if(opts.toastOk) toast('Refreshed');
+  renderHeader();
+  render();
+}
+
+function renderHeader(){
+  const pill=document.getElementById('envPill');
+  const label=document.getElementById('envLabel');
+  const cl=state.cluster||{};
+  const L=live();
+  const name=cl.cluster||'unity';
+  if(state.error&&!state.health){
+    pill.classList.add('off');
+    label.textContent='controller unreachable';
+  } else if(L.available){
+    pill.classList.remove('off');
+    label.textContent='Cluster: '+name+' — live snapshot';
+  } else {
+    pill.classList.add('off');
+    label.textContent='Cluster: '+name+' — no snapshot.csv';
+  }
+  const ts=(L.latest&&L.latest.timestamp_utc)||cl.generated_utc;
+  document.getElementById('lastSync').textContent=ts?ago(ts):'never';
+  const n=state.jobs.filter(j=>stUpper(j)==='RUNNING').length;
+  const badge=document.getElementById('jobsBadge');
+  if(badge) badge.textContent=String(state.jobs.length);
+}
+
+function render(){
+  const page=state.page;
+  if(page==='overview') renderOverview();
+  if(page==='queue') renderQueue();
+  if(page==='jobs') renderJobs();
+  if(page==='users') renderUsers();
+  if(page==='analytics') renderAnalytics();
+  if(page==='dispatch') renderDispatch();
+  if(page==='projects') renderProjects();
+  if(page==='settings') renderSettings();
+}
+
+function renderOverview(){
+  const cl=state.cluster||{};
+  const L=live();
+  const lat=latest();
+  const bits=[cl.cluster||'Unity HPC'];
+  if(cl.slurm_version) bits.push('Slurm '+cl.slurm_version);
+  if(L.available&&lat.total_nodes) bits.push(lat.total_nodes+' nodes');
+  bits.push('auto-refresh 10s');
+  document.getElementById('ovSub').textContent=bits.join(' · ');
+
+  const kpis=document.getElementById('ovKpis');
+  if(!L.available){
+    kpis.innerHTML=`<div class="card kpi" style="grid-column:1/-1">${emptyHtml('No live queue snapshot. Populate <code>snapshot.csv</code> (cluster-intel poller) under <code>$UNITY_HPC_DATA</code>, then refresh. Run <code>hpc-sync-telemetry</code> if the file lives on the cluster copy.')}</div>`;
+  } else {
+    kpis.innerHTML=`
+      <div class="card kpi"><div class="lbl">GPU jobs running</div><div class="val">${esc(lat.gpu_running??'—')}</div><div class="delta">${lat.timestamp_utc?ago(lat.timestamp_utc):''}</div></div>
+      <div class="card kpi"><div class="lbl">GPU jobs pending</div><div class="val">${esc(lat.gpu_pending??'—')}</div><div class="delta">${lat.gpu_preempt_pending?('+'+lat.gpu_preempt_pending+' preempt'):''}</div></div>
+      <div class="card kpi"><div class="lbl">Free nodes</div><div class="val">${esc(lat.free_nodes??'—')}<span class="unit">${lat.total_nodes?('/ '+lat.total_nodes):''}</span></div><div class="delta">${esc(lat.gpu_types_free||'')}</div></div>
+      <div class="card kpi"><div class="lbl">Attached projects</div><div class="val">${(cl.kpis&&cl.kpis.attached_projects!=null)?cl.kpis.attached_projects:state.projects.length}</div><div class="delta">GET /api/v1/projects</div></div>`;
+  }
+
+  const parts=(cl.partitions)||[];
+  const heat=document.getElementById('heat');
+  if(!parts.length){
+    heat.innerHTML=emptyHtml('No partitions in <code>cluster-config.json</code>. Run <code>/unity-hpc:recon</code> to observe the cluster.');
+  } else {
+    heat.innerHTML=parts.map(p=>{
+      const gpus=p.gpus_total!=null?p.gpus_total+' GPU':'';
+      const nodes=p.nodes!=null?p.nodes+' nodes':'';
+      const gt=(p.gpu_types||[]).join(', ')||'cpu';
+      return `<div class="cell" style="background:#1f6f5422;border:1px solid #34d39955;color:var(--accent)" title="${esc(p.name)}">${esc(p.name)}<small>${esc([nodes,gpus,gt].filter(Boolean).join(' · '))}</small></div>`;
+    }).join('');
+  }
+
+  const ev=state.events.slice().reverse();
+  const fails=ev.filter(e=>e.ok===false||e.kind==='cancel');
+  document.getElementById('alertHead').textContent=fails.length?fails.length+' notable':'';
+  document.getElementById('alerts').innerHTML=ev.length
+    ? ev.slice(0,8).map(eventRow).join('')
+    : emptyHtml('No controller events yet. Dispatch a run to write <code>$UNITY_HPC_DATA/controller/events.jsonl</code>.');
+  document.getElementById('feed').innerHTML=ev.length
+    ? ev.slice(0,10).map(eventRow).join('')
+    : emptyHtml('Empty activity log. Use Dispatch or <code>/unity-hpc:dispatch</code>.');
+
+  drawUsageChart('chartUtil','chartUtilEmpty','chartUtilLegend',state.usage);
+}
+
+function eventRow(e){
+  const ok=e.ok!==false;
+  const col=ok?'#34d399':'#f87171';
+  const ic=ok?'&#10003;':'&#10005;';
+  return `<div class="feed-item"><div class="feed-ic" style="background:${col}22;color:${col}">${ic}</div><div><b>${esc(e.kind||'event')}</b> ${esc(e.message||'')}</div><div class="t">${esc(ago(e.ts))}</div></div>`;
+}
+
+function renderQueue(){
+  const q=state.queue||{};
+  const parts=q.partitions||[];
+  const box=document.getElementById('parts');
+  if(!parts.length){
+    box.innerHTML=`<div class="card" style="grid-column:1/-1">${emptyHtml('No partition records. Run <code>/unity-hpc:recon</code> to write <code>cluster-config.json</code>.')}</div>`;
+  } else {
+    box.innerHTML=parts.map(p=>{
+      const gpus=p.gpus_total!=null?p.gpus_total+' GPUs':'—';
+      const nodes=p.nodes!=null?p.nodes+' nodes':'—';
+      return `<div class="card"><div class="lbl">${esc(p.name)}</div>
+        <div style="font-size:18px;font-weight:650;margin:4px 0 8px">${esc(nodes)}</div>
+        <div class="hint">${esc((p.gpu_types||[]).join(', ')||'cpu')} · ${esc(gpus)}</div>
+        <div style="display:flex;justify-content:space-between;margin-top:9px;font-size:11.5px;color:var(--muted)"><span>wall: <b style="color:var(--ink-2)">${esc(p.max_walltime||'—')}</b></span><span>${esc(p.access||'')}</span></div></div>`;
+    }).join('');
+  }
+  const pending=state.jobs.filter(j=>stUpper(j)==='PENDING');
+  const wrap=document.getElementById('pendWrap');
+  if(!pending.length){
+    wrap.innerHTML=emptyHtml('No pending jobs in attached project ledgers. Dispatch a run, or attach a project with <code>/unity-hpc:connect</code>.');
+  } else {
+    wrap.innerHTML=`<table><thead><tr><th>Job ID</th><th>Project</th><th>Exp</th><th>Partition</th><th>Status</th></tr></thead><tbody id="pendRows"></tbody></table>`;
+    document.getElementById('pendRows').innerHTML=pending.map(j=>{
+      const[pill,lbl]=pillFor(j.status);
+      return `<tr onclick='openJob(${jq(j.job_id)})'><td class="mono">${esc(j.job_id)}</td><td>${esc(j.slug)}</td><td class="mono">${esc(j.exp)}</td><td>${esc(j.partition||'—')}</td><td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td></tr>`;
+    }).join('');
+  }
+  document.getElementById('reasons').innerHTML=emptyHtml('squeue reason codes are not in the controller API. Pending rows above come from attached project ledgers.');
+  const trend=(q.live&&q.live.available&&q.live.trend)||[];
+  drawTrend(trend);
+}
+
+function renderJobs(){
+  const rows=state.jobs.filter(j=>{
+    const u=stUpper(j);
+    if(state.jfilter==='all') return true;
+    if(state.jfilter==='running') return u==='RUNNING';
+    if(state.jfilter==='pending') return u==='PENDING';
+    if(state.jfilter==='completed') return u==='COMPLETED';
+    if(state.jfilter==='failed') return FAIL_STATES.includes(u);
+    return true;
+  });
+  const wrap=document.getElementById('jobTableWrap');
+  if(!state.jobs.length){
+    wrap.innerHTML=emptyHtml('No jobs recorded. Attach a project (<code>/unity-hpc:connect</code> or the Projects page) and dispatch a run so <code>run.sh</code> writes the ledger.');
+    return;
+  }
+  wrap.innerHTML=`<table><thead><tr><th></th><th>Job</th><th>Project / Campaign</th><th>Status</th><th>Partition</th><th>Hardware</th><th>Elapsed</th></tr></thead><tbody id="jobRows"></tbody></table>`;
+  document.getElementById('jobRows').innerHTML=rows.map(j=>{
+    const[pill,lbl]=pillFor(j.status);
+    const warn=FAIL_STATES.includes(stUpper(j))?'<span style="color:var(--fail)">&#9888;</span>':'';
+    return `<tr onclick='openJob(${jq(j.job_id)})'>
+      <td>${warn}</td>
+      <td class="mono"><b>${esc(j.exp||j.job_id)}</b><br><span style="color:var(--muted);font-size:11px">#${esc(j.job_id)}</span></td>
+      <td style="color:var(--ink-2)">${esc(j.slug||'')} / ${esc(j.campaign||'')}</td>
+      <td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td>
+      <td>${esc(j.partition||'—')}</td>
+      <td class="mono">${esc(j.hardware||'—')}</td>
+      <td class="mono">${esc(fmtElapsed(j.elapsed_s))}</td></tr>`;
+  }).join('')||`<tr><td colspan="7">${emptyHtml('No jobs match this filter.')}</td></tr>`;
+}
+
+function openJob(id){
+  const j=state.jobs.find(x=>String(x.job_id)===String(id));
+  if(!j){toast('Job not in current snapshot');return;}
+  const[pill,lbl]=pillFor(j.status);
+  document.getElementById('drawer').innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:start">
+      <div><h2 class="mono">${esc(j.exp||j.job_id)}</h2><div class="hint">#${esc(j.job_id)} · ${esc(j.slug)} / ${esc(j.campaign||'')}</div></div>
+      <button class="icon-btn" onclick="closeDrawer()">&#10005;</button></div>
+    <div class="section-gap"><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span> <span class="pill grey">${esc(j.partition||'—')}</span> <span class="pill grey mono">${esc(j.hardware||'—')}</span></div>
+    <div class="card section-gap"><h3>Detail</h3>
+      <div class="kv"><span>Elapsed</span><b class="mono">${esc(fmtElapsed(j.elapsed_s))}</b></div>
+      <div class="kv"><span>Attempt</span><b class="mono">${esc(j.attempt??'—')}</b></div>
+      <div class="kv"><span>Submitted</span><b class="mono">${esc(j.submitted_utc||'—')}</b></div>
+      <div class="kv"><span>Updated</span><b class="mono">${esc(j.updated_utc||'—')}</b></div></div>
+    <div class="actions">
+      <button class="btn sm" onclick='projectPost(${jq(j.slug)},"stop",{job:${jq(j.job_id)}})'>Cancel</button>
+      <button class="btn sm ghost" onclick='openProject(${jq(j.slug)})'>Open project</button>
+    </div>`;
+  document.getElementById('ovl').classList.add('on');
+  document.getElementById('drawer').classList.add('open');
+  state.drawerSlug=null;
+}
+
+function renderUsers(){
+  const present=state.cluster&&state.cluster.config_present;
+  document.getElementById('usersCard').innerHTML=`
+    <h3>Fairshare unavailable as a user table</h3>
+    <p class="empty" style="padding:0 0 8px">The controller does not expose per-user consumption. <code>cluster-config.json</code> written by <code>/unity-hpc:recon</code> stores a single account fairshare factor, not a ranked user list. There is no live user table to show.</p>
+    <div class="kv"><span>cluster-config.json</span><b class="mono">${present?'present':'missing — run /unity-hpc:recon'}</b></div>
+    <div class="kv"><span>Path</span><b class="mono">$UNITY_HPC_DATA/cluster-config.json</b></div>`;
+}
+
+function renderAnalytics(){
+  drawUsageChart('chartAn','chartAnEmpty','chartAnLegend',state.usage);
+  const out=(state.usage&&state.usage.outcomes)||{};
+  const box=document.getElementById('outcomesBox');
+  if(!out.available||!out.counts||!Object.keys(out.counts).length){
+    box.innerHTML=emptyHtml('No <code>task_run</code> outcomes. Run <code>hpc-sync-telemetry</code> to build <code>summaries.db</code>.');
+  } else {
+    const counts=out.counts;
+    const total=Object.values(counts).reduce((a,b)=>a+(Number(b)||0),0)||1;
+    const order=['COMPLETED','FAILED','TIMEOUT','CANCELLED','RUNNING','PENDING'];
+    const keys=[...order.filter(k=>counts[k]!=null),...Object.keys(counts).filter(k=>!order.includes(k))];
+    const cols={COMPLETED:'#60a5fa',FAILED:'#f87171',TIMEOUT:'#fbbf24',CANCELLED:'#3a4352',RUNNING:'#34d399',PENDING:'#fbbf24'};
+    let acc=0, stops=[];
+    keys.forEach(k=>{
+      const frac=(Number(counts[k])||0)/total*100;
+      const col=cols[k]||'#a78bfa';
+      stops.push(`${col} ${acc}% ${acc+frac}%`);
+      acc+=frac;
+    });
+    box.innerHTML=`<div style="display:flex;align-items:center;gap:26px">
+      <div style="width:150px;height:150px;border-radius:50%;flex-shrink:0;background:conic-gradient(${stops.join(',')})"></div>
+      <div class="stack" style="flex:1">${keys.map(k=>`<div class="kv"><span>${esc(k)}</span><b>${esc(counts[k])}</b></div>`).join('')}</div></div>`;
+  }
+  const bars=document.getElementById('projBars');
+  if(!state.projects.length){
+    bars.innerHTML=emptyHtml('No attached projects. Use <code>/unity-hpc:connect</code> or attach a path on the Projects page. Per-project GPU-hours are not in this API.');
+  } else {
+    const max=Math.max(1,...state.projects.map(p=>Object.values(p.job_counts||{}).reduce((a,b)=>a+(Number(b)||0),0)));
+    bars.innerHTML=state.projects.map(p=>{
+      const n=Object.values(p.job_counts||{}).reduce((a,b)=>a+(Number(b)||0),0);
+      const pct=Math.round(n/max*100);
+      return `<div class="kv"><span class="mono">${esc(p.slug)}</span><div class="bar-row" style="width:65%"><div class="bar" style="flex:1"><i style="width:${pct}%;background:var(--blue)"></i></div><span class="pct">${n}</span></div></div>`;
+    }).join('')+`<p class="hint section-gap">Counts are ledger rows, not GPU-hours. Cluster util above comes from <code>hpc-sync-telemetry</code>.</p>`;
+  }
+}
+
+function renderDispatch(){
+  const sel=document.getElementById('dispProject');
+  const cur=sel.value;
+  sel.innerHTML=state.projects.length
+    ? state.projects.map(p=>`<option value="${esc(p.slug)}">${esc(p.slug)} (${esc(p.primitive||'')})</option>`).join('')
+    : `<option value="">No attached projects</option>`;
+  if(cur&&[...sel.options].some(o=>o.value===cur)) sel.value=cur;
+  renderPreview();
+  const disp=state.events.filter(e=>e.kind==='dispatch'||e.kind==='dry-run').slice().reverse();
+  document.getElementById('dispList').innerHTML=disp.length
+    ? disp.slice(0,8).map(e=>{
+        const ok=e.ok!==false;
+        return `<div class="feed-item"><span class="pill ${ok?'run':'fail'}"><span class="d"></span>${ok?'ok':'fail'}</span><div class="mono">${esc(e.message||e.kind)}</div><div class="t">${esc(ago(e.ts))}</div></div>`;
+      }).join('')
+    : emptyHtml('No dispatch events yet.');
+}
+
+function dispatchPayload(){
+  const slug=document.getElementById('dispProject').value;
+  const body={};
+  const exp=document.getElementById('dispExp').value.trim();
+  if(exp) body.exp=exp;
+  const camp=document.getElementById('dispCampaign').value.trim();
+  if(camp) body.campaign=camp;
+  body.dry_run=document.getElementById('dispDry').checked;
+  const ov={};
+  const cmd=document.getElementById('dispCmd').value.trim();
+  const wall=document.getElementById('dispWall').value.trim();
+  const part=document.getElementById('dispPart').value.trim();
+  if(cmd) ov.JOB_COMMAND=cmd;
+  if(wall) ov.WALLTIME=wall;
+  if(part) ov.SLURM_PARTITION=part;
+  if(Object.keys(ov).length) body.overrides=ov;
+  return {slug, body};
+}
+
+function renderPreview(){
+  const {slug, body}=dispatchPayload();
+  const path=slug?`/api/v1/projects/${slug}/runs`:'/api/v1/projects/{slug}/runs';
+  document.getElementById('dispatchPrev').innerHTML=
+    `<button class="copy-btn" onclick="copyPre(this)">Copy</button><span class="c">POST ${esc(path)}</span>\n${esc(JSON.stringify(body,null,2))}`;
+}
+
+async function dispatchRun(forceDry){
+  const {slug, body}=dispatchPayload();
+  if(!slug){toast('Attach a project first');return;}
+  if(!body.exp){toast('exp is required');return;}
+  if(forceDry) body.dry_run=true;
+  try{
+    const r=await api('/api/v1/projects/'+encodeURIComponent(slug)+'/runs',{method:'POST',body:JSON.stringify(body)});
+    toast((r.ok===false?'Failed: ':'Dispatched: ')+String(r.output||r.error||'ok').slice(0,180));
+    await refresh();
+  }catch(e){toast(String(e.message||e));}
+}
+
+function renderProjects(){
+  const box=document.getElementById('projCards');
+  if(!state.projects.length){
+    box.innerHTML=`<div class="card" style="grid-column:1/-1">${emptyHtml('No attached projects. Use /unity-hpc:connect in a coding agent, or attach a path below.')}</div>`;
+    return;
+  }
+  box.innerHTML=state.projects.map(p=>{
+    const c=p.job_counts||{};
+    const run=jobCount(c,['RUNNING']);
+    const pend=jobCount(c,['PENDING']);
+    const done=jobCount(c,['COMPLETED']);
+    const fail=jobCount(c,FAIL_STATES);
+    return `<div class="card proj-card" onclick='openProject(${jq(p.slug)})'>
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px">
+        <div><b>${esc(p.slug)}</b><div class="hint">${esc(p.primitive||'—')}</div></div>
+        <span class="pill ${p.scaffold?'run':'grey'}"><span class="d"></span>scaffold ${p.scaffold?'yes':'no'}</span>
+      </div>
+      <div class="proj-path">${esc(p.path||'')}</div>
+      <div class="proj-meta">
+        <span class="pill run">${run} running</span>
+        <span class="pill pend">${pend} pending</span>
+        <span class="pill done">${done} completed</span>
+        <span class="pill fail">${fail} failed</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function attachProject(){
+  const path=document.getElementById('attachPath').value.trim();
+  const slug=document.getElementById('attachSlug').value.trim();
+  const primitive=document.getElementById('attachPrim').value;
+  if(!path){toast('path is required');return;}
+  const body={path, primitive};
+  if(slug) body.slug=slug;
+  try{
+    const r=await api('/api/v1/projects',{method:'POST',body:JSON.stringify(body)});
+    toast('Attached '+(r.project&&r.project.slug||slug||path));
+    document.getElementById('attachPath').value='';
+    document.getElementById('attachSlug').value='';
+    await refresh();
+  }catch(e){toast(String(e.message||e));}
+}
+
+async function openProject(slug){
+  try{
+    const data=await api('/api/v1/projects/'+encodeURIComponent(slug));
+    const p=data.project||data;
+    state.drawerSlug=slug;
+    const primOpts=PRIMITIVES.map(t=>`<option value="${t}" ${p.primitive===t?'selected':''}>${t}</option>`).join('');
+    const jobs=p.jobs||[];
+    const jobRows=jobs.length?jobs.map(j=>{
+      const[pill,lbl]=pillFor(j.status);
+      return `<tr><td class="mono">${esc(j.job_id)}</td><td class="mono">${esc(j.exp)}</td><td><span class="pill ${pill}"><span class="d"></span>${esc(lbl)}</span></td><td>${esc(j.partition||'—')}</td></tr>`;
+    }).join(''):`<tr><td colspan="4">${emptyHtml('No jobs in this project ledger yet. Dispatch a run.')}</td></tr>`;
+    document.getElementById('drawer').innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:start">
+        <div><h2 class="mono">${esc(p.slug)}</h2><div class="hint">${esc(p.path||'')}</div></div>
+        <button class="icon-btn" onclick="closeDrawer()">&#10005;</button></div>
+      <div class="section-gap"><span class="pill violet">${esc(p.primitive||'—')}</span>
+        <span class="pill ${p.scaffold?'run':'grey'}">scaffold ${p.scaffold?'yes':'no'}</span></div>
+
+      <div class="card section-gap"><h3>Configure</h3>
+        <label>Primitive</label><select id="cfgPrim">${primOpts}</select>
+        <label>remote_dir</label><input id="cfgRemote" value="${esc(p.remote_dir||'')}">
+        <label>unity_host</label><input id="cfgHost" value="${esc(p.unity_host||'unity')}">
+        <label>campaign</label><input id="cfgCamp" value="${esc(p.campaign||'')}">
+        <div class="actions"><button class="btn primary sm" onclick='patchProject(${jq(p.slug)})'>Save</button></div>
+      </div>
+
+      <div class="card section-gap"><h3>Run</h3>
+        <label>exp</label><input id="runExp" placeholder="smoke">
+        <label>campaign</label><input id="runCamp" placeholder="optional">
+        <label class="check"><input type="checkbox" id="runDry"> dry_run</label>
+        <div class="f-row3">
+          <div><label>JOB_COMMAND</label><input id="runCmd" placeholder="optional"></div>
+          <div><label>WALLTIME</label><input id="runWall" placeholder="optional"></div>
+          <div><label>SLURM_PARTITION</label><input id="runPart" placeholder="optional"></div>
+        </div>
+        <div class="actions"><button class="btn primary sm" onclick='runProject(${jq(p.slug)})'>POST runs</button></div>
+      </div>
+
+      <div class="card section-gap"><h3>Stop / fetch / sync</h3>
+        <div class="actions">
+          <button class="btn sm" onclick='projectPost(${jq(p.slug)},"stop",{})'>Stop / cancel</button>
+          <button class="btn sm" onclick='projectPost(${jq(p.slug)},"fetch",{})'>Fetch</button>
+          <button class="btn sm" onclick='projectPost(${jq(p.slug)},"sync",{})'>Sync</button>
+        </div>
+      </div>
+
+      <div class="card section-gap"><h3>Monitor</h3>
+        <table><thead><tr><th>Job</th><th>Exp</th><th>Status</th><th>Partition</th></tr></thead>
+        <tbody>${jobRows}</tbody></table>
+      </div>
+
+      <div class="card section-gap"><h3>Detach</h3>
+        <p class="hint">Removes the registry row. The project directory is not deleted.</p>
+        <div class="actions"><button class="btn sm danger" onclick='detachProject(${jq(p.slug)})'>DELETE project</button></div>
+      </div>`;
+    document.getElementById('ovl').classList.add('on');
+    document.getElementById('drawer').classList.add('open');
+  }catch(e){toast(String(e.message||e));}
+}
+
+async function patchProject(slug){
+  const body={
+    primitive:document.getElementById('cfgPrim').value,
+    remote_dir:document.getElementById('cfgRemote').value.trim(),
+    unity_host:document.getElementById('cfgHost').value.trim(),
+    campaign:document.getElementById('cfgCamp').value.trim(),
+  };
+  try{
+    await api('/api/v1/projects/'+encodeURIComponent(slug),{method:'PATCH',body:JSON.stringify(body)});
+    toast('Updated '+slug);
+    await refresh();
+    openProject(slug);
+  }catch(e){toast(String(e.message||e));}
+}
+
+async function runProject(slug){
+  const exp=document.getElementById('runExp').value.trim();
+  if(!exp){toast('exp is required');return;}
+  const body={exp, dry_run:document.getElementById('runDry').checked};
+  const camp=document.getElementById('runCamp').value.trim();
+  if(camp) body.campaign=camp;
+  const ov={};
+  const cmd=document.getElementById('runCmd').value.trim();
+  const wall=document.getElementById('runWall').value.trim();
+  const part=document.getElementById('runPart').value.trim();
+  if(cmd) ov.JOB_COMMAND=cmd;
+  if(wall) ov.WALLTIME=wall;
+  if(part) ov.SLURM_PARTITION=part;
+  if(Object.keys(ov).length) body.overrides=ov;
+  try{
+    const r=await api('/api/v1/projects/'+encodeURIComponent(slug)+'/runs',{method:'POST',body:JSON.stringify(body)});
+    toast((r.ok===false?'Failed: ':'Ran: ')+String(r.output||r.error||'ok').slice(0,180));
+    await refresh();
+    openProject(slug);
+  }catch(e){toast(String(e.message||e));}
+}
+
+async function projectPost(slug, rest, body){
+  try{
+    const r=await api('/api/v1/projects/'+encodeURIComponent(slug)+'/'+rest,{method:'POST',body:JSON.stringify(body||{})});
+    toast((r.ok===false?'Failed: ':'ok: ')+String(r.output||r.error||rest).slice(0,180));
+    await refresh();
+    if(state.drawerSlug===slug) openProject(slug);
+  }catch(e){toast(String(e.message||e));}
+}
+
+async function detachProject(slug){
+  if(!confirm('Detach '+slug+' from the controller?')) return;
+  try{
+    await api('/api/v1/projects/'+encodeURIComponent(slug),{method:'DELETE'});
+    toast('Detached '+slug);
+    closeDrawer();
+    await refresh();
+  }catch(e){toast(String(e.message||e));}
+}
+
+function closeDrawer(){
+  document.getElementById('ovl').classList.remove('on');
+  document.getElementById('drawer').classList.remove('open');
+  state.drawerSlug=null;
+}
+
+function renderSettings(){
+  const origin=location.origin;
+  document.getElementById('setSub').textContent=origin;
+  document.getElementById('setBind').innerHTML=`
+    <div class="kv"><span>This page</span><b class="mono">${esc(origin)}</b></div>
+    <div class="kv"><span>Default bind</span><b class="mono">0.0.0.0:8300</b></div>
+    <div class="kv"><span>Localhost</span><b class="mono">127.0.0.1:8300</b></div>
+    <p class="hint section-gap">The plugin talks to this origin over HTTP with no tokens on localhost.</p>`;
+  document.getElementById('setHealth').textContent=state.health?(state.health.ok?'ok':'down'):(state.error||'—');
+  document.getElementById('setNproj').textContent=state.health&&state.health.projects!=null?state.health.projects:state.projects.length;
+}
+
+function usageSeries(usage){
+  if(!usage||!usage.usage) return null;
+  const u=usage.usage;
+  if(!u.available||!u.series||!Object.keys(u.series).length) return null;
+  const names=Object.keys(u.series);
+  return {
+    names,
+    series: names.map(n=>(u.series[n]||[]).map(v=>v==null||v===''?null:Number(v))),
+    colors: names.map((_,i)=>CHART_COLORS[i%CHART_COLORS.length]),
+  };
+}
+
+function drawUsageChart(canvasId, emptyId, legendId, usage){
+  const cv=document.getElementById(canvasId);
+  const empty=document.getElementById(emptyId);
+  const legend=document.getElementById(legendId);
+  const packed=usageSeries(usage);
+  if(!packed){
+    if(cv) cv.style.display='none';
+    if(empty){empty.hidden=false;empty.innerHTML='No usage series. Run <code>hpc-sync-telemetry</code> to build <code>summaries.db</code>.';}
+    if(legend) legend.innerHTML='';
+    return;
+  }
+  if(cv) cv.style.display='block';
+  if(empty) empty.hidden=true;
+  if(legend) legend.innerHTML=packed.names.map((n,i)=>`<span><i style="background:${packed.colors[i]}"></i>${esc(n)}</span>`).join('');
+  lineChart(cv, packed.series, packed.colors, true);
+}
+
+function drawTrend(trend){
+  const cv=document.getElementById('chartQ');
+  const empty=document.getElementById('chartQEmpty');
+  const legend=document.getElementById('chartQLegend');
+  if(!trend||!trend.length){
+    if(cv) cv.style.display='none';
+    if(empty){empty.hidden=false;empty.innerHTML='No live queue trend. Populate <code>snapshot.csv</code> (cluster-intel poller) then run <code>hpc-sync-telemetry</code> if needed.';}
+    if(legend) legend.innerHTML='';
+    return;
+  }
+  if(cv) cv.style.display='block';
+  if(empty) empty.hidden=true;
+  if(legend) legend.innerHTML='<span><i style="background:#fbbf24"></i>pending</span><span><i style="background:#34d399"></i>running</span>';
+  lineChart(cv, [trend.map(r=>Number(r.pending)||0), trend.map(r=>Number(r.running)||0)], ['#fbbf24','#34d399'], false);
+}
+
+function lineChart(cv, series, colors, fill){
+  if(!cv) return;
+  const dpr=window.devicePixelRatio||1;
+  const w=cv.clientWidth||cv.parentElement.clientWidth||300;
+  const h=+cv.getAttribute('height')||150;
+  if(!w) return;
+  cv.width=w*dpr;cv.height=h*dpr;
+  const ctx=cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle='#232b38';ctx.lineWidth=1;
+  for(let i=1;i<4;i++){ctx.beginPath();ctx.moveTo(0,h*i/4);ctx.lineTo(w,h*i/4);ctx.stroke();}
+  const flat=series.flat().filter(v=>v!=null&&!Number.isNaN(v));
+  if(!flat.length) return;
+  const max=Math.max(...flat,1)*1.1, min=Math.min(0,...flat);
+  const span=max-min||1;
+  series.forEach((s,si)=>{
+    const n=Math.max(s.length,2);
+    ctx.beginPath();
+    let drawing=false;
+    s.forEach((v,i)=>{
+      if(v==null||Number.isNaN(v)){drawing=false;return;}
+      const x=i/(n-1)*w, y=h-((v-min)/span)*(h-6)-3;
+      if(!drawing){ctx.moveTo(x,y);drawing=true;} else ctx.lineTo(x,y);
+    });
+    ctx.strokeStyle=colors[si];ctx.lineWidth=1.8;ctx.stroke();
+    if(fill && s.every(v=>v!=null)){
+      ctx.lineTo(w,h);ctx.lineTo(0,h);ctx.closePath();
+      const g=ctx.createLinearGradient(0,0,0,h);
+      g.addColorStop(0,colors[si]+'44');g.addColorStop(1,colors[si]+'00');
+      ctx.fillStyle=g;ctx.fill();
+    }
+  });
+}
+
+document.getElementById('jobChips').innerHTML='';
+['all','running','pending','completed','failed'].forEach(f=>{
+  const c=document.createElement('span');
+  c.className='chip'+(f==='all'?' on':'');
+  c.textContent=f==='all'?'All':f[0].toUpperCase()+f.slice(1);
+  c.onclick=()=>{document.getElementById('jobChips').querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));c.classList.add('on');state.jfilter=f;renderJobs();};
+  document.getElementById('jobChips').appendChild(c);
+});
+document.getElementById('anChips').addEventListener('click',e=>{
+  const chip=e.target.closest('.chip');
+  if(!chip) return;
+  chipSel(chip);
+  state.hours=Number(chip.dataset.h)||24;
+  refresh();
+});
+
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toTimeString().slice(0,8);},1000);
+window.addEventListener('resize',()=>{
+  if(state.page==='overview') drawUsageChart('chartUtil','chartUtilEmpty','chartUtilLegend',state.usage);
+  if(state.page==='queue') drawTrend(((state.queue&&state.queue.live)||{}).trend||[]);
+  if(state.page==='analytics') drawUsageChart('chartAn','chartAnEmpty','chartAnLegend',state.usage);
+});
+
+go('overview');
+refresh();
+setInterval(()=>refresh(),10000);
+</script>
+</body>
+</html>
