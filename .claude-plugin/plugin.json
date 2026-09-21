@@ -1,7 +1,7 @@
 {
   "name": "unity-hpc",
-  "version": "0.11.1",
-  "description": "Unity HPC workflow for any SLURM job (CPU or GPU) — typed job scaffolding, queue-aware submission, sweeps, result fetching, cluster reconnaissance, and structured usage telemetry. Skills invoke as /unity-hpc:<skill>.",
+  "version": "0.12.0",
+  "description": "Thin Unity HPC plugin: connect a project to the always-on controller and dispatch runs. Cluster monitoring, queue, and fetch live in the controller UI.",
   "author": {
     "name": "Ali Hamza Malik",
     "email": "ahmalik@umass.edu"

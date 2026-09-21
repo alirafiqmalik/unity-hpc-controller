@@ -1,32 +1,51 @@
 # unity-hpc — architecture
 
-Version 0.11.1. This plugin is an abstraction layer between a project's
-experiments and Unity's SLURM cluster. It does plumbing only: submit, record,
-observe, fetch. It stays generic, so nothing in the core knows what a project's
-metrics mean.
+Version 0.12.0. Two components share one ledger contract.
 
 **The central contract:** `unityHPC/run.sh` records every job it submits into
 `<project>/.unity_state/<campaign>.db`. Every management tool reads that ledger.
 A job that is not in the ledger is a job the project cannot name.
 
+**The split:** the **controller** is an always-on process on this machine. It
+owns the project registry, HTTP `/api/v1/*`, the dashboard, and every call to
+`run.sh`. The **plugin** is three LLM skills (`connect`, `dispatch`, `doctor`)
+that HTTP to the controller. They do not SSH. See
+`docs/two-component-architecture.md` and `docs/adr/0001-two-component-split.md`.
+
 ---
 
 ## 1. Skills
 
-These are the user-facing entry points. You run each one as
-`/unity-hpc:<name>`.
+These are the LLM-facing entry points. You run each one as `/unity-hpc:<name>`.
 
 | Skill | Purpose | Touches cluster? |
 |---|---|---|
-| `setup` | Bootstrap a project: check SSH, scaffold `unityHPC/`, sync code to `/work`, run recon if the shared configuration is absent | yes |
-| `run` | Submit one job, queue-aware, and record it in the ledger | yes |
-| `sweep` | Submit a batch under one campaign, inside the account submit limit and the queue depth | yes |
-| `status` | This project's job states — a local ledger read, plus an explicit live SLURM check when it matters | no (opt-in) |
-| `fetch` | rsync the job output back, then summarise whatever metrics the jobs printed | yes |
-| `log-result` | Append a row to `results.tsv`, with that file's existing columns and the project's declared metric | no |
-| `recon` | Observe partitions, GPU fleet, account limits, fair-share and storage, then merge them into the shared `cluster-config.json` | yes (read-only) |
-| `recommend-hardware` | Rank backends: what you can request ∩ what is free now ∩ what has been fastest for you | no |
-| `resume` | Rebuild the session context after a reset, from the ledger, the results, the cluster configuration and the queue | no |
+| `connect` | Scaffold `unityHPC/` if needed, attach the directory to the controller | no (controller does) |
+| `dispatch` | POST a run request to the controller | no (controller does) |
+| `doctor` | Controller health and this project's wiring | no |
+
+Operator runbooks for recon, fetch, watch, sweep, and setup live under
+`controller/ops/`. Humans use the dashboard at `:8300`.
+
+## 1b. Controller
+
+`scripts/hpc-controller` serves the API and `controller/ui/index.html`.
+`--tailscale` binds localhost and runs `tailscale serve`. The registry is
+`$UNITY_HPC_DATA/controller/projects.json`. Dispatch is `run.sh`, never a
+second writer.
+
+HTTP (tests call `controller.http.handle`, no sockets):
+
+| Method | Path | Role |
+|---|---|---|
+| GET | `/api/v1/health` | liveness |
+| GET | `/api/v1/cluster` | snapshot + KPIs |
+| GET | `/api/v1/projects` | attached projects |
+| POST | `/api/v1/projects` | attach |
+| POST | `/api/v1/projects/{slug}/runs` | dispatch |
+| POST | `/api/v1/projects/{slug}/stop` | cancel |
+| POST | `/api/v1/projects/{slug}/fetch` | fetch |
+| POST | `/api/v1/projects/{slug}/sync` | sync |
 
 ## 2. MCP tools
 
@@ -117,18 +136,18 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
 ## 4. Layer map
 
 ```
-        YOU  ─── /unity-hpc:<skill> ──────────────────────────────┐
+        YOU  ─── /unity-hpc:connect|dispatch|doctor ── HTTP :8300 ──┐
                                                                   │
  ┌────────────────────────────────────────────────────────────────▼──────────┐
- │ SKILL LAYER   setup  run  sweep  status  fetch  log-result                 │
- │               recon  recommend-hardware  resume                            │
+ │ CONTROLLER   registry  snapshot  dispatch→run.sh  UI                       │
  └───────┬──────────────────────────────────────────────┬────────────────────┘
          │ writes / submits                             │ reads
  ┌───────▼──────────────────┐               ┌───────────▼───────────────────┐
  │ DISPATCHER (in project)  │               │ MCP SERVER  mcp/hpc_server.py │
- │ unityHPC/run.sh          │               │ unity_status  unity_jobs      │
- │   run render sync        │               │ unity_results unity_logs      │
- │   status jobs logs fetch │               │ unity_ssh     unity_doctor    │
+ │ unityHPC/run.sh          │               │ (programmatic; skills are HTTP)│
+ │   run render sync        │               │ unity_status  unity_jobs      │
+ │   status jobs logs fetch │               │ unity_results unity_logs      │
+ │   cancel array           │               │ unity_ssh     unity_doctor    │
  └───────┬──────────┬───────┘               └───────┬───────────────┬───────┘
          │ writes   │ ssh/rsync                     │ reads         │ reads
  ┌───────▼──────────┼───────────────────────────────▼──────┐ ┌──────▼────────┐
@@ -142,7 +161,7 @@ skills, the dispatcher, the MCP server, the scaffold and the telemetry pipeline.
                                                              └───────────────┘
 ```
 
-## 5. Submit path — `/unity-hpc:run`, `/unity-hpc:sweep`
+## 5. Submit path — controller dispatch → `run.sh run` / `run.sh array`
 
 ```
  skill ──▶ run.sh run <exp> [--campaign C]

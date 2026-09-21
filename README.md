@@ -1,42 +1,64 @@
 # unity-hpc
 
-A local Claude Code plugin, in the `phd-agentic-tools` marketplace. It packages
-the Unity HPC cluster workflow as coordinated skills, an MCP server, utility
-scripts and autonomous agents. You run each skill as `/unity-hpc:<skill>`.
+A two-component Unity HPC workflow: an always-on **controller** on this
+machine, and a thin Claude/Cursor **plugin** of three skills that HTTP to it.
 
-## Install
+The controller is the master process. It owns attached projects, dispatch
+through `unityHPC/run.sh`, cluster snapshots, and the dashboard. The plugin
+only attaches a directory and posts run requests, so an LLM session does not
+load recon, fetch, watch, or queue logic.
 
-This plugin lives in the `phd-agentic-tools` marketplace at the repo root. Add the
-marketplace with `/plugin` → Add Marketplace, or with these two commands:
+The ledger contract is unchanged: **`unityHPC/run.sh` records every job it
+submits, and every management tool reads that record.**
+
+See `docs/two-component-architecture.md` for the layer map and
+`docs/migration-two-component.md` for the cutover.
+
+## Controller (this machine)
 
 ```bash
-/plugin marketplace add /home/ahm/Desktop/project/Research/tools/hpc-experiment-workflow
-/plugin install unity-hpc@phd-agentic-tools
+scripts/hpc-controller                 # http://127.0.0.1:8300
+scripts/hpc-controller --tailscale     # localhost + HTTPS on your tailnet
+scripts/hpc-controller --install-user-service   # systemd --user unit, then:
+# systemctl --user enable --now unity-hpc-controller
 ```
 
-For local development, load the plugin directly instead of installing it. Your
-edits then take effect on `/reload-plugins`, and there is no cache copy to keep in
-step:
+Do not use `tailscale funnel`. The dashboard is private.
+
+Open the UI, attach a project from the Projects tab (or from
+`/unity-hpc:connect` in an agent), then configure / run / stop / fetch from
+the project card.
+
+The historical telemetry page is still `hpc-dashboard` on :8787.
+
+## Plugin (LLM session)
+
+This plugin lives in the `phd-agentic-tools` marketplace. Add the marketplace
+with `/plugin` → Add Marketplace, or load it from this checkout:
 
 ```bash
 claude --plugin-dir .
 ```
 
-A `--plugin-dir` copy takes precedence over the installed copy for that session,
-so you can test a change without an uninstall.
+**Prerequisites:** `uv` on PATH, SSH access to Unity under the `unity` host
+alias, the controller running, and a `.env` in your project.
+`/unity-hpc:connect` generates that file at `unityHPC/.env` and registers the
+directory with the controller.
 
-The skills, the agents and the `unity-hpc` MCP server all register themselves. No
-edit to `claude_desktop_config.json` is necessary. The MCP server runs under `uv`,
-which resolves its one dependency (`mcp`) on the first run.
+| Skill | Purpose |
+|---|---|
+| `/unity-hpc:connect` | Scaffold `unityHPC/` if needed, attach this directory to the controller |
+| `/unity-hpc:dispatch` | POST a run request to the controller. It calls `run.sh`. Do not SSH. |
+| `/unity-hpc:doctor` | Controller health and this project's wiring |
 
-**Prerequisites:** `uv` on PATH, SSH access to Unity under the `unity` host alias,
-and a `.env` in your project. `/unity-hpc:setup` generates that file at
-`unityHPC/.env`.
+Operator runbooks for recon, fetch, watch, and the rest live under
+`controller/ops/`. Humans use the dashboard; agents use the three skills.
 
-Run Claude Code from your project directory. The MCP server reads the campaign
-state from the working directory, unless you set `PROJECT_DIR`.
+The MCP server still exposes the existing read/submit tools for sessions that
+already have them. New agent work goes through the skills.
 
 ## The job lifecycle
+
 
 One contract ties the whole plugin together: **`unityHPC/run.sh` records every job
 it submits, and every management tool reads that record.**
@@ -300,15 +322,12 @@ ln -sf "$(pwd)/scripts/"* ~/.local/bin/
 
 | Skill | Purpose |
 |---|---|
-| `/unity-hpc:setup` | Bootstrap a project — pick cpu, gpu, ml, multi-cpu or multi-gpu, generate `unityHPC/`, check SSH, sync |
-| `/unity-hpc:run <exp>` | Submit one job to SLURM, queue-aware, for any job type |
-| `/unity-hpc:sweep` | Submit a batch of related jobs under one campaign |
-| `/unity-hpc:status` | Check the job states — an instant local read, with a live check on request |
-| `/unity-hpc:fetch` | Fetch the job output and artifacts from the cluster |
-| `/unity-hpc:resume` | Rebuild the context after a session reset |
-| `/unity-hpc:log-result` | Record an experiment in results.tsv |
-| `/unity-hpc:recon` | Profile the cluster — limits, partitions, GPU types, sacct scope, capacity |
-| `/unity-hpc:recommend-hardware` | Rank GPU backends by your measured speed against availability |
+| `/unity-hpc:connect` | Scaffold `unityHPC/` if needed, attach this directory to the controller |
+| `/unity-hpc:dispatch` | POST a run request; the controller calls `run.sh` |
+| `/unity-hpc:doctor` | Controller health and this project's wiring |
+
+Old skill bodies (setup, run, sweep, status, fetch, recon, …) are operator
+runbooks at `controller/ops/`. They are not loaded into LLM sessions.
 
 ## Agent scope
 
@@ -336,6 +355,7 @@ marks its project-specific lines, and a CPU project deletes them.
 | `hpc-usage` | Terminal plots of cluster usage (plotext), selectable by GPU and window |
 | `hpc-tmux` | Manage the tmux sessions on the cluster |
 | `hpc-logs` · `hpc-ssh` · `hpc-compare` · `hpc-cleanup` | small utilities |
+| `hpc-controller` | Always-on API + dashboard (`--tailscale`, `--install-user-service`) |
 | `hpc-scaffold` | Generate `unityHPC/{run.sh,job_template.sh,sync.sh,.env}` for a project type |
 
 ## cluster-intel — usage history and analysis
@@ -381,6 +401,9 @@ plugin *data* is this directory. Every script and tool defaults to it, and honor
 
 ## See also
 
+- `docs/two-component-architecture.md` — controller, plugin, Unity
+- `docs/migration-two-component.md` — cutover steps
+- `docs/monitoring.md` — dashboard patterns
 - `ARCHITECTURE.md` — the layer map, the submit path, the I1–I9 invariants, and
   the design rules
 - `docs/design-decisions.md` — why the plugin has this shape, and what Unity does

@@ -7,7 +7,7 @@ settled question, or repeat a fault the current design exists to prevent.
 It replaces three executed implementation plans, two dated design specs and a v0.3
 build plan. Git history holds those originals.
 
-Current at plugin version 0.11.1.
+Current at plugin version 0.12.0.
 
 ---
 
