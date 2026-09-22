@@ -1,5 +1,10 @@
 # The dashboard is plain ES modules with no build step
 
+> **Superseded by [ADR 0006](0006-dashboard-on-the-twenty-front-stack.md).**
+> The dashboard is now a Vite build of `controller/web` on the `twenty-front`
+> stack. ADR 0006 records what changed and why. The reasoning below still holds
+> for the tree it describes, and for the rejection of a committed `dist/`.
+
 The dashboard was one 1225-line `controller/ui/index.html`: the markup, 169
 lines of CSS and 776 lines of JavaScript in one file. Nothing could be read,
 changed or tested in isolation. It is now a tree of stylesheets and ES modules

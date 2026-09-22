@@ -216,10 +216,11 @@ scp "${CLAUDE_PLUGIN_ROOT}/cluster-intel/collector.sh" \
 ```
 
 `collector.sh once` is the single cluster-side telemetry writer. A `flock` on
-`collector.lock` allows one writer even if two samples race. `once` also runs
-the 35-day retention prune on its own output, so there is no separate prune
-step. Do not leave a `unity-collector` session behind. If one is still running
-from an older setup, kill it. The controller will open `unity-hpc` itself.
+`collector.lock` allows one writer even if two samples race. The workstation
+keeps the archive after each pull and then drops those days from the cluster.
+`once` still runs a 35-day backstop prune. Do not leave a `unity-collector`
+session behind. If one is still running from an older setup, kill it. The
+controller will open `unity-hpc` itself.
 
 **12. Print the summary**
 

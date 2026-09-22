@@ -17,9 +17,9 @@ session after 45 minutes with no command. Turning the schedule off sends
 nothing, so the same quiet period closes the session.
 
 Scaffold and setup copy the sample scripts only. They do not start `loop`.
-Retention is unchanged: `once` still prunes raw days at 35 days, the local
-gate still decides `--delete`, and `summaries.db` still keeps every summary
-row.
+Retention of summaries is unchanged: `summaries.db` still keeps every
+summary row. ADR 0005 moves the raw archive onto this machine and prunes
+the cluster after a successful pull. `once` still runs the 35-day backstop.
 
 A systemd timer beside the controller was rejected. The panel would not see
 the session, and the quiet period would belong to a second install. Keeping

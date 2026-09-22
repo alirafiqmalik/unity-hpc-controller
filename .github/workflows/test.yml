@@ -19,10 +19,24 @@ jobs:
         run: |
           python -m json.tool .claude-plugin/plugin.json > /dev/null
           python -m json.tool .codex-plugin/plugin.json > /dev/null
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: controller/web/package-lock.json
+      - name: Build the dashboard
+        working-directory: controller/web
+        run: |
+          npm ci
+          npm run build
       - name: Install test dependencies
         run: pip install pytest
       - name: Run tests
         run: python -m pytest tests/ -q
+      - name: Dashboard browser smoke test
+        env:
+          UNITY_HPC_UI_SMOKE: "1"
+        run: python -m pytest tests/test_controller_web_smoke.py -q
       - name: Release check (version bump guard)
         if: github.event_name == 'pull_request'
         run: |

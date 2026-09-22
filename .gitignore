@@ -15,3 +15,8 @@ __pycache__/
 # would otherwise be committable. The tracked templates are named env.example,
 # which this pattern does not match.
 .env
+
+# Dashboard build. controller/web is the source; the bundle and the installed
+# packages are generated, and `hpc-controller` builds them on first start.
+controller/web/node_modules/
+controller/web/dist/

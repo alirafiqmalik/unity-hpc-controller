@@ -7,18 +7,32 @@ minute schedule closes the session after 45 minutes with no command. ADR 0004.
 
 from __future__ import annotations
 
+import os
+import re
 import shlex
 import subprocess
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+from lib import paths
 
 SESSION_NAME = "unity-hpc"
 #: Scripts the panel and the schedule may run. `loop` stays manual.
 MODES = ("once", "sample", "prune")
 #: How long one sample may run before the SSH call gives up, in seconds.
 SAMPLE_WAIT_S = 600
+#: How long a panel "Test ssh" probe may run.
+PROBE_WAIT_S = 15
 _MIN_INTERVAL_MINUTES = 5
 _MAX_INTERVAL_MINUTES = 1440
 _MARK = "/tmp/unity-hpc-sample.rc"
 _LOG = "/tmp/unity-hpc-sample.log"
+_LOG_START = "--- unity-hpc-session-log ---"
+_LOG_END = "--- unity-hpc-session-log-end ---"
+SESSION_LOG_KEEP = 50
+#: An SSH config Host alias. No user@host, no options, no spaces.
+_HOST_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def inactivity_timeout_s(interval_minutes: int) -> int:
@@ -63,6 +77,231 @@ def clean_mode(mode: str | None) -> str:
     return text
 
 
+def clean_ssh_host(value) -> str:
+    """An SSH config alias such as `unity`. Empty becomes the default."""
+    text = str(value or "").strip()
+    if not text:
+        return "unity"
+    if len(text) > 64 or not _HOST_OK.fullmatch(text):
+        raise ValueError("ssh_host must be an SSH config alias")
+    return text
+
+
+def clean_ssh_identity(value) -> str:
+    """A path to an identity file, or empty to use the SSH config as written."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if any(ch in text for ch in "\n\r\t\0"):
+        raise ValueError("ssh_identity must be one line")
+    if len(text) > 512:
+        raise ValueError("ssh_identity is too long")
+    return text
+
+
+def ssh_argv(host: str, identity: str = "") -> list[str]:
+    """The ssh invocation. The host is an SSH config alias (e.g. `unity`).
+
+    No BatchMode, no ConnectTimeout: those flags bypass ~/.ssh/config and
+    are what produced Permission denied against the resolved FQDN.
+    """
+    dest = clean_ssh_host(host)
+    ident = clean_ssh_identity(identity)
+    cmd = ["ssh"]
+    if ident:
+        cmd.extend(["-i", ident])
+    cmd.append(dest)
+    return cmd
+
+
+def ssh_command(host: str, identity: str = "") -> str:
+    """The same command a person would type, for the panel to show."""
+    return " ".join(ssh_argv(host, identity))
+
+
+def resolve_identity(host: str, identity: str = "") -> str:
+    """The key file `ssh <alias>` will use. Empty when none can be named."""
+    ident = clean_ssh_identity(identity)
+    if ident:
+        return str(Path(ident).expanduser())
+    try:
+        proc = subprocess.run(
+            ["ssh", "-G", clean_ssh_host(host)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    for line in proc.stdout.splitlines():
+        if not line.lower().startswith("identityfile "):
+            continue
+        path = str(Path(line.split(" ", 1)[1].strip()).expanduser())
+        if Path(path).is_file():
+            return path
+    return ""
+
+
+def _first_fp(text: str) -> str:
+    for part in str(text or "").split():
+        if part.startswith("SHA256:"):
+            return part
+    return ""
+
+
+def _run(argv, run=None, **kwargs):
+    if run is not None:
+        return run(argv, **kwargs)
+    return subprocess.run(argv, capture_output=True, text=True, **kwargs)
+
+
+def agent_status(host: str, identity: str = "", run=None) -> dict:
+    """Whether the alias key is loaded. A missing load is a passphrase prompt."""
+    path = resolve_identity(host, identity) if identity else (
+        resolve_identity(host, identity) if run is None else ""
+    )
+    if identity:
+        path = str(Path(clean_ssh_identity(identity)).expanduser())
+    exists = bool(path) and Path(path).is_file()
+    empty = {
+        "key_path": path, "unlocked": False,
+        "needs_passphrase": False, "agent": False,
+    }
+    try:
+        listed = _run(["ssh-add", "-l"], run=run)
+    except OSError:
+        empty["needs_passphrase"] = exists
+        return empty
+    agent = listed.returncode in (0, 1)
+    loaded = set()
+    if listed.returncode == 0:
+        for line in (listed.stdout or "").splitlines():
+            fp = _first_fp(line)
+            if fp:
+                loaded.add(fp)
+    unlocked = False
+    if exists and loaded:
+        try:
+            shown = _run(["ssh-keygen", "-l", "-f", path], run=run)
+            key_fp = _first_fp(shown.stdout or "")
+            unlocked = bool(key_fp) and key_fp in loaded
+        except OSError:
+            unlocked = False
+    return {
+        "key_path": path,
+        "unlocked": unlocked,
+        "needs_passphrase": exists and not unlocked,
+        "agent": agent,
+    }
+
+
+def _wipe(path: str) -> None:
+    try:
+        size = os.path.getsize(path)
+        with open(path, "r+b") as fh:
+            fh.write(b"\0" * size)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def _ensure_agent() -> None:
+    """Start an ssh-agent in this process when none is listening."""
+    try:
+        listed = subprocess.run(
+            ["ssh-add", "-l"], capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        listed = None
+    if listed is not None and listed.returncode == 0:
+        return
+    try:
+        proc = subprocess.run(
+            ["ssh-agent", "-s"], capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("SSH_AUTH_SOCK="):
+            os.environ["SSH_AUTH_SOCK"] = line.split("=", 1)[1].split(";")[0]
+        elif line.startswith("SSH_AGENT_PID="):
+            os.environ["SSH_AGENT_PID"] = line.split("=", 1)[1].split(";")[0]
+
+
+def unlock_identity(identity: str, passphrase: str, host: str = "unity",
+                    run=None) -> dict:
+    """Load the key into the agent. The passphrase is never returned."""
+    phrase = str(passphrase or "").split("\n", 1)[0].strip("\r")
+    if not phrase:
+        raise ValueError("passphrase is empty")
+    if "\x00" in phrase:
+        raise ValueError("passphrase is invalid")
+    path = resolve_identity(host, identity)
+    if not path or not Path(path).is_file():
+        return {"ok": False, "error": "identity file is missing",
+                "key_path": path or "", "unlocked": False}
+    if run is not None:
+        proc = run(["ssh-add", path], env={})
+        ok = getattr(proc, "returncode", 1) == 0
+        return {"ok": ok, "key_path": path, "unlocked": ok,
+                "output": ((getattr(proc, "stdout", "") or "")
+                           + (getattr(proc, "stderr", "") or "")).strip()[-300:]}
+    _ensure_agent()
+    secret = None
+    helper = None
+    try:
+        fd, secret = tempfile.mkstemp(prefix="unity-askpass-")
+        os.write(fd, phrase.encode())
+        os.close(fd)
+        os.chmod(secret, 0o600)
+        fd, helper = tempfile.mkstemp(prefix="unity-askpass-sh-")
+        os.write(fd, (
+            b"#!/bin/sh\n"
+            b"case \"$*\" in\n"
+            b"  *[Bb]ad*|*try\\ again*) exit 1 ;;\n"
+            b"esac\n"
+            b"cat \"$UNITY_HPC_ASKPASS_FILE\"\n"
+        ))
+        os.close(fd)
+        os.chmod(helper, 0o700)
+        env = dict(os.environ)
+        env["UNITY_HPC_ASKPASS_FILE"] = secret
+        env["SSH_ASKPASS"] = helper
+        env["SSH_ASKPASS_REQUIRE"] = "force"
+        env.setdefault("DISPLAY", ":0")
+        proc = subprocess.run(
+            ["ssh-add", path],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            timeout=15,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": str(exc), "key_path": path,
+                "unlocked": False}
+    finally:
+        if secret:
+            _wipe(secret)
+        if helper:
+            try:
+                os.unlink(helper)
+            except OSError:
+                pass
+    ok = proc.returncode == 0
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if not ok and not out:
+        out = "bad passphrase or the agent refused the key"
+    return {
+        "ok": ok,
+        "key_path": path,
+        "unlocked": ok,
+        "output": out[-300:],
+    }
+
+
 def remote_invocation(
     session: str, cid: str, timeout_s: int, mode: str = "once",
     wait_s: int = SAMPLE_WAIT_S,
@@ -91,17 +330,64 @@ def remote_invocation(
             "do sleep 1; i=$((i+1)); done"
         ),
         f"if [ ! -f {_MARK} ]; then echo timeout; exit 124; fi",
-        f"rc=$(cat {_MARK}); echo rc=$rc; exit \"$rc\"",
+        f"rc=$(cat {_MARK}); echo rc=$rc",
+        f"echo {shlex.quote(_LOG_START)}",
+        f"cat {_LOG} 2>/dev/null || true",
+        f"echo {shlex.quote(_LOG_END)}",
+        f"rm -f {_MARK} {_LOG}",
+        f"exit \"$rc\"",
     ])
 
 
-def ssh_run(host: str, script: str, timeout_s: int) -> subprocess.CompletedProcess:
-    """Run `script` on `host`. BatchMode so a missing key fails instead of asking."""
+def extract_session_log(output: str) -> str:
+    """The sample log the remote command printed between the markers."""
+    text = str(output or "")
+    if _LOG_START not in text or _LOG_END not in text:
+        return ""
+    _, _, rest = text.partition(_LOG_START)
+    body, _, _ = rest.partition(_LOG_END)
+    body = body.lstrip("\n")
+    if not body.strip():
+        return ""
+    return body if body.endswith("\n") else body + "\n"
+
+
+def save_session_log(output: str) -> str:
+    """Write a remote sample log to the local session store.
+
+    Returns the path, or empty when there was nothing to keep. A write
+    fault is swallowed (I6): the pull still runs.
+    """
+    body = extract_session_log(output)
+    if not body:
+        return ""
+    dest = paths.session_logs_dir()
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+        path = dest / f"{stamp}.log"
+        if path.exists():
+            path = dest / f"{stamp}-{os.getpid()}.log"
+        path.write_text(body)
+        logs = sorted(p for p in dest.glob("*.log") if p.is_file())
+        for old in logs[:-SESSION_LOG_KEEP]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return str(path)
+    except OSError:
+        return ""
+
+
+def ssh_run(host: str, script: str, timeout_s: int,
+            identity: str = "") -> subprocess.CompletedProcess:
+    """Run `script` on `host` the same way a shell runs `ssh unity`."""
     return subprocess.run(
         [
             "timeout", "--foreground", str(int(timeout_s)),
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            host, "bash", "-s",
+            *ssh_argv(host, identity),
+            "bash", "-s",
         ],
         input=script,
         capture_output=True,
@@ -109,21 +395,56 @@ def ssh_run(host: str, script: str, timeout_s: int) -> subprocess.CompletedProce
     )
 
 
+def probe(host: str, identity: str = "", run=None) -> dict:
+    """One `echo` on the alias, so the panel can test the saved access."""
+    dest = clean_ssh_host(host)
+    ident = clean_ssh_identity(identity)
+    argv = [
+        "timeout", "--foreground", str(PROBE_WAIT_S),
+        *ssh_argv(dest, ident),
+        "echo", "unity-ok",
+    ]
+    runner = run or (lambda cmd: subprocess.run(
+        cmd, capture_output=True, text=True,
+    ))
+    try:
+        proc = runner(argv)
+    except OSError as exc:
+        return {
+            "ok": False, "command": ssh_command(dest, ident),
+            "error": str(exc), "output": str(exc), "rc": -1,
+        }
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    ok = proc.returncode == 0 and "unity-ok" in (proc.stdout or "")
+    return {
+        "ok": ok,
+        "command": ssh_command(dest, ident),
+        "output": out[-500:],
+        "rc": proc.returncode,
+    }
+
+
 def collect(cfg: dict, source: str, mode: str = "once", run=None) -> dict:
     """Run one sample in the cluster session.
 
     A local source has no login node, so this is a no-op success and the
     caller pulls the fixture directly. A remote failure is `ok: False` and
-    does not raise.
+    does not raise. The SSH host is the saved alias (`unity`), not the
+    prefix of the rsync source.
     """
     parsed = parse_remote_source(source)
     if parsed is None:
         return {"ok": True, "skipped": "local"}
-    host, cid = parsed
+    _src_host, cid = parsed
+    try:
+        host = clean_ssh_host(cfg.get("ssh_host") or "unity")
+        identity = clean_ssh_identity(cfg.get("ssh_identity") or "")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     chosen = clean_mode(mode)
     timeout_s = inactivity_timeout_s(cfg.get("interval_minutes"))
     script = remote_invocation(SESSION_NAME, cid, timeout_s, mode=chosen)
-    runner = run or ssh_run
+    runner = run or (lambda h, s, t: ssh_run(h, s, t, identity=identity))
     try:
         proc = runner(host, script, SAMPLE_WAIT_S + 30)
     except OSError as exc:
@@ -131,26 +452,36 @@ def collect(cfg: dict, source: str, mode: str = "once", run=None) -> dict:
     if proc.returncode != 0:
         err = ((proc.stderr or "") + (proc.stdout or "")).strip()
         return {"ok": False, "error": err[-500:], "rc": proc.returncode}
+    log_path = save_session_log(proc.stdout or "")
     return {
         "ok": True,
         "mode": chosen,
         "timeout_s": timeout_s,
         "session": SESSION_NAME,
         "host": host,
+        "session_log": log_path,
     }
 
 
-def close_session(source: str, run=None) -> dict:
+def close_session(source: str, run=None, host: str | None = None,
+                  identity: str = "") -> dict:
     """End the cluster session. A missing session is already closed."""
     parsed = parse_remote_source(source)
     if parsed is None:
         return {"ok": True, "skipped": "local"}
-    host, _cid = parsed
-    qname = shlex.quote(SESSION_NAME)
-    script = f"tmux kill-session -t {qname} 2>/dev/null || true\n"
-    runner = run or ssh_run
     try:
-        proc = runner(host, script, 30)
+        dest = clean_ssh_host(host or "unity")
+        ident = clean_ssh_identity(identity)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    qname = shlex.quote(SESSION_NAME)
+    script = (
+        f"tmux kill-session -t {qname} 2>/dev/null || true\n"
+        f"rm -f {_MARK} {_LOG}\n"
+    )
+    runner = run or (lambda h, s, t: ssh_run(h, s, t, identity=ident))
+    try:
+        proc = runner(dest, script, 30)
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
     if proc.returncode != 0:

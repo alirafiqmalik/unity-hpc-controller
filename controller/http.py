@@ -16,7 +16,11 @@ from controller.registry import RegistryError
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8300
 
-UI_DIR = Path(__file__).resolve().parent / "ui"
+#: The Vite build output. `controller/web` holds the source; `npm run build`
+#: writes this directory, and `serve.py` builds it on first start when it is
+#: missing. ADR 0006.
+WEB_DIR = Path(__file__).resolve().parent / "web"
+UI_DIR = WEB_DIR / "dist"
 
 _SLUG = re.compile(r"^/api/v1/projects/([^/]+)(?:/(.*))?$")
 
@@ -89,10 +93,17 @@ def handle(req: Request) -> Response:
 
 def _route(method: str, path: str, req: Request) -> Response:
     if path == "/api/v1/health" and method == "GET":
+        ssh = telemetry.ssh_status()
         return _json(200, {
             "ok": True,
             "service": "unity-hpc-controller",
             "projects": len(registry.list_projects()),
+            "ssh": {
+                "needs_passphrase": ssh.get("needs_passphrase"),
+                "key_path": ssh.get("key_path") or "",
+                "command": ssh.get("command") or "",
+                "unlocked": ssh.get("unlocked"),
+            },
         })
 
     if path == "/api/v1/cluster" and method == "GET":
@@ -112,7 +123,8 @@ def _route(method: str, path: str, req: Request) -> Response:
             hours = 24
         return _json(200, {
             "usage": snapshot.usage(hours),
-            "outcomes": snapshot.outcomes(),
+            "outcomes": snapshot.outcomes(hours),
+            "stats": snapshot.task_stats(hours),
         })
 
     if path == "/api/v1/telemetry" and method == "GET":
@@ -145,11 +157,19 @@ def _route(method: str, path: str, req: Request) -> Response:
 
     if path == "/api/v1/telemetry/settings" and method == "PATCH":
         body = _read_json(req)
-        keys = ("source", "schedule_enabled", "interval_minutes", "script_mode")
+        keys = ("source", "schedule_enabled", "interval_minutes", "script_mode",
+                "ssh_host", "ssh_identity")
         saved = telemetry.save_settings(**{k: body[k] for k in keys if k in body})
         events.record("configure", "updated telemetry retrieval settings")
         return _json(200, {"ok": True, "settings": saved,
                            "telemetry": telemetry.status()})
+
+    if path == "/api/v1/telemetry/ssh-test" and method == "POST":
+        return _json(200, telemetry.probe_ssh())
+
+    if path == "/api/v1/telemetry/ssh-unlock" and method == "POST":
+        body = _read_json(req)
+        return _json(200, telemetry.unlock_ssh(body.get("passphrase") or ""))
 
     if path == "/api/v1/jobs" and method == "GET":
         return _json(200, {"jobs": snapshot.all_jobs()})
@@ -299,23 +319,84 @@ def _write_client_stub(rec: dict) -> None:
 _STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "application/javascript",
+    ".mjs": "application/javascript",
     ".css": "text/css",
     ".svg": "image/svg+xml",
     ".json": "application/json",
+    ".map": "application/json",
+    ".ico": "image/x-icon",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".webp": "image/webp",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".txt": "text/plain; charset=utf-8",
 }
+
+#: Hashed build assets never change under their own name, so they are safe to
+#: cache hard. `index.html` names them, and it is never cached.
+_IMMUTABLE_DIR = "assets/"
+
+_NOT_BUILT = (
+    "The dashboard is not built.\n\n"
+    "Run it once:\n"
+    "    cd controller/web && npm install && npm run build\n\n"
+    "`hpc-controller` does this on start when Node is on PATH.\n"
+)
+
+
+def _index_missing() -> Response:
+    return Response(
+        status=503,
+        body=_NOT_BUILT.encode(),
+        content_type="text/plain; charset=utf-8",
+    )
 
 
 def _static(path: str) -> Response:
+    """
+    Serve one built file, or `index.html` for any other path.
+
+    The dashboard is a single-page app, so a deep link such as
+    `/cluster/queue` is not a file. Every GET that is not an API route and not
+    a real file answers with `index.html`, and the router reads the path. A
+    request under the hashed asset directory is never rewritten: a missing
+    asset must be a 404, not an HTML page that a script tag cannot parse.
+    """
+    index = UI_DIR / "index.html"
     rel = "index.html" if path == "/" else path.lstrip("/")
+    root = UI_DIR.resolve()
     target = (UI_DIR / rel).resolve()
+    inside = True
     try:
-        target.relative_to(UI_DIR.resolve())
+        target.relative_to(root)
     except ValueError:
-        return _error(404, "not found")
-    if not target.is_file():
+        inside = False
+
+    if inside and target.is_file():
+        ctype = _STATIC_TYPES.get(target.suffix, "application/octet-stream")
+        headers = {}
+        if rel.startswith(_IMMUTABLE_DIR):
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return Response(
+            status=200,
+            body=target.read_bytes(),
+            content_type=ctype,
+            headers=headers,
+        )
+
+    if not inside or rel.startswith(_IMMUTABLE_DIR) or "." in Path(rel).name:
+        if not index.is_file():
+            return _index_missing()
         return Response(status=404, body=b"not found", content_type="text/plain")
-    ctype = _STATIC_TYPES.get(target.suffix, "application/octet-stream")
-    return Response(status=200, body=target.read_bytes(), content_type=ctype)
+
+    if not index.is_file():
+        return _index_missing()
+    return Response(
+        status=200,
+        body=index.read_bytes(),
+        content_type=_STATIC_TYPES[".html"],
+    )
 
 
 def parse_raw(method: str, url: str, body: bytes = b"") -> Request:

@@ -96,3 +96,68 @@ def test_cli_withholds_when_incomplete(tmp_data_dir):
 def test_cli_force_prune_env_overrides(tmp_data_dir):
     _seed_day("2026-05-01", 0)
     assert _run_cli({"UNITY_HPC_FORCE_PRUNE": "1"}).returncode == 0
+
+
+def test_split_source_separates_a_remote_host_from_a_local_path():
+    assert retention.split_source("unity:/work/a/telemetry/") == (
+        "unity", "/work/a/telemetry",
+    )
+    assert retention.split_source("/tmp/cluster") == (None, "/tmp/cluster")
+
+
+def test_remote_prune_keeps_today_and_unarchived_days(tmp_data_dir):
+    _seed_day("2026-05-01", 1)
+    (paths.telemetry_dir() / "2026-05-01").mkdir(parents=True)
+    (paths.telemetry_dir() / "2026-05-01" / "resource_state.jsonl").write_text("{}\n")
+    drop, warns = retention.remote_prune_decision(
+        {"2026-05-01", "2026-05-02", "2026-09-21"},
+        today="2026-09-21",
+    )
+    assert drop == ["2026-05-01"]
+    assert any("2026-05-02" in w and "not archived" in w for w in warns)
+    assert any("2026-09-21" in w and "live" in w for w in warns)
+
+
+def test_remote_prune_withholds_an_incomplete_day(tmp_data_dir):
+    _seed_day("2026-05-01", 0)
+    (paths.telemetry_dir() / "2026-05-01").mkdir(parents=True)
+    (paths.telemetry_dir() / "2026-05-01" / "resource_state.jsonl").write_text("{}\n")
+    drop, warns = retention.remote_prune_decision({"2026-05-01"}, today="2026-09-21")
+    assert drop == []
+    assert any("not fully summarised" in w for w in warns)
+    drop, _ = retention.remote_prune_decision(
+        {"2026-05-01"}, today="2026-09-21", force=True,
+    )
+    assert drop == ["2026-05-01"]
+
+
+def test_drop_source_days_removes_only_the_named_local_day(tmp_path):
+    src = tmp_path / "cluster"
+    keep = src / "2026-07-20"
+    gone = src / "2026-05-01"
+    keep.mkdir(parents=True)
+    gone.mkdir(parents=True)
+    (keep / "keep.txt").write_text("keep")
+    (gone / "old.txt").write_text("old")
+    result = retention.drop_source_days(str(src), ["2026-05-01", "not-a-day"])
+    assert result["ok"] is True
+    assert result["dropped"] == ["2026-05-01"]
+    assert not gone.exists()
+    assert keep.exists()
+
+
+def test_remote_prune_cli_drops_an_archived_day(tmp_data_dir, tmp_path):
+    src = tmp_path / "cluster"
+    (src / "2026-05-01").mkdir(parents=True)
+    (src / "2026-05-01" / "resource_state.jsonl").write_text("{}\n")
+    (paths.telemetry_dir() / "2026-05-01").mkdir(parents=True)
+    (paths.telemetry_dir() / "2026-05-01" / "resource_state.jsonl").write_text("{}\n")
+    _seed_day("2026-05-01", 1)
+    cli = REPO_ROOT / "scripts" / "hpc-remote-prune"
+    result = subprocess.run(
+        [sys.executable, str(cli), str(src)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (src / "2026-05-01").exists()
+    assert (paths.telemetry_dir() / "2026-05-01").exists()

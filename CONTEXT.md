@@ -95,8 +95,9 @@ _Avoid_: daemon, monitor, MCP server, plugin
 
 **Cluster session**:
 A tmux session on the login node that the controller opens to run one
-scheduled sample. It closes after a quiet period. It is not a resident
-collector and not the watcher.
+scheduled sample. It closes after a quiet period. Sample logs are copied
+to this machine and the remote `/tmp` files are removed. It is not a
+resident collector and not the watcher.
 _Avoid_: collector, daemon, unity-collector
 
 **Attached project**:

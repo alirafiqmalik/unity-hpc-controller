@@ -4,16 +4,17 @@
 # The controller does not start `loop`. A schedule sends `once` into a tmux
 # session that closes on its own (ADR 0004). `loop` remains for a manual run.
 #
-# `once` samples and prunes, then exits. It appends to the authoritative raw store:
+# `once` samples and prunes, then exits. It appends to the cluster staging tree:
 #   $UNITY_CID/telemetry/YYYY-MM-DD/{resource_state,events,task_runs}.jsonl
+# The local machine keeps the archive after a successful pull (ADR 0005).
 #
 # Singleton-guarded by a `flock` on collector.lock, so a second copy of this
 # script can never double-write (I1). The controller opens one session and
 # sends `once`. flock is what enforces I1 if two samples overlap. Every cluster
 # command runs under `timeout` and `nice`, with the wrapper PATH + PAGER fix
 # (the `unity-slurm-*` wrappers are not on the non-interactive PATH).
-# Retention is owned here, and only here (there is no local pruner):
-# day-directories older than $UNITY_COLLECTOR_RETENTION_DAYS are pruned.
+# The 35-day prune here is a backstop for a machine that never pulls.
+# After a successful local rollup, hpc-remote-prune drops archived days.
 #
 # All record construction/parsing is delegated to the co-located, unit-tested
 # collector_parse.py — this script is a thin driver: it runs cluster
@@ -258,9 +259,9 @@ sample() {
     timeout 60 nice -n 19 unity-slurm-gpu-usage \
         </dev/null >"$tmp/gpu.raw" 2>/dev/null || true
 
-    # Request a trailing Timelimit column (feeds req.walltime_s) and
-    # normalise to 12 pipe-delimited fields regardless of what the running
-    # sacct actually returns, via a trailing empty-field pad.
+    # Request User (the Users tab) and a trailing Timelimit column (feeds
+    # req.walltime_s). A trailing empty-field pad keeps the width stable
+    # regardless of what the running sacct actually returns.
     # sacct's OWN exit code must be checked: a transient slurmdbd failure
     # (rate-limit, restart) yields empty output, and treating that as "no
     # jobs" while advancing the high-water mark would PERMANENTLY skip this
@@ -268,7 +269,7 @@ sample() {
     # next cycle. (Same masking class as the sync driver's dry-run guard.)
     local sacct_rc=0
     timeout 60 nice -n 19 sacct $SACCT_SCOPE -S "$start_window" -E now -X -P -n \
-        -o JobID,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit \
+        -o JobID,User,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit \
         </dev/null 2>"$tmp/sacct.err" | sed 's/$/|/' >"$tmp/sacct.raw" || sacct_rc=$?
 
     if [ "$sacct_rc" -ne 0 ]; then
@@ -325,7 +326,7 @@ catchup() {
     # happened. Fail LOUDLY instead (rc=3) so callers can retry the chunk.
     local sacct_rc=0
     timeout 300 nice -n 19 sacct $SACCT_SCOPE -S "$start" -E now -X -P -n \
-        -o JobID,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit \
+        -o JobID,User,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit \
         </dev/null 2>"$tmp/sacct.err" | sed 's/$/|/' >"$tmp/sacct.raw" || sacct_rc=$?
     if [ "$sacct_rc" -ne 0 ]; then
         echo "[collector] catchup: sacct failed (rc=$sacct_rc) -- nothing written, retry this window" >&2

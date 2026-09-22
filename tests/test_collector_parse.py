@@ -116,6 +116,15 @@ def test_diff_node_events_reports_transitions_only():
                        "resource_id": "gpu013", "from": "mix", "to": "drain"}]
 
 
+def test_parse_task_runs_reads_user_when_sacct_includes_it():
+    text = ("62009039|alice_umass_edu|pi_yourlab_umass_edu|gpu|COMPLETED|"
+            "2026-07-22T10:00:00|2026-07-22T10:05:00|2026-07-22T10:45:50|"
+            "00:40:50|cpu=8,mem=16384M,gres/gpu:a100=1|0:0|1002M|01:00:00\n")
+    run = cp.parse_task_runs(text)[0]
+    assert run["user"] == "alice_umass_edu"
+    assert run["job_id"] == "62009039"
+
+
 def test_parse_task_runs_reads_alloctres_and_exit():
     text = ("62009039|pi_yourlab_umass_edu|gpu|COMPLETED|2026-07-22T10:00:00|"
             "2026-07-22T10:05:00|2026-07-22T10:45:50|00:40:50|"

@@ -27,7 +27,10 @@ export function heatCells(parts, utilMap) {
   parts.forEach((p, i) => {
     const gts = p.gpu_types || [];
     const avg = gts.map(g => utilMap[g]).filter(v => v != null);
-    const util = avg.length ? avg.reduce((a, b) => a + b, 0) / avg.length : null;
+    const fromPart = p.util != null ? Number(p.util) : null;
+    const util = fromPart != null && Number.isFinite(fromPart)
+      ? fromPart
+      : (avg.length ? avg.reduce((a, b) => a + b, 0) / avg.length : null);
     const { c, v } = heatColor(util);
     const sub = util == null ? 'idle' : (Math.round(v) + '%');
     const bg = util == null ? '#3a4352' : c + '22';
@@ -66,18 +69,43 @@ export function render() {
 
   const mineRun = state.jobs.filter(j => stUpper(j) === 'RUNNING').length;
   const minePend = state.jobs.filter(j => stUpper(j) === 'PENDING').length;
+  const fleet = cl.gpu_fleet || [];
+  const kpis = cl.kpis || {};
+  const fleetFree = kpis.gpus_free;
+  const fleetTotal = kpis.gpus_total;
   document.getElementById('kGpu').innerHTML = L.available
     ? `${esc(dash(lat.free_nodes))}<span class="unit">${lat.total_nodes ? ('/ ' + lat.total_nodes) : ''}</span>`
-    : '—';
-  document.getElementById('kGpuD').textContent = lat.gpu_types_free || (L.available ? 'free nodes' : 'waiting on snapshot');
-  document.getElementById('kRun').textContent = L.available ? dash(lat.gpu_running) : dash(mineRun || null);
-  document.getElementById('kRunD').textContent = mineRun ? (mineRun + ' of these are yours') : 'cluster GPU jobs';
-  document.getElementById('kPend').textContent = L.available ? dash(lat.gpu_pending) : dash(minePend || null);
-  document.getElementById('kPendD').textContent = lat.gpu_preempt_pending ? (lat.gpu_preempt_pending + ' preempt pending') : 'GPU pending';
-  const accounts = (cl.accounts || cl.users || []);
-  const nUsers = Array.isArray(accounts) ? accounts.length : 0;
-  document.getElementById('kUsers').textContent = nUsers ? String(nUsers) : '—';
-  document.getElementById('kUsersD').textContent = nUsers ? 'in the cluster profile' : 'fairshare not in the profile';
+    : (fleetTotal
+      ? `${esc(dash(fleetFree))}<span class="unit">/ ${fleetTotal}</span>`
+      : '—');
+  document.getElementById('kGpuD').textContent = lat.gpu_types_free
+    || (L.available ? 'free nodes' : (fleetTotal ? 'GPUs free in the fleet' : 'waiting on snapshot'));
+  document.getElementById('kRun').textContent = L.available ? dash(lat.gpu_running) : dash(kpis.gpus_allocated || mineRun || null);
+  document.getElementById('kRunD').textContent = mineRun
+    ? (mineRun + ' of these are yours')
+    : (L.available ? 'cluster GPU jobs' : (kpis.gpus_allocated ? 'GPUs allocated in the fleet' : 'cluster GPU jobs'));
+  document.getElementById('kPend').textContent = L.available
+    ? dash(lat.gpu_pending)
+    : dash((fleet.reduce((a, g) => a + (Number(g.pending) || 0), 0)) || minePend || null);
+  document.getElementById('kPendD').textContent = lat.gpu_preempt_pending
+    ? (lat.gpu_preempt_pending + ' preempt pending')
+    : (L.available ? 'GPU pending' : 'pending in the fleet');
+  const people = ((cl.users || {}).rows) || [];
+  const busy = kpis.gpu_types_busy;
+  const fs = cl.fairshare || {};
+  if (people.length) {
+    document.getElementById('kUsers').textContent = String(people.length);
+    document.getElementById('kUsersD').textContent = 'people in the job history';
+  } else if (busy) {
+    document.getElementById('kUsers').textContent = String(busy);
+    document.getElementById('kUsersD').textContent = fleet.length + ' types in the fleet';
+  } else if (fs.available && fs.factor != null) {
+    document.getElementById('kUsers').textContent = Math.round(Number(fs.factor) * 100) + '%';
+    document.getElementById('kUsersD').textContent = 'your fairshare factor';
+  } else {
+    document.getElementById('kUsers').textContent = '—';
+    document.getElementById('kUsersD').textContent = 'fairshare not in the profile';
+  }
 
   const byType = ((state.usage && state.usage.usage) || {}).by_type || [];
   const utilMap = {};

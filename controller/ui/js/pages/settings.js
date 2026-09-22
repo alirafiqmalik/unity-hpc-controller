@@ -73,7 +73,6 @@ export function render() {
   const cl = state.cluster || {};
   text('setSub', (cl.cluster || location.host) + ' · '
     + (state.health && state.health.ok ? 'up' : 'waiting'));
-  text('setLogin', cl.cluster || 'unity');
   text('setOrigin', location.origin);
   text('setLedger', 'sqlite · ' + state.jobs.length + ' rows');
   text('setHealth', state.health ? (state.health.ok ? 'ok' : 'down') : (state.error || '—'));
@@ -145,7 +144,7 @@ function paint() {
   const hint = document.getElementById('telHint');
   if (hint) {
     hint.textContent = src.configured
-      ? 'One retrieval pulls the raw telemetry, then rolls it up. The pull and the rollup hold one lock, so two retrievals cannot overlap.'
+      ? 'One retrieval pulls the raw telemetry, rolls it up, and removes archived days from the cluster. The final copy stays on this machine.'
       : 'Set a telemetry source below. Give it the rsync source that holds the cluster telemetry directory.';
   }
 
@@ -161,9 +160,26 @@ function paint() {
   const scriptBtn = document.getElementById('telScriptBtn');
   if (scriptBtn) scriptBtn.disabled = !!tel.running || !src.configured;
   fill('telSourceInput', src.origin === 'settings' ? src.value : '');
+  paintSsh(tel.ssh || {});
 
   paintHistory(tel.history || []);
   paintOutput(run);
+}
+
+/** Fill the SSH access card from the saved alias. */
+function paintSsh(ssh) {
+  const host = ssh.host || 'unity';
+  const ident = ssh.identity || '';
+  fill('sshHost', host);
+  fill('sshIdentity', ident);
+  text('sshCommand', ssh.command || ('ssh ' + host));
+  if (ssh.last_probe) {
+    text('sshState', ssh.last_probe.ok ? 'ok' : 'failed');
+  } else if (ssh.needs_passphrase) {
+    text('sshState', 'key locked');
+  } else if (ssh.unlocked) {
+    text('sshState', 'unlocked');
+  }
 }
 
 /** Say which window the charts are drawing, and how old it is. */
@@ -294,4 +310,115 @@ export async function telCloseSession() {
 export async function telSaveSource() {
   const el = document.getElementById('telSourceInput');
   await save({ source: (el && el.value.trim()) || '' }, 'Source saved');
+}
+
+/** Save the SSH alias and optional identity file. Bound from an inline handler. */
+export async function telSaveSsh() {
+  const host = document.getElementById('sshHost');
+  const ident = document.getElementById('sshIdentity');
+  await save({
+    ssh_host: (host && host.value.trim()) || 'unity',
+    ssh_identity: (ident && ident.value.trim()) || '',
+  }, 'SSH access saved');
+}
+
+let passOpen = false;
+let passDismissed = false;
+
+function sshInfo(ssh) {
+  if (ssh && ssh.target) ssh = null;
+  return ssh || (tel && tel.ssh) || (state.health && state.health.ssh) || {};
+}
+
+function hideSshPass() {
+  const modal = document.getElementById('sshPassModal');
+  const input = document.getElementById('sshPassInput');
+  if (input) input.value = '';
+  if (modal) {
+    modal.hidden = true;
+    modal.classList.remove('on');
+  }
+  passOpen = false;
+}
+
+/** Open the passphrase prompt. Bound from an inline handler. */
+export function openSshPass(ssh) {
+  const info = sshInfo(ssh);
+  const modal = document.getElementById('sshPassModal');
+  const prompt = document.getElementById('sshPassPrompt');
+  const input = document.getElementById('sshPassInput');
+  const err = document.getElementById('sshPassErr');
+  const cmd = 'ssh ' + (info.host || 'unity');
+  const key = info.key_path || info.identity || '';
+  if (prompt) {
+    prompt.textContent = cmd + '\nEnter passphrase for key \'' + key + '\':';
+  }
+  if (err) err.textContent = '';
+  if (input) input.value = '';
+  if (modal) {
+    modal.hidden = false;
+    modal.classList.add('on');
+  }
+  passOpen = true;
+  if (input) {
+    if (!input.dataset.bound) {
+      input.dataset.bound = '1';
+      input.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') telUnlockSsh();
+      });
+    }
+    input.focus();
+  }
+}
+
+/** Hide the prompt until the key is needed again. Bound from an inline handler. */
+export function closeSshPass() {
+  hideSshPass();
+  passDismissed = true;
+}
+
+/** Open the prompt once when health says the key is locked. */
+export function maybePromptSsh(ssh) {
+  const info = sshInfo(ssh);
+  if (!info.needs_passphrase || passOpen || passDismissed) return;
+  openSshPass(info);
+}
+
+/** Load the key. The passphrase stays in this request only. */
+export async function telUnlockSsh() {
+  const input = document.getElementById('sshPassInput');
+  const err = document.getElementById('sshPassErr');
+  const phrase = (input && input.value) || '';
+  try {
+    const answer = await api('/api/v1/telemetry/ssh-unlock', {
+      method: 'POST', body: JSON.stringify({ passphrase: phrase }),
+    });
+    if (input) input.value = '';
+    if (answer.ok) {
+      hideSshPass();
+      passDismissed = false;
+      toast('SSH key unlocked');
+      load();
+      return;
+    }
+    if (err) err.textContent = answer.output || answer.error || 'unlock failed';
+  } catch (e) {
+    if (input) input.value = '';
+    if (err) err.textContent = String((e && e.message) || e);
+  }
+}
+
+/** Probe the saved alias. Bound from an inline handler. */
+export async function telTestSsh() {
+  try {
+    const answer = await api('/api/v1/telemetry/ssh-test', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    text('sshState', answer.ok ? 'ok' : 'failed');
+    text('sshCommand', answer.command || document.getElementById('sshCommand').textContent);
+    toast(answer.ok ? 'ssh ok' : (answer.output || answer.error || 'ssh failed'));
+  } catch (e) {
+    text('sshState', 'failed');
+    toast(String((e && e.message) || e));
+  }
 }

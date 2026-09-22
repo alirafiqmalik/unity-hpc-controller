@@ -29,7 +29,8 @@ Operator runbooks for recon, fetch, watch, sweep, and setup live under
 
 ## 1b. Controller
 
-`scripts/hpc-controller` serves the API and the dashboard in `controller/ui/`.
+`scripts/hpc-controller` serves the API and the dashboard built from
+`controller/web/` into `controller/web/dist/` (ADR 0006).
 It starts in the background, binds localhost, and runs `tailscale serve`.
 `--fg` stays in the terminal; `--no-tailscale` skips HTTPS publishing.
 The registry is `$UNITY_HPC_DATA/controller/projects.json`. Dispatch is
@@ -97,7 +98,7 @@ are `run`, `array`, `render`, `sync`, `status`, `jobs`, `logs`, `fetch` and
 | `metrics.py` | The optional per-project metric declaration (`unityHPC/metrics.json`) |
 | `queries.py` | Read-only helpers over `summaries.db`. These never write |
 | `cluster_config.py` | The deterministic, order-independent merge for the shared cluster configuration |
-| `retention.py` | The retention gate. It decides whether an `rsync --delete` is safe |
+| `retention.py` | The retention gate. It decides which cluster days may leave after a pull |
 | `paths.py` | Resolution of the machine-wide data store |
 
 **cluster-intel** — `collector.sh`, `collector_parse.py`, `rollup.py`,
@@ -105,8 +106,8 @@ are `run`, `array`, `render`, `sync`, `status`, `jobs`, `logs`, `fetch` and
 
 **CLI scripts** (`scripts/`) — `hpc-controller`, `hpc-scaffold`, `hpc-status`,
 `hpc-results`, `hpc-logs`, `hpc-ssh`, `hpc-tmux`, `hpc-usage`, `hpc-compare`,
-`hpc-dashboard`, `hpc-cleanup`, `hpc-sync-telemetry`, `hpc-retention-gate`,
-`hpc-config-write`.
+`hpc-dashboard`, `hpc-cleanup`, `hpc-sync-telemetry`, `hpc-remote-prune`,
+`hpc-retention-gate`, `hpc-config-write`.
 
 **Templates** (`templates/scaffold/`) — `common/{run.sh,sync.sh}`, plus typed
 `cpu|gpu|ml/{env.example,job_template.sh}`. Five primitives map onto these three
@@ -285,7 +286,7 @@ subcommand.
 ```
   Unity  ──sacct/seff──▶ collector.sh ──▶ telemetry/<day>/task_runs.jsonl   (raw, append-only)
                                               │
-                              sync-telemetry.sh (retention gate: is --delete safe?)
+                              sync-telemetry.sh (additive pull, then remote prune)
                                               │
                                           rollup.py
                                               │
@@ -359,14 +360,14 @@ tree for `I7` or `RC-3` and you land on the mechanism that holds the invariant.
 
 | Invariant | Mechanism |
 |---|---|
-| I1 · Telemetry has exactly one writer | `collector.sh` runs **on the cluster**, and is the only writer of the authoritative `/work/.../cluster-intel/telemetry/`. Two guards keep it single: `tmux has-session` and `collector.lock` |
-| I2 · Only the sync script mutates telemetry | The local tree is a **mirror**. `sync-telemetry.sh` changes it through `rsync` alone. No other module opens anything under `telemetry/` to write or to delete, and there is deliberately no local pruner |
+| I1 · Telemetry has exactly one writer | `collector.sh` runs **on the cluster**, and is the only writer of new samples into the staging tree `/work/.../cluster-intel/telemetry/`. Two guards keep it single: `tmux has-session` and `collector.lock` |
+| I2 · Only the sync script mutates local telemetry | The local tree is the **archive**. `sync-telemetry.sh` pulls with `rsync` and never `--delete`s a local day. No other module opens anything under `telemetry/` to write or to delete, and there is deliberately no local pruner |
 | I3 · A reader never sees a partial DB | A rollup builds a `.tmp` file, then calls `os.replace()`. That is atomic on POSIX, on the same filesystem |
 | I4 · A config write never loses data | `flock`, then read-merge-write, then an atomic rename. The merge takes the union and the max, and it leaves an unobserved field untouched |
 | I5 · Redundant work is skipped | A TTL staleness guard on recon, with `--force` to override it |
 | I6 · Missing data degrades, and never crashes | Every reader returns a clear empty state that names the command which populates it |
-| I7 · The pull and the rollup are serialised | One `flock` on `locks/sync.lock` spans the rsync **and** the rollup. A concurrent invocation exits cleanly, and skips both |
-| I8 · Raw data is summarised before it disappears | `sync-telemetry.sh` withholds `--delete` for the whole run if any day it would remove has `day_index.fully_summarised` false, or if `summaries.db` is absent. `UNITY_HPC_FORCE_PRUNE=1` overrides this |
+| I7 · The pull and the rollup are serialised | One `flock` on `locks/sync.lock` spans the rsync, the rollup **and** the remote prune. A concurrent invocation exits cleanly, and skips all three |
+| I8 · Raw data is summarised before it leaves the cluster | A remote day is deleted only when it is present locally, fully summarised, and not today. `summaries.db` absent withholds. `UNITY_HPC_FORCE_PRUNE=1` skips the summarised check |
 | I9 · A summary outlives its raw data | A rollup upserts, and never deletes a row. A full rebuild is a migration-only operation |
 
 **RC-3**, cited in `tests/test_recon_skill.py`, is the historical fault these

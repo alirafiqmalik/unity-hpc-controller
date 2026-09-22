@@ -20,11 +20,12 @@ Operator runbooks (the old skill bodies) are in `ops/`. The HTTP seam is
 
 ## Telemetry retrieval
 
-`telemetry.py` owns the local copy of the cluster telemetry: what state it is
+`telemetry.py` owns the local archive of the cluster telemetry: what state it is
 in, an on-demand pull, and an optional schedule. The pull itself stays
-`scripts/hpc-sync-telemetry`, which pulls the raw tree, rolls it up and takes
-`locks/sync.lock` across both. This module starts that script and reads the
-same lock. It never adds a second one.
+`scripts/hpc-sync-telemetry`, which pulls the raw tree, rolls it up, drops
+archived days from the cluster, and takes `locks/sync.lock` across all three.
+This module starts that script and reads the same lock. It never adds a second
+one.
 
 | Route | Does |
 |---|---|
@@ -37,51 +38,77 @@ same lock. It never adds a second one.
 A retrieval runs in its own thread, so the HTTP handler never waits for a pull.
 The schedule is one thread in this process. It sleeps until the next run is
 due. A due run sends the saved script (`once`, `sample`, or `prune`) into the
-`unity-hpc` tmux session, waits for it, then pulls. Run script on the Settings
-tab uses that same path. The session closes after a quiet period of
+`unity-hpc` tmux session, waits for it, then pulls. Run script now on the
+Settings → Scheduled page uses that same path. The session closes after a quiet period of
 one and a half intervals. Settings live in
 `$UNITY_HPC_DATA/controller/telemetry.json`, not in the browser.
 
 The source is read from the saved setting, then `UNITY_TELEMETRY_SRC` in the
 controller's environment, then the first attached project whose `unityHPC/.env`
-declares one. The Settings tab shows which layer answered.
+declares one. Settings → Config shows which layer answered.
 
 ADR 0003 records why the schedule lives here. ADR 0004 records the session
 and the idle timeout.
 
 ## Dashboard
 
-`ui/` holds plain ES modules and stylesheets. `http._static` serves them as
-they are: no bundler, no `package.json`, no build step. Edit a file and
-reload the page.
+`web/` is a Vite project on the `twenty-front` stack: React 18, TypeScript,
+Emotion, Recoil and react-router. `npm run build` writes `web/dist/`, and
+`http._static` serves it. ADR 0006 records why this replaced the no-build ES
+modules.
 
-```text
-ui/
-├── index.html        markup only; loads /js/main.js as a module
-├── css/              tokens, base, layout, components — linked in that order
-└── js/
-    ├── main.js       entry: nav, chip handlers, the window bridge, boot
-    ├── app.js        go(), render(), renderHeader(), refresh()
-    ├── bus.js        late-bound refresh(), so a page never imports app.js
-    ├── state.js      the one store, plus live() and latest()
-    ├── config.js     TABS, CHART_COLORS, FAIL_STATES, PRIMITIVES
-    ├── api.js        the JSON client
-    ├── format.js     pure formatters
-    ├── chart.js      canvas line charts
-    ├── toast.js      notices and the copy button
-    ├── drawer.js     the job and project drawers
-    └── pages/        one module per tab, each exporting render()
+```bash
+cd controller/web
+npm install
+npm run build          # typechecks, then bundles into dist/
+npm run dev            # port 8301, proxies /api to the controller on 8300
 ```
 
-Two rules the tests hold:
+`scripts/hpc-controller` runs the two commands above on the first start of a
+machine, so a fresh clone needs no separate step. `--no-build-ui` skips it and
+`--build-ui` forces a rebuild. With no `npm` on PATH the API still comes up and
+the page answers `503` with the commands to run.
 
-- **The stylesheet order is the cascade.** The four files split the original
-  rules at their boundaries. Reorder the `<link>` tags and rules change which
-  one wins.
-- **Every inline `onclick=` handler must be on the `window` bridge** in
-  `main.js`. Module bindings are not global, so a handler left off the list
-  fails only when someone clicks it.
+```text
+web/src/
+├── main.tsx          providers: theme → toast → Recoil → sync → router
+├── App.tsx           the router
+├── ui/
+│   ├── theme/        THEME_DARK, THEME_LIGHT, the Emotion provider
+│   ├── components/   Button, Tag, Card, Table, Field, SidePanel, Toast …
+│   └── layout/       the navigation drawer and the page chrome
+├── modules/
+│   ├── controller/   types, the JSON client, the store, the refresh cycle
+│   ├── navigation/   the navigation map
+│   ├── charts/       Recharts wrappers and the series filter
+│   ├── panels/       the job and project side panels
+│   ├── projects/     the write path to a project
+│   ├── telemetry/    the Settings reader
+│   └── events/       the controller event feed
+└── pages/            one module per route
+```
 
-`tests/test_controller_ui.py` checks both from the source.
-`tests/test_controller_ui_smoke.py` loads the page in headless Chrome; run it
-with `UNITY_HPC_UI_SMOKE=1` and it skips when Chrome is absent.
+### Navigation
+
+| Section | Pages |
+|---|---|
+| Cluster | Overview, Queue, Users, Analytics |
+| User Jobs | Monitor, Project, Dispatch |
+| Settings | Config, Scheduled, Logs |
+
+`src/modules/navigation/routes.ts` is the one list. The drawer, the router and
+the page header all read it, and `tests/test_controller_web.py` checks the
+three against each other.
+
+### Two rules the tests hold
+
+- **A deep link must work on a cold load.** Every GET that is not an API route
+  and not a real file answers with `index.html`. A request under `/assets/` is
+  never rewritten, so a missing asset stays a 404.
+- **The navigation map and the router may not drift.** A path in the drawer
+  with no route is a dead link, and a route the drawer hides is unreachable.
+
+`tests/test_controller_web.py` reads both trees and needs no browser.
+`tests/test_controller_web_smoke.py` drives the built bundle in headless
+Chrome; run it with `UNITY_HPC_UI_SMOKE=1`, and it skips when Chrome or the
+build is absent.

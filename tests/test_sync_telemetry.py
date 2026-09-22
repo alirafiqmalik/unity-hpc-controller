@@ -3,12 +3,17 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SYNC = REPO_ROOT / "cluster-intel" / "sync-telemetry.sh"
+
+
+def _today():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 pytestmark = pytest.mark.skipif(
     subprocess.run(["bash", "-c", "command -v rsync"], capture_output=True).returncode != 0,
@@ -41,82 +46,88 @@ def _run(src, data_dir, **env_extra):
     return subprocess.run(["bash", str(SYNC)], capture_output=True, text=True, env=env)
 
 
-def test_mirror_matches_source_and_local_edit_is_discarded(tmp_path):
+def test_pull_matches_source_and_local_edit_is_discarded(tmp_path):
+    src = tmp_path / "cluster"
+    data = tmp_path / "data"
+    day = _today()
+    _make_day(src, day, _good_slots(day))
+    assert _run(src, data).returncode == 0
+
+    archived = data / "telemetry" / day / "resource_state.jsonl"
+    original = (src / day / "resource_state.jsonl").read_bytes()
+    assert archived.read_bytes() == original, "archive must match source byte-for-byte (I2)"
+    assert (src / day).exists(), "today stays on the cluster"
+
+    archived.write_bytes(archived.read_bytes() + b"tampered\n")
+    assert _run(src, data).returncode == 0
+    assert archived.read_bytes() == original, "a local edit must be discarded by the next pull"
+
+
+def test_local_only_days_and_siblings_survive_a_pull(tmp_path):
     src = tmp_path / "cluster"
     data = tmp_path / "data"
     _make_day(src, "2026-07-20", _good_slots("2026-07-20"))
-    assert _run(src, data).returncode == 0
-
-    mirrored = data / "telemetry" / "2026-07-20" / "resource_state.jsonl"
-    original = (src / "2026-07-20" / "resource_state.jsonl").read_bytes()
-    assert mirrored.read_bytes() == original, "mirror must match source byte-for-byte (I2)"
-
-    mirrored.write_bytes(mirrored.read_bytes() + b"tampered\n")
-    assert _run(src, data).returncode == 0
-    assert mirrored.read_bytes() == original, "a local edit must be discarded by the next pull"
-
-
-def test_siblings_survive_a_delete_pull(tmp_path):
-    src = tmp_path / "cluster"
-    data = tmp_path / "data"
-    _make_day(src, "2026-07-20", _good_slots("2026-07-20"))
-    _make_day(data / "telemetry", "2026-01-01", _good_slots("2026-01-01"))  # to be deleted
-    # siblings that must never be touched
+    _make_day(data / "telemetry", "2026-01-01", _good_slots("2026-01-01"))
     (data / "telemetry-imported").mkdir(parents=True)
     (data / "telemetry-imported" / "keep.txt").write_text("keep")
     (data / "archive").mkdir()
     (data / "archive" / "old.txt").write_text("old")
     (data / "cluster-config.json").write_text('{"schema_version":1}')
 
-    assert _run(src, data, UNITY_HPC_FORCE_PRUNE="1").returncode == 0
-    assert not (data / "telemetry" / "2026-01-01").exists(), "pruned day should be gone"
+    assert _run(src, data).returncode == 0
+    assert (data / "telemetry" / "2026-01-01").exists(), "the local archive must not shrink"
     assert (data / "telemetry-imported" / "keep.txt").read_text() == "keep"
     assert (data / "archive" / "old.txt").read_text() == "old"
     assert (data / "cluster-config.json").read_text() == '{"schema_version":1}'
 
 
-def test_retention_gate_withholds_then_allows(tmp_path):
+def test_archived_days_leave_the_cluster_and_stay_local(tmp_path):
     src = tmp_path / "cluster"
     data = tmp_path / "data"
-    # cluster has only a recent day; the workstation still holds an un-summarised old day
-    _make_day(src, "2026-07-20", _good_slots("2026-07-20"))
-    _make_day(data / "telemetry", "2026-05-01", _good_slots("2026-05-01"))
+    _make_day(src, "2026-05-01", _good_slots("2026-05-01"))
 
-    # Pull #1: summaries.db absent -> fail-safe withhold. Old day survives; rollup then
-    # summarises it (it is still present in the mirror because --delete was withheld).
-    assert _run(src, data).returncode == 0
-    assert (data / "telemetry" / "2026-05-01").exists(), "withheld --delete keeps the day"
+    result = _run(src, data)
+    assert result.returncode == 0, result.stderr
+    assert (data / "telemetry" / "2026-05-01").exists(), "final data stays on this machine"
+    assert not (src / "2026-05-01").exists(), "the cluster staging day must go after rollup"
     import sqlite3
     con = sqlite3.connect(data / "summaries.db")
-    fs = con.execute("SELECT fully_summarised FROM day_index WHERE day_utc='2026-05-01'").fetchone()[0]
+    fs = con.execute(
+        "SELECT fully_summarised FROM day_index WHERE day_utc='2026-05-01'"
+    ).fetchone()[0]
     con.close()
-    assert fs == 1, "the pull's rollup must summarise the surviving day"
+    assert fs == 1
 
-    # Pull #2: the day is now fully summarised -> --delete applies.
+
+def test_incomplete_remote_day_stays_until_summarised(tmp_path):
+    src = tmp_path / "cluster"
+    data = tmp_path / "data"
+    _make_day(src, "2026-05-01", _bad_slots("2026-05-01"))
+
     assert _run(src, data).returncode == 0
-    assert not (data / "telemetry" / "2026-05-01").exists(), "now safe to prune"
-    con = sqlite3.connect(data / "summaries.db")
-    pruned = con.execute("SELECT value FROM meta WHERE key='raw_pruned_through'").fetchone()[0]
-    con.close()
-    assert pruned == "2026-05-01"
+    assert (src / "2026-05-01").exists(), "an unsummarised day must stay on the cluster"
+    assert (data / "telemetry" / "2026-05-01").exists()
+
+    assert _run(src, data, UNITY_HPC_FORCE_PRUNE="1").returncode == 0
+    assert not (src / "2026-05-01").exists(), "force may drop an incomplete remote day"
+    assert (data / "telemetry" / "2026-05-01").exists(), "force must not delete the local copy"
 
 
-def test_broken_source_aborts_without_wiping_mirror(tmp_path):
-    # A dry-run rsync that itself FAILS (bad/unreachable source) must never be
-    # read as "zero deletions" -> the script must abort before the real
-    # --delete pull, leaving the existing local mirror untouched.
+def test_broken_source_aborts_without_wiping_archive(tmp_path):
+    # A dry-run rsync that itself FAILS (bad/unreachable source) must abort
+    # before the real pull, leaving the existing local archive untouched.
     src = tmp_path / "does-not-exist"  # never created: rsync exits non-zero
     data = tmp_path / "data"
     _make_day(data / "telemetry", "2026-07-20", _good_slots("2026-07-20"))
-    mirror_file = data / "telemetry" / "2026-07-20" / "resource_state.jsonl"
-    before = mirror_file.read_bytes()
+    archive_file = data / "telemetry" / "2026-07-20" / "resource_state.jsonl"
+    before = archive_file.read_bytes()
 
     result = _run(src, data)
 
     assert result.returncode != 0, "a failed dry-run must abort the sync, not succeed"
     assert "pulling" in (result.stdout + result.stderr).lower()
-    assert mirror_file.exists(), "the local mirror must not be wiped"
-    assert mirror_file.read_bytes() == before, "mirror must be byte-identical (not touched)"
+    assert archive_file.exists(), "the local archive must not be wiped"
+    assert archive_file.read_bytes() == before, "archive must be byte-identical (not touched)"
 
 
 def test_missing_telemetry_source_fails_before_sync(tmp_path):
@@ -154,7 +165,7 @@ def _scan_files():
                 yield p
 
 
-def test_only_sync_script_mutates_the_local_telemetry_mirror():
+def test_only_sync_script_mutates_the_local_telemetry_archive():
     # (a) No Python file writes to paths.telemetry_dir() (reads/globs are fine).
     #     telemetry_imported_dir() is a DISTINCT name and does not match "telemetry_dir(".
     for p in _scan_files():
@@ -162,7 +173,7 @@ def test_only_sync_script_mutates_the_local_telemetry_mirror():
             continue
         for line in p.read_text().splitlines():
             if "telemetry_dir(" in line and any(v in line for v in _WRITE_VERBS):
-                raise AssertionError(f"{p.name} mutates the telemetry mirror: {line.strip()}")
+                raise AssertionError(f"{p.name} mutates the telemetry archive: {line.strip()}")
 
     # (b) Only sync-telemetry.sh may rsync into a /telemetry/ destination.
     for p in _scan_files():

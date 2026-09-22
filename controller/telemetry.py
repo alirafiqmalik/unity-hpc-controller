@@ -1,10 +1,11 @@
 """Automated retrieval of Unity telemetry: state, on-demand runs, and a schedule.
 
 The retrieval itself is `cluster-intel/sync-telemetry.sh` through
-`scripts/hpc-sync-telemetry`. That script pulls the raw telemetry, then rolls it
-up, and holds `locks/sync.lock` across both. This module does not repeat that
-lock. It starts the script, reads the same lock to tell an operator whether a
-run is in progress, and keeps a history of the runs it started.
+`scripts/hpc-sync-telemetry`. That script pulls the raw telemetry, rolls it
+up, drops archived days from the cluster, and holds `locks/sync.lock` across
+all three. This module does not repeat that lock. It starts the script, reads
+the same lock to tell an operator whether a run is in progress, and keeps a
+history of the runs it started.
 
 The schedule is a thread in the controller process. It sleeps until the next
 run is due, and a settings change wakes it. A due run samples in the cluster
@@ -51,6 +52,8 @@ DEFAULTS = {
     "interval_minutes": 60,
     "schedule_since_utc": "",
     "script_mode": "once",
+    "ssh_host": "unity",
+    "ssh_identity": "",
 }
 
 _lock = threading.Lock()
@@ -116,6 +119,16 @@ def settings() -> dict:
         out["script_mode"] = cluster_session.clean_mode(out.get("script_mode"))
     except ValueError:
         out["script_mode"] = DEFAULTS["script_mode"]
+    try:
+        out["ssh_host"] = cluster_session.clean_ssh_host(out.get("ssh_host"))
+    except ValueError:
+        out["ssh_host"] = DEFAULTS["ssh_host"]
+    try:
+        out["ssh_identity"] = cluster_session.clean_ssh_identity(
+            out.get("ssh_identity")
+        )
+    except ValueError:
+        out["ssh_identity"] = DEFAULTS["ssh_identity"]
     return out
 
 
@@ -170,6 +183,12 @@ def save_settings(**changes) -> dict:
         current["schedule_since_utc"] = str(changes["schedule_since_utc"] or "")
     if "script_mode" in changes:
         current["script_mode"] = cluster_session.clean_mode(changes["script_mode"])
+    if "ssh_host" in changes:
+        current["ssh_host"] = cluster_session.clean_ssh_host(changes["ssh_host"])
+    if "ssh_identity" in changes:
+        current["ssh_identity"] = cluster_session.clean_ssh_identity(
+            changes["ssh_identity"]
+        )
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -594,7 +613,12 @@ def close_session() -> dict:
             "ok": False, "status": "unconfigured",
             "message": "no telemetry source is configured",
         }
-    report = cluster_session.close_session(source["value"])
+    cfg = settings()
+    report = cluster_session.close_session(
+        source["value"],
+        host=cfg.get("ssh_host") or "unity",
+        identity=cfg.get("ssh_identity") or "",
+    )
     if report.get("ok") and not report.get("skipped"):
         events.record("sync", "cluster session closed", session=report.get("session"))
     return report
@@ -742,6 +766,36 @@ def status(limit: int = 10) -> dict:
             "snapshot_csv": _freshness(paths.snapshot_csv()),
             "telemetry": telemetry,
         },
+        "ssh": ssh_status(),
         "rollup": rollup,
         "history": history(limit),
     }
+
+
+def probe_ssh() -> dict:
+    """Run the saved alias once so the panel can test access."""
+    cfg = settings()
+    return cluster_session.probe(cfg["ssh_host"], cfg["ssh_identity"])
+
+
+def ssh_status() -> dict:
+    """The saved alias, and whether its key still needs a passphrase."""
+    cfg = settings()
+    report = cluster_session.agent_status(cfg["ssh_host"], cfg["ssh_identity"])
+    report["host"] = cfg["ssh_host"]
+    report["identity"] = cfg["ssh_identity"]
+    report["command"] = cluster_session.ssh_command(
+        cfg["ssh_host"], cfg["ssh_identity"]
+    )
+    return report
+
+
+def unlock_ssh(passphrase: str) -> dict:
+    """Load the saved identity. The passphrase is never stored or logged."""
+    cfg = settings()
+    report = cluster_session.unlock_identity(
+        cfg["ssh_identity"], passphrase, host=cfg["ssh_host"],
+    )
+    if report.get("ok"):
+        events.record("sync", "cluster key unlocked")
+    return report

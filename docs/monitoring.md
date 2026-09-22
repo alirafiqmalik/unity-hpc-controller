@@ -19,7 +19,7 @@ Same sources the cluster-intel dashboard already reads:
 | Project cards | `controller/projects.json` | registry |
 | Retrieval panel | `controller/telemetry.json`, `controller/telemetry-runs.jsonl` | on-demand pull + schedule |
 
-`snapshot.csv` and `summaries.db` are local copies. The Settings tab starts the
+`snapshot.csv` and `summaries.db` are local copies. Settings → Config starts the
 retrieval that fills them, and reports how old each one is. A schedule samples
 through a cluster session, then pulls. ADR 0003 and ADR 0004 have the design.
 

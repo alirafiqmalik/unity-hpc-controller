@@ -2,7 +2,7 @@
 
 Every control on the Settings tab is clicked here, against a controller that
 runs the real `scripts/hpc-sync-telemetry` over a local fixture source. A path
-with no ':' is a supported local source, so the pull, the retention gate and
+with no ':' is a supported local source, so the pull, the remote prune and
 the rollup all run — only the network is absent.
 
 It needs Chrome and it starts a server, so it is opt-in:

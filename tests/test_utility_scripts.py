@@ -66,3 +66,12 @@ def test_retention_gate_help_documents_its_override():
     )
     assert result.returncode == 0
     assert "UNITY_HPC_FORCE_PRUNE" in result.stdout
+
+
+def test_remote_prune_help_documents_its_override():
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "hpc-remote-prune"), "--help"],
+        text=True, capture_output=True,
+    )
+    assert result.returncode == 0
+    assert "UNITY_HPC_FORCE_PRUNE" in result.stdout

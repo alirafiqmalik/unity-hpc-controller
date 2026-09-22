@@ -88,6 +88,26 @@ export function gpuHours(list) {
   return s / 3600;
 }
 
+/** A wait duration an operator can read: `45s`, `12m`, `5.3h`, `3d`. */
+export function fmtWait(s) {
+  if (s == null || s === '') return '—';
+  s = Number(s);
+  if (!Number.isFinite(s) || s < 0) return '—';
+  if (s < 90) return Math.round(s) + 's';
+  if (s < 5400) return Math.round(s / 60) + 'm';
+  if (s < 172800) return (s / 3600).toFixed(1) + 'h';
+  return Math.round(s / 86400) + 'd';
+}
+
+/** A compact hour count: `12.4`, `3.2k`, `1.1M`. */
+export function fmtHours(h) {
+  const n = Number(h);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return n.toFixed(1);
+}
+
 /** A coarse age for an operator: "59d", "3h", "12m", "45s". */
 export function fmtAge(seconds) {
   if (seconds == null) return '';

@@ -79,3 +79,8 @@ def controller_log() -> Path:
 
 def snapshot_csv() -> Path:
     return data_dir() / "snapshot.csv"
+
+
+def session_logs_dir() -> Path:
+    """Local copies of cluster-session sample logs."""
+    return controller_dir() / "session-logs"

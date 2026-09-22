@@ -53,6 +53,45 @@ def test_a_weeks_old_snapshot_is_available_but_not_fresh(tmp_path, monkeypatch):
     assert live["age_s"] > 58 * 86400
 
 
+def test_a_recent_collector_sample_is_fresh_when_the_csv_is_old(
+    tmp_path, monkeypatch,
+):
+    """The header reads snapshot.csv, but the collector writes resource_state.
+
+    A pull of the sibling csv after the old poller died stays weeks old.
+    A new sample must still turn the pill live.
+    """
+    import json
+
+    _write(tmp_path, monkeypatch, [_stamp(days=59)])
+    now = datetime.now(timezone.utc)
+    day = tmp_path / "telemetry" / now.strftime("%Y-%m-%d")
+    day.mkdir(parents=True)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    recs = [
+        {"ts": ts, "kind": "gpu_type", "resource_id": "a100",
+         "alloc": 4, "pending": 2, "total": 10},
+        {"ts": ts, "kind": "gpu_type", "resource_id": "m40",
+         "alloc": 0, "pending": 1, "total": 12},
+        {"ts": ts, "kind": "node", "resource_id": "n1", "state": "idle",
+         "gpus_total": 2, "gpus_idle": 2},
+        {"ts": ts, "kind": "node", "resource_id": "n2", "state": "alloc",
+         "gpus_total": 2, "gpus_idle": 0},
+        {"ts": ts, "kind": "partition", "resource_id": "gpu-preempt",
+         "pending": 3, "gpus_alloc": 1},
+    ]
+    (day / "resource_state.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in recs)
+    )
+    live = snapshot.live_snapshot()
+    assert live["fresh"] is True
+    assert live["latest"]["gpu_running"] == 4
+    assert live["latest"]["gpu_pending"] == 3
+    assert live["latest"]["free_nodes"] == 1
+    assert live["latest"]["total_nodes"] == 2
+    assert "m40:12" in live["latest"]["gpu_types_free"]
+
+
 @pytest.mark.parametrize("age_s, fresh", [
     (0, True),
     (snapshot.LIVE_MAX_AGE_S - 60, True),

@@ -40,7 +40,8 @@ BRIDGE = [
     "dispatchRun", "onDispProject", "renderPreview",
     "exportUsers",
     "telSync", "telSchedule", "telSaveInterval", "telSaveSource",
-    "telSaveScript", "telRunScript", "telCloseSession",
+    "telSaveScript", "telSaveSsh", "telTestSsh", "telRunScript", "telCloseSession",
+    "openSshPass", "closeSshPass", "telUnlockSsh",
 ]
 
 TRAP = """

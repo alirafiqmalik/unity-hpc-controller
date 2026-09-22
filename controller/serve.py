@@ -26,11 +26,14 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from controller import telemetry
-from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, handle
+from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, UI_DIR, WEB_DIR, handle
 from lib import paths
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
+
+#: How long one `npm` step may take before the start-up gives up on it.
+BUILD_TIMEOUT_S = 900
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -71,6 +74,76 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._dispatch("DELETE")
+
+
+
+def dashboard_built() -> bool:
+    """True when `controller/web/dist` holds a built page."""
+    return (UI_DIR / "index.html").is_file()
+
+
+def _npm() -> str | None:
+    return shutil.which("npm")
+
+
+def _run_npm(args: list[str], note: str) -> bool:
+    """Run one npm step in `controller/web`, streaming its output."""
+    npm = _npm()
+    if npm is None:
+        return False
+    print(f"  {note} ...", flush=True)
+    try:
+        proc = subprocess.run(
+            [npm, *args],
+            cwd=WEB_DIR,
+            timeout=BUILD_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  {note}: timed out after {BUILD_TIMEOUT_S}s", file=sys.stderr)
+        return False
+    except OSError as exc:
+        print(f"  {note}: {exc}", file=sys.stderr)
+        return False
+    return proc.returncode == 0
+
+
+def ensure_dashboard(force: bool = False) -> bool:
+    """
+    Build the dashboard when it is missing.
+
+    The controller ships the dashboard as source, so the first start on a
+    machine builds it. A later start finds `dist/` and does nothing, which
+    keeps start-up instant. `force` rebuilds an existing `dist/`.
+
+    A failure here never stops the controller: the API is the part that must
+    come up, and `http._static` answers 503 with the two commands to run.
+    ADR 0006.
+    """
+    if not WEB_DIR.is_dir():
+        return False
+    if dashboard_built() and not force:
+        return True
+    if _npm() is None:
+        print(
+            "The dashboard is not built and npm is not on PATH.\n"
+            "  Install Node 20 or newer, then run:\n"
+            "    cd controller/web && npm install && npm run build\n"
+            "  The API is up; the dashboard page answers 503 until then.",
+            file=sys.stderr,
+        )
+        return False
+
+    print("Building the dashboard (first start on this machine).")
+    if not (WEB_DIR / "node_modules").is_dir():
+        if not _run_npm(["install", "--no-audit", "--no-fund"], "npm install"):
+            print("  npm install failed; the dashboard stays unbuilt.", file=sys.stderr)
+            return False
+    if not _run_npm(["run", "build"], "npm run build"):
+        print("  npm run build failed; the dashboard stays unbuilt.", file=sys.stderr)
+        return False
+    print("  dashboard built.")
+    return True
 
 
 def _pid_alive(pid: int) -> bool:
@@ -347,6 +420,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="open the dashboard in a local browser")
     ap.add_argument("--install-user-service", action="store_true",
                     help="write a systemd --user unit and exit")
+    ap.add_argument("--build-ui", action="store_true",
+                    help="rebuild the dashboard even when controller/web/dist exists")
+    ap.add_argument("--no-build-ui", action="store_true",
+                    help="never build the dashboard on start")
     args = ap.parse_args(argv)
 
     if args.install_user_service:
@@ -355,6 +432,11 @@ def main(argv: list[str] | None = None) -> int:
         return _stop()
     if args.status:
         return _status()
+
+    # The dashboard is built from source on the first start of a machine, so
+    # a fresh clone serves a page without a separate step. ADR 0006.
+    if not args.no_build_ui:
+        ensure_dashboard(force=args.build_ui)
 
     host = args.host
     port = args.port

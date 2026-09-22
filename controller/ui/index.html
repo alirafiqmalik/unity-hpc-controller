@@ -37,7 +37,7 @@
       <div class="card kpi"><div class="lbl">GPUs free</div><div class="val" id="kGpu">—</div><div class="delta" id="kGpuD">waiting on snapshot</div></div>
       <div class="card kpi"><div class="lbl">Jobs running</div><div class="val" id="kRun">—</div><div class="delta" id="kRunD">across attached projects</div></div>
       <div class="card kpi"><div class="lbl">Jobs queued</div><div class="val" id="kPend">—</div><div class="delta" id="kPendD">GPU pending</div></div>
-      <div class="card kpi"><div class="lbl">Active users</div><div class="val" id="kUsers">—</div><div class="delta" id="kUsersD">fairshare from the cluster profile</div></div>
+      <div class="card kpi"><div class="lbl">People</div><div class="val" id="kUsers">—</div><div class="delta" id="kUsersD">from the job history</div></div>
     </div>
     <div class="grid g2-1 section-gap">
       <div class="card">
@@ -109,17 +109,17 @@
 
   <section class="page" id="pg-users">
     <div class="page-head">
-      <div><h1>Users &amp; Fairshare</h1><div class="sub" id="userSub">rolling window from the cluster profile</div></div>
+      <div><h1>Users &amp; Fairshare</h1><div class="sub" id="userSub">people on the cluster and their usage</div></div>
       <button class="btn sm" onclick="exportUsers()">&#11015; Export CSV</button>
     </div>
     <div class="grid g3">
-      <div class="card kpi"><div class="lbl">GPU-hours this week</div><div class="val" id="uHours">—</div><div class="delta" id="uHoursD">from job ledgers</div></div>
-      <div class="card kpi"><div class="lbl">Median wait (gpu)</div><div class="val" id="uWait">—</div><div class="delta" id="uWaitD">not in the snapshot</div></div>
-      <div class="card kpi"><div class="lbl">Your fairshare rank</div><div class="val" id="uRank">—</div><div class="delta" id="uRankD">not in the cluster profile</div></div>
+      <div class="card kpi"><div class="lbl">People</div><div class="val" id="uHours">—</div><div class="delta" id="uHoursD">accounts in the job history</div></div>
+      <div class="card kpi"><div class="lbl">Hours used</div><div class="val" id="uWait">—</div><div class="delta" id="uWaitD">elapsed across those accounts</div></div>
+      <div class="card kpi"><div class="lbl">Fairshare factor</div><div class="val" id="uRank">—</div><div class="delta" id="uRankD">from the cluster profile</div></div>
     </div>
     <div class="card section-gap">
-      <h3>Top users by consumption</h3>
-      <table><thead><tr><th>#</th><th>User</th><th>Group</th><th>Active jobs</th><th>GPU-hrs</th><th>Fairshare usage</th></tr></thead>
+      <h3>Users on the cluster</h3>
+      <table><thead><tr><th>#</th><th>User</th><th>Account</th><th>Jobs</th><th>Hours</th><th>GPU-hrs</th></tr></thead>
       <tbody id="userRows"></tbody></table>
     </div>
   </section>
@@ -144,7 +144,7 @@
         </div>
       </div>
       <div class="card">
-        <h3>Job outcomes — your campaigns (30d)</h3>
+        <h3>Job outcomes — cluster rollup</h3>
         <div id="outcomesBox">
           <div style="display:flex;align-items:center;gap:26px">
             <div id="donut" style="width:150px;height:150px;border-radius:50%;flex-shrink:0;background:#3a4352"></div>
@@ -159,8 +159,12 @@
       </div>
     </div>
     <div class="card section-gap">
-      <h3>GPU-hours by project — last 30 days</h3>
+      <h3 id="projBarsHead">GPU-hours by project — last 30 days</h3>
       <div id="projBars"></div>
+    </div>
+    <div class="card section-gap">
+      <h3>When is the cluster busy? <span class="right">hour × day of week · UTC</span></h3>
+      <div id="anHeat"></div>
     </div>
   </section>
 
@@ -258,7 +262,7 @@
           <div class="actions">
             <button class="btn primary sm" id="telSyncBtn" onclick="telSync()">&#8681; Retrieve now</button>
           </div>
-          <div class="hint section-gap" id="telHint">One retrieval pulls the raw telemetry, then rolls it up. The pull and the rollup hold one lock, so two retrievals cannot overlap.</div>
+          <div class="hint section-gap" id="telHint">One retrieval pulls the raw telemetry, rolls it up, and removes archived days from the cluster. The final copy stays on this machine.</div>
         </div>
         <div class="card section-gap">
           <h3>Scheduled retrieval <span class="right" id="telSchedState">&mdash;</span></h3>
@@ -288,7 +292,7 @@
             <input id="telSourceInput" placeholder="unity:/work/&lt;account&gt;/&lt;user&gt;/cluster-intel/telemetry/">
             <button class="btn sm" onclick="telSaveSource()">Save</button>
           </div>
-          <div class="hint section-gap">The schedule runs the saved script in the cluster session, then pulls. Run script does that step now. Close session ends the login-node shell. The shell also closes after a quiet period of one and a half intervals.</div>
+          <div class="hint section-gap">The schedule runs the saved script in the cluster session, then pulls. Sample logs stay on this machine. Run script does that step now. Close session ends the login-node shell and removes the remote /tmp files. The shell also closes after a quiet period of one and a half intervals.</div>
         </div>
       </div>
       <div>
@@ -301,13 +305,26 @@
           <pre id="telOutput">No retrieval has run from this controller yet.</pre>
         </div>
         <div class="card section-gap">
-          <h3>Cluster access</h3>
-          <div class="kv"><span>Login node</span><b class="mono" id="setLogin">&mdash;</b></div>
+          <h3>SSH access <span class="right" id="sshState">&mdash;</span></h3>
+          <div class="kv"><span>Command</span><b class="mono" id="sshCommand">ssh unity</b></div>
+          <label for="sshHost">SSH host &mdash; config alias</label>
+          <div class="tel-row">
+            <input id="sshHost" placeholder="unity" autocomplete="off">
+            <button class="btn sm" onclick="telSaveSsh()">Save</button>
+          </div>
+          <label for="sshIdentity">Identity file &mdash; optional</label>
+          <div class="tel-row">
+            <input id="sshIdentity" placeholder="~/.ssh/id_ed25519" autocomplete="off">
+            <button class="btn sm ghost" onclick="telTestSsh()">Test ssh</button>
+          </div>
+          <div class="actions">
+            <button class="btn sm" onclick="openSshPass()">Unlock key</button>
+          </div>
+          <div class="hint section-gap" id="sshHint">The controller runs this alias the same way a shell does: <code>ssh unity</code>. Put the host entry in <code>~/.ssh/config</code>. An identity file is only needed when that config does not already name one. When the key expires, a prompt asks for the passphrase the same way a shell would.</div>
           <div class="kv"><span>This page</span><b class="mono" id="setOrigin">&mdash;</b></div>
           <div class="kv"><span>Dashboard poll cadence</span><b class="mono">every 10s</b></div>
           <div class="kv"><span>Job ledger</span><b class="mono" id="setLedger">&mdash;</b></div>
           <div class="kv"><span>Health</span><b class="mono" id="setHealth">&mdash;</b></div>
-          <div class="hint section-gap">Tailscale is on by default. Enable the user service with <code>hpc-controller --install-user-service</code>.</div>
         </div>
       </div>
     </div>
@@ -316,6 +333,21 @@
 
 <div class="overlay" id="ovl" onclick="closeDrawer()"></div>
 <aside class="drawer grey-scroll" id="drawer"></aside>
+
+<div class="modal" id="sshPassModal" hidden onclick="closeSshPass()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <h3>Unlock SSH key</h3>
+    <pre class="ssh-prompt" id="sshPassPrompt">ssh unity
+Enter passphrase for key '':</pre>
+    <label for="sshPassInput">Passphrase</label>
+    <input id="sshPassInput" type="password" autocomplete="off">
+    <div class="actions">
+      <button class="btn primary" onclick="telUnlockSsh()">Unlock</button>
+      <button class="btn ghost" onclick="closeSshPass()">Cancel</button>
+    </div>
+    <div class="hint section-gap" id="sshPassErr"></div>
+  </div>
+</div>
 
 </body>
 </html>

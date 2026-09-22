@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from controller.http import Request, handle
 from controller import registry
 from lib import campaign as _campaign
@@ -20,6 +22,8 @@ def test_health_ok(tmp_data_dir):
     assert status == 200
     assert body["ok"] is True
     assert body["projects"] == 0
+    assert "needs_passphrase" in body["ssh"]
+    assert "key_path" in body["ssh"]
 
 
 def test_cluster_empty_without_shared_data(tmp_data_dir):
@@ -77,11 +81,19 @@ def test_jobs_from_attached_ledger(tmp_project, tmp_data_dir):
 
 
 def test_root_serves_the_dashboard(tmp_data_dir):
-    req = Request(method="GET", path="/")
-    resp = handle(req)
+    """The page itself, when it is built.
+
+    The dashboard is a Vite bundle, so the markup is one mount point and a
+    script tag; the panels are in the bundle. `tests/test_controller_web.py`
+    covers the routing rules, and it skips the same way when nothing is built.
+    """
+    resp = handle(Request(method="GET", path="/"))
+    if resp.status == 503:
+        pytest.skip("run `cd controller/web && npm run build` first")
     assert resp.status == 200
-    assert b"Unity HPC Controller" in resp.body
-    assert b"/api/v1/projects" in resp.body
+    assert resp.content_type.startswith("text/html")
+    assert b'<div id="root">' in resp.body
+    assert b"Unity HPC" in resp.body
 
 
 def test_unknown_route(tmp_data_dir):

@@ -69,6 +69,8 @@ def test_settings_start_at_the_documented_defaults():
     assert cfg["source"] == ""
     assert cfg["schedule_enabled"] is False
     assert cfg["interval_minutes"] == 60
+    assert cfg["ssh_host"] == "unity"
+    assert cfg["ssh_identity"] == ""
 
 
 def test_settings_round_trip_through_the_data_directory():
@@ -100,6 +102,16 @@ def test_an_unknown_setting_is_refused():
 def test_a_multi_line_source_is_refused():
     with pytest.raises(ValueError, match="one line"):
         telemetry.save_settings(source="unity:/a/\nunity:/b/")
+
+
+def test_ssh_access_round_trips_and_refuses_a_user_at_host():
+    telemetry.save_settings(ssh_host="unity", ssh_identity="~/.ssh/cluster")
+    cfg = telemetry.settings()
+    assert cfg["ssh_host"] == "unity"
+    assert cfg["ssh_identity"] == "~/.ssh/cluster"
+    with pytest.raises(ValueError, match="alias"):
+        telemetry.save_settings(ssh_host="user@login.example.edu")
+    assert telemetry.settings()["ssh_host"] == "unity"
 
 
 def test_a_corrupt_settings_file_reads_as_the_defaults():
@@ -442,8 +454,9 @@ def test_status_reports_every_store_the_panel_shows(tmp_data_dir):
     payload = telemetry.status()
     assert set(payload) == {
         "source", "running", "in_flight", "last_run", "last_success",
-        "schedule", "stores", "rollup", "history",
+        "schedule", "stores", "ssh", "rollup", "history",
     }
+    assert payload["ssh"]["command"] == "ssh unity"
     assert set(payload["stores"]) == {"summaries_db", "snapshot_csv", "telemetry"}
     assert payload["stores"]["summaries_db"]["present"] is False
 
@@ -524,6 +537,39 @@ def test_settings_patch_saves_and_answers_with_the_new_state():
     assert telemetry.settings()["source"] == "unity:/work/a/b/telemetry/"
 
 
+def test_ssh_unlock_refuses_an_empty_passphrase():
+    resp = _req("POST", "/api/v1/telemetry/ssh-unlock", {"passphrase": ""})
+    assert resp.status == 400
+    assert "empty" in _payload(resp)["error"]
+
+
+def test_ssh_unlock_does_not_echo_the_passphrase(monkeypatch):
+    monkeypatch.setattr(
+        cluster_session, "unlock_identity",
+        lambda identity, passphrase, **_k: {
+            "ok": True, "key_path": identity, "unlocked": True,
+        },
+    )
+    telemetry.save_settings(ssh_identity="~/.ssh/cluster")
+    resp = _req("POST", "/api/v1/telemetry/ssh-unlock", {"passphrase": "s3cret"})
+    assert resp.status == 200
+    body = _payload(resp)
+    assert body["ok"] is True
+    assert "s3cret" not in resp.body.decode()
+
+
+def test_settings_patch_saves_ssh_access_and_status_shows_the_command():
+    resp = _req("PATCH", "/api/v1/telemetry/settings", {
+        "ssh_host": "unity",
+        "ssh_identity": "~/.ssh/cluster",
+    })
+    assert resp.status == 200
+    body = _payload(resp)
+    assert body["settings"]["ssh_host"] == "unity"
+    assert body["telemetry"]["ssh"]["command"] == "ssh -i ~/.ssh/cluster unity"
+    assert body["telemetry"]["ssh"]["host"] == "unity"
+
+
 def test_a_bad_script_answers_400_and_changes_nothing():
     resp = _req("POST", "/api/v1/telemetry/script", {"mode": "loop"})
     assert resp.status == 400
@@ -573,7 +619,7 @@ def test_a_real_retrieval_fills_the_charts_end_to_end(tmp_path, tmp_data_dir):
     """The controller path, the real script, a local fixture source.
 
     A path with no ':' is a supported local source, so this exercises
-    scripts/hpc-sync-telemetry, sync-telemetry.sh, the retention gate and
+    scripts/hpc-sync-telemetry, sync-telemetry.sh, the remote prune and
     rollup.py — everything but the network.
     """
     from controller import snapshot

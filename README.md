@@ -367,8 +367,8 @@ telemetry, rolled up into `summaries.db`.
 
 | File | Runs on | Purpose |
 |---|---|---|
-| `collector.sh` | cluster (tmux, singleton) | The sole cluster-side writer. It samples partitions, nodes, GPUs, queue and jobs every 15 min into `telemetry/*.jsonl`, and owns the 35-day retention prune |
-| `sync-telemetry.sh` (`hpc-sync-telemetry`) | local | A locked, retention-aware pull of `telemetry/` into the shared data directory |
+| `collector.sh` | cluster (tmux, singleton) | The sole cluster-side writer. It samples partitions, nodes, GPUs, queue and jobs into a staging `telemetry/*.jsonl`, with a 35-day backstop prune |
+| `sync-telemetry.sh` (`hpc-sync-telemetry`) | local | A locked pull of `telemetry/` into the local archive, then a remote prune of days already kept here |
 | `rollup.py` | local | Summarizes the raw telemetry into `summaries.db` (`hourly_resource`, `daily_resource`, `task_profile`) |
 | `cluster-config.json` | local (shared) | Cluster limits, GPU types and capacity from `unity-hpc:recon`. One shared copy for every project, written through a merge |
 
@@ -381,7 +381,7 @@ versioned plugin install**, so it survives a plugin update. That data is
 $UNITY_HPC_DATA        (default ~/.local/share/unity-hpc, honors $XDG_DATA_HOME)
 ├── cluster-config.json written by unity-hpc:recon
 ├── summaries.db        hourly_resource, daily_resource, task_profile (rollup.py)
-├── telemetry/          synced raw collector output (hpc-sync-telemetry)
+├── telemetry/          local archive of raw collector output (hpc-sync-telemetry)
 └── archive/            pre-redesign snapshot, read-only (dashboard only)
 ```
 

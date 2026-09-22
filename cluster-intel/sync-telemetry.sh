@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# sync-telemetry.sh — one-way, retention-aware pull of the cluster telemetry into
-# the local mirror, followed by a rollup. Holds locks/sync.lock across BOTH so a
-# rollup never reads a half-synced tree and two pulls never --delete concurrently
-# (I2, I7). --delete is gated by hpc-retention-gate and scoped to telemetry/ only;
-# siblings (telemetry-imported/, summaries.db, cluster-config.json, archive/,
-# locks/) are never children of the destination and are never touched.
+# sync-telemetry.sh — pull cluster telemetry into the local archive, roll it
+# up, then drop archived days from the cluster so it does not accumulate (I2,
+# I7, I8). Holds locks/sync.lock across the pull, the rollup and the remote
+# prune. The pull is additive: it never --delete's a local day. Siblings
+# (telemetry-imported/, summaries.db, cluster-config.json, archive/, locks/)
+# are never children of the destination and are never touched.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GATE="$HERE/../scripts/hpc-retention-gate"
+PRUNE="$HERE/../scripts/hpc-remote-prune"
 ROLLUP="$HERE/rollup.py"
 
 DATA_DIR="${UNITY_HPC_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/unity-hpc}"
@@ -36,40 +36,25 @@ fi
 
 echo "sync: pulling $SRC -> $DEST"
 
-# 1. Learn which local day-dirs a real --delete would remove.
-ITEMIZE="$(mktemp)"
-trap 'rm -f "$ITEMIZE"' EXIT
+# 1. Reachability. A dry-run that fails must abort before the real pull.
+PROBE="$(mktemp)"
+trap 'rm -f "$PROBE"' EXIT
 
 set +e
-rsync -a --delete --dry-run --itemize-changes "$SRC" "$DEST" >"$ITEMIZE" 2>&1
+rsync -a --dry-run "$SRC" "$DEST" >"$PROBE" 2>&1
 DRYRUN_RC=$?
 set -e
 
 if [ "$DRYRUN_RC" -ne 0 ]; then
-    echo "sync: dry-run rsync failed (rc=$DRYRUN_RC) — aborting before any delete or pull" >&2
+    echo "sync: dry-run rsync failed (rc=$DRYRUN_RC) — aborting before any pull" >&2
     echo "sync: dry-run output:" >&2
-    cat "$ITEMIZE" >&2
+    cat "$PROBE" >&2
     exit "$DRYRUN_RC"
 fi
 
+# 2. The real pull. Additive: local-only days stay on this machine.
 set +e
-python3 "$GATE" <"$ITEMIZE"
-GATE_RC=$?  # gate's own exit status (0=allow, 10=withhold, other=gate failure) — NOT rsync's
-set -e
-
-DELETE_ARGS=()
-if [ "$GATE_RC" -eq 0 ]; then
-    DELETE_ARGS=(--delete)
-elif [ "$GATE_RC" -eq 10 ]; then
-    echo "sync: retention withholding --delete this run"
-else
-    echo "sync: retention gate failed (rc=$GATE_RC)" >&2
-    exit "$GATE_RC"
-fi
-
-# 2. The real pull. --delete (if allowed) is scoped to telemetry/ only.
-set +e
-rsync -a "${DELETE_ARGS[@]}" "$SRC" "$DEST"
+rsync -a "$SRC" "$DEST"
 PULL_RC=$?
 set -e
 if [ "$PULL_RC" -ne 0 ]; then
@@ -80,12 +65,22 @@ fi
 # 3. Roll up under the SAME lock (we already hold it, so pass --no-lock).
 python3 "$ROLLUP" --no-lock
 
-# 4. The live queue signal. snapshot.csv is a sibling of the telemetry
+# 4. Drop archived days from the cluster staging tree. A prune fault must
+# not undo the pull or the rollup: the next run retries it.
+set +e
+python3 "$PRUNE" "$SRC"
+PRUNE_RC=$?
+set -e
+if [ "$PRUNE_RC" -ne 0 ]; then
+    echo "sync: remote prune failed (rc=$PRUNE_RC) — local archive is intact" >&2
+fi
+
+# 5. The live queue signal. snapshot.csv is a sibling of the telemetry
 # directory on the cluster, it is one small file, and the dashboard header
 # reads it. The default source is that sibling; UNITY_SNAPSHOT_SRC overrides
 # it, and an empty value turns this step off. A cluster that does not publish
 # the file is normal, so a failure here is reported and never fatal: the
-# telemetry mirror and the rollup above are already done.
+# telemetry archive and the rollup above are already done.
 if [ -z "${UNITY_SNAPSHOT_SRC+x}" ]; then
     SNAP_SRC="$(printf '%s' "${SRC%/}" | sed 's#/telemetry$#/snapshot.csv#')"
     [ "$SNAP_SRC" = "${SRC%/}" ] && SNAP_SRC=""

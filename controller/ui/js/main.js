@@ -20,8 +20,9 @@ import { dispatchRun, onDispProject, renderPreview } from './pages/dispatch.js';
 import { render as renderJobs } from './pages/jobs.js';
 import { exportUsers } from './pages/users.js';
 import {
-  telCloseSession, telRunScript, telSaveInterval, telSaveScript,
-  telSaveSource, telSchedule, telSync,
+  closeSshPass, openSshPass, telCloseSession, telRunScript,
+  telSaveInterval, telSaveScript, telSaveSource, telSaveSsh,
+  telSchedule, telSync, telTestSsh, telUnlockSsh,
 } from './pages/settings.js';
 
 /**
@@ -42,7 +43,8 @@ Object.assign(window, {
   dispatchRun, onDispProject, renderPreview,
   exportUsers,
   telSync, telSchedule, telSaveInterval, telSaveSource,
-  telSaveScript, telRunScript, telCloseSession,
+  telSaveScript, telSaveSsh, telTestSsh, telRunScript, telCloseSession,
+  openSshPass, closeSshPass, telUnlockSsh,
 });
 
 const nav = document.getElementById('nav');

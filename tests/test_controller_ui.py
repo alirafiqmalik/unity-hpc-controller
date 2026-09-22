@@ -122,6 +122,16 @@ def test_the_window_bridge_carries_nothing_extra():
     assert not extra, f"window bridge exports unused names: {extra}"
 
 
+def test_the_passphrase_modal_quotes_the_ssh_prompt():
+    """When the key expires, the dashboard asks the same question a shell would."""
+    html = INDEX.read_text()
+    assert 'id="sshPassModal"' in html
+    assert "Enter passphrase for key" in html
+    js = (UI / "js" / "pages" / "settings.js").read_text()
+    assert "/api/v1/telemetry/ssh-unlock" in js
+    assert "localStorage" not in js
+
+
 def test_controller_ui_is_a_live_dashboard():
     text = _ui_text()
     assert "/api/v1/projects" in text

@@ -438,9 +438,13 @@ def _provenance(provenance_dir: str | None, job_id: str) -> dict:
 
 
 def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
-    """Parse sacct rows: JobID|Account|Partition|State|Submit|Start|End|
-    Elapsed|AllocTRES|ExitCode|MaxRSS|Timelimit (12 pipe fields — Timelimit
-    added to feed req.walltime_s, reusing the elapsed DD-HH:MM:SS parser)."""
+    """Parse sacct rows.
+
+    Current: JobID|User|Account|Partition|State|Submit|Start|End|Elapsed|
+    AllocTRES|ExitCode|MaxRSS|Timelimit (13 fields). A 12-field line without
+    User (the previous format) is still accepted. A trailing empty field from
+    collector.sh's pad is ignored.
+    """
     out = []
     for line in text.splitlines():
         line = line.strip()
@@ -449,8 +453,15 @@ def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
         f = line.split("|")
         if len(f) < 12 or not f[0] or "." in f[0] or not f[0][0].isdigit():
             continue
-        (job_id, _acct, part, state, submit, start, end,
-         elapsed, tres, exit_code, max_rss, timelimit) = f[:12]
+        # 12 fields, or 13 with a trailing empty pad, is the pre-User format.
+        # 13 nonempty fields, or 14 with a pad, includes User after JobID.
+        if len(f) >= 14 or (len(f) == 13 and f[-1] != ""):
+            (job_id, user, _acct, part, state, submit, start, end,
+             elapsed, tres, exit_code, max_rss, timelimit) = f[:13]
+        else:
+            (job_id, _acct, part, state, submit, start, end,
+             elapsed, tres, exit_code, max_rss, timelimit) = f[:12]
+            user = None
         gpu_type, req = _parse_tres(tres)
         if timelimit and timelimit.strip():
             req["walltime_s"] = _parse_elapsed(timelimit)
@@ -460,7 +471,8 @@ def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
             rc = None
         provenance = _provenance(provenance_dir, job_id)
         out.append({
-            "job_id": job_id, "project": provenance.get("project"),
+            "job_id": job_id, "user": user or None,
+            "project": provenance.get("project"),
             "skill": provenance.get("skill"), "campaign": provenance.get("campaign"),
             "experiment": provenance.get("experiment"),
             "model": provenance.get("model"), "dataset": provenance.get("dataset"),

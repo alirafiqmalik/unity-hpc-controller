@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# hpc-sync-telemetry — exposed entry point for the retention-aware telemetry pull.
+# hpc-sync-telemetry — exposed entry point for the local-archive telemetry pull.
 # Load the active project's .env when present.  The lower-level synchronizer
 # still requires an explicit source, so a missing or blank value fails safely.
 set -euo pipefail

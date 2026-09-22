@@ -109,6 +109,7 @@ export async function refresh(opts) {
   else if (opts.toastOk) toast('Refreshed');
   renderHeader();
   render();
+  settings.maybePromptSsh((state.health && state.health.ssh) || {});
 }
 
 setRefresh(refresh);
