@@ -1,9 +1,14 @@
+import gzip
 import sqlite3
 import subprocess
 import sys
+import tarfile
+from datetime import date
 from pathlib import Path
 
-from lib import paths, retention
+import pytest
+
+from lib import local_retention, paths, retention
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI = REPO_ROOT / "scripts" / "hpc-retention-gate"
@@ -161,3 +166,90 @@ def test_remote_prune_cli_drops_an_archived_day(tmp_data_dir, tmp_path):
     assert result.returncode == 0, result.stderr
     assert not (src / "2026-05-01").exists()
     assert (paths.telemetry_dir() / "2026-05-01").exists()
+
+
+def test_local_retention_backs_up_raw_and_summaries_before_pruning(
+    tmp_data_dir, tmp_path,
+):
+    sys.path.insert(0, str(REPO_ROOT / "cluster-intel"))
+    import rollup
+
+    old = "2026-05-01"
+    recent = "2026-09-01"
+    for tree in (paths.telemetry_dir(), paths.telemetry_imported_dir()):
+        for day in (old, recent):
+            folder = tree / day
+            folder.mkdir(parents=True)
+            (folder / "resource_state.jsonl").write_text(f"{day}\n")
+    con = sqlite3.connect(paths.summaries_db())
+    con.executescript(rollup.SCHEMA)
+    for day in (old, recent):
+        con.execute("INSERT INTO daily_resource VALUES(?,?,?,?,?,?,?,?)",
+                    ("gpu_type", "a100", day, 1, 1, 0, 0, 1))
+        con.execute("INSERT INTO task_run (job_id, day_utc, state) VALUES(?,?,?)",
+                    (day, day, "COMPLETED"))
+        con.execute("INSERT INTO day_index (day_utc, fully_summarised) VALUES(?,1)",
+                    (day,))
+    con.commit()
+    con.close()
+
+    preview = local_retention.run(90, today=date(2026, 9, 25), dry_run=True)
+    assert preview["days"] == [old]
+    assert (paths.telemetry_dir() / old).exists()
+
+    result = local_retention.run(90, today=date(2026, 9, 25))
+    assert result["days"] == [old]
+    folder = paths.archive_dir() / "telemetry-retention" / old
+    for tree in ("telemetry", "telemetry-imported"):
+        stem = "raw-mirror" if tree == "telemetry" else "raw-imported"
+        archive = next(folder.glob(f"{stem}-*.tar.gz"))
+        with tarfile.open(archive, "r:gz") as tar:
+            assert f"{tree}/{old}/resource_state.jsonl" in tar.getnames()
+        assert not (paths.data_dir() / tree / old).exists()
+        assert (paths.data_dir() / tree / recent).exists()
+
+    summary = next(folder.glob("summary-*.sqlite.gz"))
+    saved_db = tmp_path / "saved.sqlite"
+    with gzip.open(summary, "rb") as src, saved_db.open("wb") as dest:
+        dest.write(src.read())
+    archived = sqlite3.connect(saved_db)
+    assert archived.execute("SELECT day_utc FROM task_run").fetchall() == [(old,)]
+    assert archived.execute("SELECT day_utc FROM daily_resource").fetchall() == [(old,)]
+    assert archived.execute("SELECT value FROM meta WHERE key='archive_day'").fetchone() == (old,)
+    assert archived.execute("SELECT n FROM task_profile").fetchall() == [(1,)]
+    archived.close()
+
+    live = sqlite3.connect(paths.summaries_db())
+    assert live.execute("SELECT day_utc FROM task_run").fetchall() == [(recent,)]
+    assert live.execute("SELECT day_utc FROM daily_resource").fetchall() == [(recent,)]
+    assert live.execute("SELECT n FROM task_profile").fetchall() == [(1,)]
+    live.close()
+    assert local_retention.run(90, today=date(2026, 9, 25))["days"] == []
+
+
+def test_local_retention_keeps_live_data_when_a_backup_fails(
+    tmp_data_dir, monkeypatch,
+):
+    sys.path.insert(0, str(REPO_ROOT / "cluster-intel"))
+    import rollup
+
+    day = "2026-05-01"
+    raw = paths.telemetry_dir() / day
+    raw.mkdir(parents=True)
+    (raw / "resource_state.jsonl").write_text("old data\n")
+    con = sqlite3.connect(paths.summaries_db())
+    con.executescript(rollup.SCHEMA)
+    con.execute("INSERT INTO day_index (day_utc) VALUES(?)", (day,))
+    con.commit()
+    con.close()
+
+    def fail(*_args):
+        raise OSError("disk is full")
+
+    monkeypatch.setattr(local_retention, "_backup_summary", fail)
+    with pytest.raises(OSError, match="disk is full"):
+        local_retention.run(90, today=date(2026, 9, 25))
+    assert raw.is_dir()
+    con = sqlite3.connect(paths.summaries_db())
+    assert con.execute("SELECT day_utc FROM day_index").fetchone() == (day,)
+    con.close()

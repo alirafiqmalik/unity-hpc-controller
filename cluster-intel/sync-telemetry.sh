@@ -9,6 +9,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRUNE="$HERE/../scripts/hpc-remote-prune"
+LOCAL_RETENTION="$HERE/../scripts/hpc-local-retention"
 ROLLUP="$HERE/rollup.py"
 
 DATA_DIR="${UNITY_HPC_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/unity-hpc}"
@@ -98,5 +99,10 @@ if [ -n "$SNAP_SRC" ]; then
         echo "sync: no snapshot.csv at $SNAP_SRC (rc=$SNAP_RC) — header stays on the last one" >&2
     fi
 fi
+
+# 6. Keep 90 days live. Older raw files and summary rows are compressed into
+# local backups before they leave the live store. The sync lock is still held.
+python3 "$LOCAL_RETENTION" --days "${UNITY_HPC_LOCAL_RETENTION_DAYS:-90}" \
+    --apply --no-lock
 
 echo "sync: done"

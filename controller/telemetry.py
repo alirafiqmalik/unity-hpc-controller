@@ -525,6 +525,8 @@ def _finish_script(run: dict, report: dict) -> dict:
         "status": "failed",
         "output": str(report.get("error") or "script did not run")[-OUTPUT_KEEP:],
     })
+    if report.get("session_log"):
+        run["session_log"] = report["session_log"]
     _append_history(run)
     events.record(
         "sync",
@@ -635,9 +637,11 @@ def next_run_utc(cfg: dict | None = None) -> str | None:
         return None
     anchor = _parse(cfg.get("schedule_since_utc"))
     newest = last_run()
+    finished = _parse(newest.get("finished_utc")) if newest else None
     started = _parse(newest.get("started_utc")) if newest else None
-    if started is not None and (anchor is None or started > anchor):
-        anchor = started
+    last_activity = finished or started
+    if last_activity is not None and (anchor is None or last_activity > anchor):
+        anchor = last_activity
     if anchor is None:
         anchor = _now()
     return _iso(anchor + timedelta(minutes=_clean_interval(cfg["interval_minutes"])))

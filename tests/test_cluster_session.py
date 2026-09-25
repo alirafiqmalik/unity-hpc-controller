@@ -4,6 +4,8 @@ No SSH. The runner is a fake, so these tests hold the command the controller
 would send and the decision to skip a local source.
 """
 
+import os
+import subprocess
 from pathlib import Path
 
 from controller import cluster_session
@@ -66,6 +68,40 @@ def test_the_remote_command_samples_once_and_sets_the_idle_timer():
     assert "loop" not in script
     assert "rm -f /tmp/unity-hpc-sample.rc /tmp/unity-hpc-sample.log" in script
     assert "--- unity-hpc-session-log ---" in script
+
+
+def test_a_remote_timeout_reports_the_partial_log_and_removes_temp_files(
+    tmp_path, monkeypatch,
+):
+    mark = tmp_path / "sample.rc"
+    log = tmp_path / "sample.log"
+    monkeypatch.setattr(cluster_session, "_MARK", str(mark))
+    monkeypatch.setattr(cluster_session, "_LOG", str(log))
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    tmux = fake_bin / "tmux"
+    tmux.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = send-keys ]; then\n"
+        "  printf 'sacct is still running\\n' > \"$FAKE_LOG\"\n"
+        "fi\n"
+    )
+    tmux.chmod(0o755)
+    script = cluster_session.remote_invocation(
+        "unity-hpc", str(tmp_path), 900, wait_s=0,
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "FAKE_LOG": str(log)},
+    )
+    assert proc.returncode == 124
+    assert "timeout" in proc.stdout
+    assert cluster_session.extract_session_log(proc.stdout) == (
+        "sacct is still running\n"
+    )
+    assert not mark.exists()
+    assert not log.exists()
 
 
 def test_the_remote_command_can_run_sample_or_prune():
@@ -236,6 +272,26 @@ def test_collect_keeps_the_sample_log_on_this_machine(tmp_data_dir):
     assert saved.is_file()
     assert "sampled 12 partitions" in saved.read_text()
     assert "session-logs" in saved.parts
+
+
+def test_collect_keeps_a_partial_log_when_the_remote_command_times_out(tmp_data_dir):
+    body = (
+        "timeout\nrc=124\n"
+        "--- unity-hpc-session-log ---\n"
+        "sacct is still running\n"
+        "--- unity-hpc-session-log-end ---\n"
+    )
+
+    def run(host, script, timeout_s):
+        return type("P", (), {"returncode": 124, "stdout": body, "stderr": ""})()
+
+    report = cluster_session.collect(
+        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", run=run,
+    )
+    assert report["ok"] is False
+    assert report["rc"] == 124
+    assert "sacct is still running" in report["error"]
+    assert "sacct is still running" in Path(report["session_log"]).read_text()
 
 
 def test_probe_runs_echo_on_the_alias():

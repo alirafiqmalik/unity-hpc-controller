@@ -23,6 +23,15 @@ Same sources the cluster-intel dashboard already reads:
 retrieval that fills them, and reports how old each one is. A schedule samples
 through a cluster session, then pulls. ADR 0003 and ADR 0004 have the design.
 
+## Local storage
+
+The live telemetry tree and `summaries.db` keep 90 UTC calendar days. A sync
+compresses older raw files and summary rows into local backups before it
+removes them from the live store. The backup files live under
+`$UNITY_HPC_DATA/archive/telemetry-retention/`. They still use local disk.
+Monitor free disk space for that directory. `hpc-local-retention` without
+`--apply` lists eligible days. ADR 0007 gives the backup and recovery rules.
+
 Degrade to an empty state when a source is missing (I6). Poll `/api/v1/*`
 every 10s from the browser. No WebSocket in v0.12 — Tailscale and a
 stdlib server keep HTTP + JSON.

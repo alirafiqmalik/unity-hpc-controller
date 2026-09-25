@@ -355,6 +355,21 @@ def test_the_next_run_counts_from_the_last_retrieval(stub_script):
     assert when == expect
 
 
+def test_a_long_run_gets_a_full_interval_after_it_finishes():
+    telemetry.save_settings(schedule_enabled=True, interval_minutes=5)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    telemetry.save_settings(schedule_since_utc=telemetry._iso(now - timedelta(hours=1)))
+    started = now - timedelta(minutes=12)
+    finished = now - timedelta(minutes=1)
+    telemetry._append_history({
+        "id": "slow-run",
+        "started_utc": telemetry._iso(started),
+        "finished_utc": telemetry._iso(finished),
+        "status": "failed",
+    })
+    assert telemetry.next_run_utc() == telemetry._iso(finished + timedelta(minutes=5))
+
+
 def test_the_schedule_thread_starts_once_and_stops():
     assert telemetry.start_scheduler() is True
     assert telemetry.scheduler_alive() is True
@@ -651,7 +666,9 @@ def test_a_real_retrieval_fills_the_charts_end_to_end(tmp_path, tmp_data_dir):
 
     live = snapshot.live_snapshot()
     assert live["available"] is True
-    assert live["latest"]["gpu_running"] == 12
+    assert live["source"] == "resource_state"
+    assert live["latest"]["timestamp_utc"] == f"{day} 23:45:00"
+    assert live["latest"]["gpu_running"] == 55
 
     payload = telemetry.status()
     assert payload["rollup"]["last_rollup_utc"]
@@ -675,6 +692,33 @@ def test_a_source_with_no_sibling_snapshot_still_succeeds(tmp_path, tmp_data_dir
     run = telemetry.start_sync(background=False)["run"]
     assert run["status"] == "ok", run["output"]
     assert not paths.snapshot_csv().exists()
+
+
+@pytest.mark.skipif(
+    subprocess.run(["bash", "-c", "command -v rsync"],
+                   capture_output=True).returncode != 0,
+    reason="rsync not available")
+def test_a_sync_archives_old_local_days_after_the_remote_prune(
+    tmp_path, tmp_data_dir,
+):
+    import gzip
+
+    day = (datetime.now(timezone.utc) - timedelta(days=100)).strftime("%Y-%m-%d")
+    src = tmp_path / "cluster" / "telemetry"
+    (src / day).mkdir(parents=True)
+    (src / day / "resource_state.jsonl").write_text(
+        "".join(json.dumps(r, sort_keys=True) + "\n" for r in _slots(day)))
+    telemetry.save_settings(source=str(src) + "/")
+
+    run = telemetry.start_sync(background=False)["run"]
+    assert run["status"] == "ok", run["output"]
+    assert "hpc-local-retention: 1 days archived" in run["output"]
+    assert not (paths.telemetry_dir() / day).exists()
+    folder = paths.archive_dir() / "telemetry-retention" / day
+    assert next(folder.glob("raw-mirror-*.tar.gz"))
+    summary = next(folder.glob("summary-*.sqlite.gz"))
+    with gzip.open(summary, "rb") as saved:
+        assert saved.read(16).startswith(b"SQLite format 3")
 
 
 @pytest.mark.skipif(
