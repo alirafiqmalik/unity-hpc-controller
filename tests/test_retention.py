@@ -204,7 +204,9 @@ def test_local_retention_backs_up_raw_and_summaries_before_pruning(
         stem = "raw-mirror" if tree == "telemetry" else "raw-imported"
         archive = next(folder.glob(f"{stem}-*.tar.gz"))
         with tarfile.open(archive, "r:gz") as tar:
-            assert f"{tree}/{old}/resource_state.jsonl" in tar.getnames()
+            name = f"{tree}/{old}/resource_state.jsonl"
+            assert name in tar.getnames()
+            assert tar.extractfile(name).read() == f"{old}\n".encode()
         assert not (paths.data_dir() / tree / old).exists()
         assert (paths.data_dir() / tree / recent).exists()
 
