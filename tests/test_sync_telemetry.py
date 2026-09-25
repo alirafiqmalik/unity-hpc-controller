@@ -1,8 +1,10 @@
 import concurrent.futures
+import gzip
 import json
 import os
 import re
 import subprocess
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,7 +65,7 @@ def test_pull_matches_source_and_local_edit_is_discarded(tmp_path):
     assert archived.read_bytes() == original, "a local edit must be discarded by the next pull"
 
 
-def test_local_only_days_and_siblings_survive_a_pull(tmp_path):
+def test_local_only_old_days_are_backed_up_and_siblings_survive_a_pull(tmp_path):
     src = tmp_path / "cluster"
     data = tmp_path / "data"
     _make_day(src, "2026-07-20", _good_slots("2026-07-20"))
@@ -75,23 +77,33 @@ def test_local_only_days_and_siblings_survive_a_pull(tmp_path):
     (data / "cluster-config.json").write_text('{"schema_version":1}')
 
     assert _run(src, data).returncode == 0
-    assert (data / "telemetry" / "2026-01-01").exists(), "the local archive must not shrink"
+    archive = next((data / "archive" / "telemetry-retention" / "2026-01-01")
+                   .glob("raw-mirror-*.tar.gz"))
+    with tarfile.open(archive, "r:gz") as tar:
+        assert "telemetry/2026-01-01/resource_state.jsonl" in tar.getnames()
+    assert not (data / "telemetry" / "2026-01-01").exists()
     assert (data / "telemetry-imported" / "keep.txt").read_text() == "keep"
     assert (data / "archive" / "old.txt").read_text() == "old"
     assert (data / "cluster-config.json").read_text() == '{"schema_version":1}'
 
 
-def test_archived_days_leave_the_cluster_and_stay_local(tmp_path):
+def test_archived_days_leave_the_cluster_and_remain_in_local_backups(tmp_path):
     src = tmp_path / "cluster"
     data = tmp_path / "data"
     _make_day(src, "2026-05-01", _good_slots("2026-05-01"))
 
     result = _run(src, data)
     assert result.returncode == 0, result.stderr
-    assert (data / "telemetry" / "2026-05-01").exists(), "final data stays on this machine"
+    assert not (data / "telemetry" / "2026-05-01").exists()
+    folder = data / "archive" / "telemetry-retention" / "2026-05-01"
+    assert next(folder.glob("raw-mirror-*.tar.gz"))
     assert not (src / "2026-05-01").exists(), "the cluster staging day must go after rollup"
     import sqlite3
-    con = sqlite3.connect(data / "summaries.db")
+    summary = next(folder.glob("summary-*.sqlite.gz"))
+    saved = tmp_path / "old-summary.sqlite"
+    with gzip.open(summary, "rb") as src_file:
+        saved.write_bytes(src_file.read())
+    con = sqlite3.connect(saved)
     fs = con.execute(
         "SELECT fully_summarised FROM day_index WHERE day_utc='2026-05-01'"
     ).fetchone()[0]
@@ -106,11 +118,12 @@ def test_incomplete_remote_day_stays_until_summarised(tmp_path):
 
     assert _run(src, data).returncode == 0
     assert (src / "2026-05-01").exists(), "an unsummarised day must stay on the cluster"
-    assert (data / "telemetry" / "2026-05-01").exists()
+    folder = data / "archive" / "telemetry-retention" / "2026-05-01"
+    assert next(folder.glob("raw-mirror-*.tar.gz"))
 
     assert _run(src, data, UNITY_HPC_FORCE_PRUNE="1").returncode == 0
     assert not (src / "2026-05-01").exists(), "force may drop an incomplete remote day"
-    assert (data / "telemetry" / "2026-05-01").exists(), "force must not delete the local copy"
+    assert next(folder.glob("raw-mirror-*.tar.gz")), "the local backup survives"
 
 
 def test_broken_source_aborts_without_wiping_archive(tmp_path):

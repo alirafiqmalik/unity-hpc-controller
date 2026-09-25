@@ -1,6 +1,6 @@
 {
   "name": "unity-hpc",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Thin Unity HPC plugin: connect a project to the always-on controller and dispatch runs. Cluster monitoring, queue, and fetch live in the controller UI.",
   "author": {
     "name": "Ali Hamza Malik",

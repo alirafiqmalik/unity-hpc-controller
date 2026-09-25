@@ -27,6 +27,10 @@ archived days from the cluster, and takes `locks/sync.lock` across all three.
 This module starts that script and reads the same lock. It never adds a second
 one.
 
+The sync also keeps 90 UTC calendar days in the live local store. It backs up
+older raw files and summary rows under `archive/telemetry-retention/` before it
+removes them from the live store. ADR 0007 records the backup format and order.
+
 | Route | Does |
 |---|---|
 | `GET /api/v1/telemetry` | source, whether a retrieval runs, store freshness, rollup age, schedule, history |

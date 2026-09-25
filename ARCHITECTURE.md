@@ -1,6 +1,6 @@
 # unity-hpc — architecture
 
-Version 0.13.0. Two components share one ledger contract.
+Version 0.14.0. Two components share one ledger contract.
 
 **The central contract:** `unityHPC/run.sh` records every job it submits into
 `<project>/.unity_state/<campaign>.db`. Every management tool reads that ledger.
@@ -361,14 +361,14 @@ tree for `I7` or `RC-3` and you land on the mechanism that holds the invariant.
 | Invariant | Mechanism |
 |---|---|
 | I1 · Telemetry has exactly one writer | `collector.sh` runs **on the cluster**, and is the only writer of new samples into the staging tree `/work/.../cluster-intel/telemetry/`. Two guards keep it single: `tmux has-session` and `collector.lock` |
-| I2 · Only the sync script mutates local telemetry | The local tree is the **archive**. `sync-telemetry.sh` pulls with `rsync` and never `--delete`s a local day. No other module opens anything under `telemetry/` to write or to delete, and there is deliberately no local pruner |
+| I2 · The sync lock owns local telemetry changes | `sync-telemetry.sh` pulls with `rsync` and never uses `--delete`. Under the same lock, `hpc-local-retention` moves days older than 90 days to compressed local backups (ADR 0007) |
 | I3 · A reader never sees a partial DB | A rollup builds a `.tmp` file, then calls `os.replace()`. That is atomic on POSIX, on the same filesystem |
 | I4 · A config write never loses data | `flock`, then read-merge-write, then an atomic rename. The merge takes the union and the max, and it leaves an unobserved field untouched |
 | I5 · Redundant work is skipped | A TTL staleness guard on recon, with `--force` to override it |
 | I6 · Missing data degrades, and never crashes | Every reader returns a clear empty state that names the command which populates it |
 | I7 · The pull and the rollup are serialised | One `flock` on `locks/sync.lock` spans the rsync, the rollup **and** the remote prune. A concurrent invocation exits cleanly, and skips all three |
 | I8 · Raw data is summarised before it leaves the cluster | A remote day is deleted only when it is present locally, fully summarised, and not today. `summaries.db` absent withholds. `UNITY_HPC_FORCE_PRUNE=1` skips the summarised check |
-| I9 · A summary outlives its raw data | A rollup upserts, and never deletes a row. A full rebuild is a migration-only operation |
+| I9 · A summary outlives its raw data | A routine rollup upserts. Local retention backs up old summary rows before removing them from the live database (ADR 0007). A full rebuild is a migration-only operation |
 
 **RC-3**, cited in `tests/test_recon_skill.py`, is the historical fault these
 invariants answer: recon used to do a blind create-or-overwrite of the single

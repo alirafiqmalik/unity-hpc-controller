@@ -7,7 +7,7 @@ settled question, or repeat a fault the current design exists to prevent.
 It replaces three executed implementation plans, two dated design specs and a v0.3
 build plan. Git history holds those originals.
 
-Current at plugin version 0.13.0.
+Current at plugin version 0.14.0.
 
 ---
 
@@ -77,7 +77,7 @@ scheduling, cross-cluster portability, and a GUI.
 | # | Decision | Why | Rejected |
 |---|---|---|---|
 | R1 | **Read-time correlation, with no change to the shared store** | Attribution belongs where the identity is known, that is the project. It keeps `summaries.db` project-agnostic and the collector unchanged | Cluster-side job-name tagging. It needs a `run.sh` convention plus a collector parse, and it is brittle |
-| R2 | **On demand by default. A persisted snapshot is optional** | `task_run` is retained long-term and never pruned (I9), so the history already survives in the shared store. A per-project copy is derivable, and would only add staleness | Always persisting a per-project profile file: duplicate state, plus cache invalidation |
+| R2 | **On demand by default. A persisted snapshot is optional** | `task_run` stays in the live store for 90 days. Older rows move to compressed local backups (ADR 0007). A per-project copy is still derivable from the live window | Always persisting a per-project profile file: duplicate state, plus cache invalidation |
 | R3 | **The project's own profile, with a cold-start fallback to the shared `task_profile`** | A new project with few jobs of its own still gets a useful ranking, until it has enough history | Project-only, which is useless on a fresh project. Shared-only, which ignores the project's measured reality |
 | R4 | **Reuse the existing fail-safe query pattern** | `lib/queries.py` already opens `summaries.db` read-only, and returns a conservative value when the database, table or row is absent (I6) | A new bespoke database-access path |
 

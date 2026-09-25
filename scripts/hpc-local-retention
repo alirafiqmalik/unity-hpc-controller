@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Keep recent telemetry live and back up older days on this machine."""
+
+import argparse
+import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib import local_retention  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--days", type=int, default=90)
+    parser.add_argument("--apply", action="store_true",
+                        help="back up old days and remove them from the live store")
+    parser.add_argument("--no-lock", action="store_true",
+                        help="caller already holds locks/sync.lock")
+    args = parser.parse_args()
+    try:
+        result = local_retention.run(
+            args.days, dry_run=not args.apply, no_lock=args.no_lock,
+        )
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        print(f"hpc-local-retention: {exc}", file=sys.stderr)
+        return 1
+    action = "archived" if result["archived"] else "eligible"
+    print(f"hpc-local-retention: {len(result['days'])} days {action} "
+          f"before {result['cutoff']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

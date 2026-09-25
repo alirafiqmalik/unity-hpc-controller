@@ -329,8 +329,8 @@ def remote_invocation(
             f"i=0; while [ ! -f {_MARK} ] && [ \"$i\" -lt {int(wait_s)} ]; "
             "do sleep 1; i=$((i+1)); done"
         ),
-        f"if [ ! -f {_MARK} ]; then echo timeout; exit 124; fi",
-        f"rc=$(cat {_MARK}); echo rc=$rc",
+        f"if [ -f {_MARK} ]; then rc=$(cat {_MARK}); else rc=124; echo timeout; fi",
+        'echo "rc=$rc"',
         f"echo {shlex.quote(_LOG_START)}",
         f"cat {_LOG} 2>/dev/null || true",
         f"echo {shlex.quote(_LOG_END)}",
@@ -449,10 +449,11 @@ def collect(cfg: dict, source: str, mode: str = "once", run=None) -> dict:
         proc = runner(host, script, SAMPLE_WAIT_S + 30)
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
+    log_path = save_session_log(proc.stdout or "")
     if proc.returncode != 0:
         err = ((proc.stderr or "") + (proc.stdout or "")).strip()
-        return {"ok": False, "error": err[-500:], "rc": proc.returncode}
-    log_path = save_session_log(proc.stdout or "")
+        return {"ok": False, "error": err[-500:], "rc": proc.returncode,
+                "session_log": log_path}
     return {
         "ok": True,
         "mode": chosen,
