@@ -79,8 +79,10 @@ export const THEME_COLORS = Object.keys(COLOR) as ThemeColor[];
 /**
  * The series order a chart assigns from.
  *
- * Five hues that stay apart at a one-pixel stroke and keep their order across
- * both themes, so a series does not change colour when a sibling is hidden.
+ * Twelve hues that stay apart at a one-pixel stroke and keep their order
+ * across both themes, so a series does not change colour when a sibling is
+ * hidden. A real cluster reports sixteen GPU types, so five was not enough:
+ * a chart that gives two series the same colour cannot be read at all.
  */
 export const CHART_SERIES_COLORS = [
   COLOR.green[40],
@@ -88,4 +90,11 @@ export const CHART_SERIES_COLORS = [
   COLOR.purple[40],
   COLOR.yellow[40],
   COLOR.red[40],
+  COLOR.turquoise[40],
+  COLOR.pink[40],
+  COLOR.orange[40],
+  COLOR.sky[40],
+  COLOR.purple[60],
+  COLOR.green[60],
+  COLOR.red[60],
 ] as const;

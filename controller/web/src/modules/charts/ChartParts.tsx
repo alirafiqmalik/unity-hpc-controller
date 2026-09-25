@@ -142,12 +142,19 @@ export type LegendEntry = { name: string; color: string; shown?: boolean };
 export const ChartLegend = ({
   entries,
   onToggle,
+  note,
 }: {
   entries: LegendEntry[];
   onToggle?: (name: string) => void;
+  /** Said before the hint when the chart is not drawing every series. */
+  note?: string;
 }) => (
   <>
-    {onToggle ? <LegendHint>Click a name to show or hide it.</LegendHint> : null}
+    {onToggle ? (
+      <LegendHint>
+        {note ? `${note} ` : ''}Click a name to show or hide it.
+      </LegendHint>
+    ) : null}
     <LegendRow>
       {entries.map((entry) =>
         onToggle ? (

@@ -5,9 +5,14 @@
  * including the hidden ones, which show dim — otherwise there is no way back
  * to a series once it is off. A series keeps its colour when a sibling goes
  * off, because the colour comes from its place in the full list.
+ *
+ * A real cluster reports sixteen GPU types. Sixteen filled areas on one axis
+ * is not a reading, so until the operator chooses otherwise the chart draws
+ * the busiest few and says how many it left out.
  */
 
 import { useTheme } from '@emotion/react';
+import { useMemo } from 'react';
 import {
   Area,
   AreaChart,
@@ -26,7 +31,11 @@ import {
   ChartPlaceholder,
   ChartTooltip,
 } from './ChartParts';
+import { slotTicks, slotTitle } from './slots';
 import { useHiddenSeries } from './useHiddenSeries';
+
+/** How many series one chart draws before the rest start as hidden. */
+const DEFAULT_VISIBLE = 6;
 
 /** One row per slot: `{ slot, a100: 42, a40: null, … }`. */
 const toRows = (usage: UsageBlock, names: string[]) =>
@@ -42,6 +51,24 @@ const toRows = (usage: UsageBlock, names: string[]) =>
     return row;
   });
 
+/**
+ * The series to hide on a first look: everything past the busiest few.
+ *
+ * `by_type` carries the average the API already computed. Without it the
+ * order the API sent stands in, which keeps the rule stable rather than
+ * arbitrary.
+ */
+const quietest = (usage: UsageBlock, names: string[]): string[] => {
+  if (names.length <= DEFAULT_VISIBLE) return [];
+  const average = new Map(
+    (usage.by_type ?? []).map((one) => [one.gpu_type, Number(one.avg) || 0]),
+  );
+  const ranked = [...names].sort(
+    (a, b) => (average.get(b) ?? -1) - (average.get(a) ?? -1),
+  );
+  return ranked.slice(DEFAULT_VISIBLE);
+};
+
 export const UsageChart = ({
   chartId,
   usage,
@@ -55,10 +82,21 @@ export const UsageChart = ({
   fallbackNames?: string[];
 }) => {
   const theme = useTheme();
-  const { isHidden, toggle } = useHiddenSeries(chartId);
 
-  const names =
-    usage?.available && usage.series ? Object.keys(usage.series) : [];
+  const names = useMemo(
+    () => (usage?.available && usage.series ? Object.keys(usage.series) : []),
+    [usage],
+  );
+  const hiddenByDefault = useMemo(
+    () => (usage && names.length ? quietest(usage, names) : []),
+    [usage, names],
+  );
+
+  const { isHidden, toggle, usingDefault } = useHiddenSeries(
+    chartId,
+    hiddenByDefault,
+  );
+  const tick = useMemo(() => slotTicks(usage?.slots ?? []), [usage]);
 
   if (!usage?.available || names.length === 0) {
     return (
@@ -83,6 +121,11 @@ export const UsageChart = ({
   const shown = names.filter((name) => !isHidden(name));
   const rows = toRows(usage, shown);
 
+  const note =
+    usingDefault && hiddenByDefault.length
+      ? `Showing the ${DEFAULT_VISIBLE} busiest of ${names.length} types.`
+      : undefined;
+
   return (
     <>
       <ChartFrame $height={height}>
@@ -98,7 +141,7 @@ export const UsageChart = ({
                   x2="0"
                   y2="1"
                 >
-                  <stop offset="0%" stopColor={colorOf(name)} stopOpacity={0.28} />
+                  <stop offset="0%" stopColor={colorOf(name)} stopOpacity={0.2} />
                   <stop offset="100%" stopColor={colorOf(name)} stopOpacity={0} />
                 </linearGradient>
               ))}
@@ -110,10 +153,11 @@ export const UsageChart = ({
             />
             <XAxis
               dataKey="slot"
+              tickFormatter={tick}
               tick={{ fill: theme.chart.axis, fontSize: 10 }}
               tickLine={false}
               axisLine={{ stroke: theme.chart.grid }}
-              minTickGap={24}
+              minTickGap={18}
             />
             <YAxis
               tick={{ fill: theme.chart.axis, fontSize: 10 }}
@@ -125,6 +169,7 @@ export const UsageChart = ({
             />
             <Tooltip
               content={<ChartTooltip suffix="%" />}
+              labelFormatter={(label) => slotTitle(String(label ?? ''))}
               cursor={{ stroke: theme.border.color.strong, strokeWidth: 1 }}
             />
             {shown.map((name) => (
@@ -151,6 +196,7 @@ export const UsageChart = ({
           shown: !isHidden(name),
         }))}
         onToggle={toggle}
+        note={note}
       />
     </>
   );

@@ -57,7 +57,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)
         self.send_header("Content-Length", str(len(resp.body)))
-        self.send_header("Cache-Control", "no-store")
+        # `no-store` is the default, and it is right for every API answer and
+        # for index.html. A response that sets its own Cache-Control keeps it:
+        # sending both puts two headers on the wire, and a client combines them
+        # into one list where `no-store` wins, so a hashed asset would never be
+        # cached. Only the route knows which of the two it needs.
+        if "Cache-Control" not in resp.headers:
+            self.send_header("Cache-Control", "no-store")
         for key, value in resp.headers.items():
             self.send_header(key, value)
         self.end_headers()

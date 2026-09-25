@@ -166,6 +166,44 @@ def test_hashed_assets_are_cached_and_the_page_is_not():
     assert "Cache-Control" not in _get("/").headers
 
 
+@needs_build
+def test_one_cache_control_header_reaches_the_wire(tmp_path, monkeypatch):
+    """`handle()` is not the whole answer: `serve.py` writes the headers.
+
+    The handler adds a default `Cache-Control: no-store`, which is right for
+    the API and for index.html. When a route sets its own, sending both puts
+    two headers on the wire, a client combines them into one list, `no-store`
+    wins, and the hashed asset is never cached. This drives a real socket,
+    because that merge is invisible to a `handle()` call.
+    """
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    monkeypatch.setenv("UNITY_HPC_DATA", str(tmp_path))
+    from controller.serve import Handler
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    asset = next(iter(sorted((DIST / "assets").glob("*.js"))))
+    try:
+        with urllib.request.urlopen(f"{base}/assets/{asset.name}") as answer:
+            on_asset = answer.headers.get_all("Cache-Control") or []
+        with urllib.request.urlopen(f"{base}/") as answer:
+            on_page = answer.headers.get_all("Cache-Control") or []
+        with urllib.request.urlopen(f"{base}/api/v1/health") as answer:
+            on_api = answer.headers.get_all("Cache-Control") or []
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    assert on_asset == ["public, max-age=31536000, immutable"], \
+        f"the asset carried {on_asset}"
+    assert on_page == ["no-store"], f"index.html carried {on_page}"
+    assert on_api == ["no-store"], f"the API carried {on_api}"
+
+
 def test_an_unknown_api_route_is_never_rewritten_to_the_page():
     """`/api/...` is data. A 404 there must stay a 404."""
     resp = _get("/api/v1/nope")

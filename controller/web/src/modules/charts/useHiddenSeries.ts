@@ -5,21 +5,28 @@
  * throw in a private window and when site data is blocked, so every access is
  * guarded and the chart stays correct with no storage at all. Each chart keeps
  * its own choice, so hiding a type on Overview does not hide it on Analytics.
+ *
+ * `null` means the operator has not chosen yet, which is not the same as
+ * having chosen to hide nothing. Until they do, the chart's own default
+ * applies — a cluster with sixteen GPU types must not draw sixteen lines on
+ * a first look.
  */
 
 import { useCallback, useState } from 'react';
 
 const STORAGE_PREFIX = 'unity-hpc.chart.hidden.';
 
-const read = (chartId: string): string[] => {
+/** The stored choice, or null when the operator has not made one. */
+const read = (chartId: string): string[] | null => {
   try {
     const raw = window.localStorage.getItem(STORAGE_PREFIX + chartId);
-    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (raw === null) return null;
+    const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed.map(String);
   } catch {
-    // No storage, or bad data in it. Every series shows.
+    // No storage, or bad data in it. The chart's default applies.
   }
-  return [];
+  return null;
 };
 
 const write = (chartId: string, names: string[]): void => {
@@ -31,31 +38,44 @@ const write = (chartId: string, names: string[]): void => {
 };
 
 export type HiddenSeries = {
-  hidden: string[];
   isHidden: (name: string) => boolean;
   toggle: (name: string) => void;
+  /** True while the chart's own default is in force. */
+  usingDefault: boolean;
 };
 
-export const useHiddenSeries = (chartId: string): HiddenSeries => {
-  const [hidden, setHidden] = useState<string[]>(() => read(chartId));
+/**
+ * @param chartId the storage key, one per chart
+ * @param fallback the names to hide until the operator chooses otherwise
+ */
+export const useHiddenSeries = (
+  chartId: string,
+  fallback: string[] = [],
+): HiddenSeries => {
+  const [chosen, setChosen] = useState<string[] | null>(() => read(chartId));
+
+  const effective = chosen ?? fallback;
+
+  const isHidden = useCallback(
+    (name: string) => effective.includes(name),
+    [effective],
+  );
 
   const toggle = useCallback(
     (name: string) => {
-      setHidden((current) => {
-        const next = current.includes(name)
-          ? current.filter((one) => one !== name)
-          : [...current, name];
+      setChosen((current) => {
+        // The first click turns the default into a choice, so the series the
+        // default hid stay hidden until they are clicked too.
+        const base = current ?? fallback;
+        const next = base.includes(name)
+          ? base.filter((one) => one !== name)
+          : [...base, name];
         write(chartId, next);
         return next;
       });
     },
-    [chartId],
+    [chartId, fallback],
   );
 
-  const isHidden = useCallback(
-    (name: string) => hidden.includes(name),
-    [hidden],
-  );
-
-  return { hidden, isHidden, toggle };
+  return { isHidden, toggle, usingDefault: chosen === null };
 };
