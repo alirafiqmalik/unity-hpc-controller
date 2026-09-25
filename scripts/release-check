@@ -26,10 +26,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = ".claude-plugin/plugin.json"
+MANIFESTS = (".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
 
 #: paths whose change cannot affect what a user runs
-_IGNORED = ("tests/", ".github/", "scripts/release-check")
+_IGNORED_DIRS = ("tests/", ".github/")
+_IGNORED_FILES = {"scripts/release-check"}
 
 
 def _git(*args: str) -> str:
@@ -40,9 +41,9 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
-def _version_at(ref: str) -> str | None:
+def _version_at(ref: str, manifest: str) -> str | None:
     try:
-        raw = _git("show", f"{ref}:{MANIFEST}")
+        raw = _git("show", f"{ref}:{manifest}")
     except RuntimeError:
         return None  # manifest absent at `ref`: new plugin, not stale
     try:
@@ -66,20 +67,32 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    touched = [p for p in changed
-               if not any(p.startswith(i) for i in _IGNORED)]
+    touched = [p for p in changed if p not in _IGNORED_FILES
+               and not any(p.startswith(i) for i in _IGNORED_DIRS)]
     if not touched:
         print("release-check: no shipped file changed.")
         return 0
 
-    current = json.loads((ROOT / MANIFEST).read_text())["version"]
-    previous = _version_at(base)
-    if previous is not None and current == previous:
-        print("release-check: version bump needed before release:", file=sys.stderr)
-        print(f"  {len(touched)} shipped file(s) changed, still {current}",
+    try:
+        current = {manifest: json.loads((ROOT / manifest).read_text())["version"]
+                   for manifest in MANIFESTS}
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"release-check: cannot read plugin version: {exc}", file=sys.stderr)
+        return 2
+    if len(set(current.values())) != 1:
+        print("release-check: plugin manifest versions differ:", file=sys.stderr)
+        for manifest, version in current.items():
+            print(f"  {manifest}: {version}", file=sys.stderr)
+        return 1
+
+    previous = _version_at(base, MANIFESTS[0])
+    if previous is not None and current[MANIFESTS[0]] == previous:
+        print(f"release-check: version bump needed (still {previous}):",
               file=sys.stderr)
-        print("\nWithout a bump, `claude plugin update` reports the plugin is "
-              "already current and installs nothing.", file=sys.stderr)
+        for path in touched:
+            print(f"  {path}", file=sys.stderr)
+        print("Bump the version in both plugin manifests. Without a bump, "
+              "`claude plugin update` installs nothing.", file=sys.stderr)
         return 1
 
     print("release-check: changed plugin carries a new version.")

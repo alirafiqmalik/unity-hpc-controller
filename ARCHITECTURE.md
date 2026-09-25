@@ -1,6 +1,6 @@
 # unity-hpc — architecture
 
-Version 0.13.0. Two components share one ledger contract.
+Version 0.14.0. Two components share one ledger contract.
 
 **The central contract:** `unityHPC/run.sh` records every job it submits into
 `<project>/.unity_state/<campaign>.db`. Every management tool reads that ledger.

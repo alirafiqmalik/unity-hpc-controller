@@ -168,9 +168,9 @@ def test_remote_prune_cli_drops_an_archived_day(tmp_data_dir, tmp_path):
     assert (paths.telemetry_dir() / "2026-05-01").exists()
 
 
-def test_local_retention_backs_up_raw_and_summaries_before_pruning(
-    tmp_data_dir, tmp_path,
-):
+@pytest.fixture
+def retention_sample(tmp_data_dir):
+    """One expired day and one live day in both raw trees and the summary DB."""
     sys.path.insert(0, str(REPO_ROOT / "cluster-intel"))
     import rollup
 
@@ -192,11 +192,20 @@ def test_local_retention_backs_up_raw_and_summaries_before_pruning(
                     (day,))
     con.commit()
     con.close()
+    return old, recent
 
+
+def test_local_retention_preview_lists_only_expired_day(retention_sample):
+    old, recent = retention_sample
     preview = local_retention.run(90, today=date(2026, 9, 25), dry_run=True)
     assert preview["days"] == [old]
+    assert preview["archived"] is False
     assert (paths.telemetry_dir() / old).exists()
+    assert (paths.telemetry_dir() / recent).exists()
 
+
+def test_local_retention_raw_backups_preserve_bytes_before_removal(retention_sample):
+    old, recent = retention_sample
     result = local_retention.run(90, today=date(2026, 9, 25))
     assert result["days"] == [old]
     folder = paths.archive_dir() / "telemetry-retention" / old
@@ -210,6 +219,13 @@ def test_local_retention_backs_up_raw_and_summaries_before_pruning(
         assert not (paths.data_dir() / tree / old).exists()
         assert (paths.data_dir() / tree / recent).exists()
 
+
+def test_local_retention_summary_backup_contains_only_expired_day(
+    retention_sample, tmp_path,
+):
+    old, _ = retention_sample
+    local_retention.run(90, today=date(2026, 9, 25))
+    folder = paths.archive_dir() / "telemetry-retention" / old
     summary = next(folder.glob("summary-*.sqlite.gz"))
     saved_db = tmp_path / "saved.sqlite"
     with gzip.open(summary, "rb") as src, saved_db.open("wb") as dest:
@@ -221,6 +237,10 @@ def test_local_retention_backs_up_raw_and_summaries_before_pruning(
     assert archived.execute("SELECT n FROM task_profile").fetchall() == [(1,)]
     archived.close()
 
+
+def test_local_retention_keeps_recent_rows_and_second_run_is_empty(retention_sample):
+    _, recent = retention_sample
+    local_retention.run(90, today=date(2026, 9, 25))
     live = sqlite3.connect(paths.summaries_db())
     assert live.execute("SELECT day_utc FROM task_run").fetchall() == [(recent,)]
     assert live.execute("SELECT day_utc FROM daily_resource").fetchall() == [(recent,)]

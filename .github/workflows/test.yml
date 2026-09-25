@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  tests:
+    name: Python and dashboard tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +33,23 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest
       - name: Run tests
-        run: python -m pytest tests/ -q
+        run: python -m pytest tests/ -q -ra --tb=short
       - name: Dashboard browser smoke test
         env:
           UNITY_HPC_UI_SMOKE: "1"
-        run: python -m pytest tests/test_controller_web_smoke.py -q
-      - name: Release check (version bump guard)
-        if: github.event_name == 'pull_request'
+        run: python -m pytest tests/test_controller_web_smoke.py -q -ra --tb=short
+
+  release-check:
+    name: Plugin version guard
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check shipped changes and manifest versions
         run: |
-          git fetch origin ${{ github.base_ref }}
           scripts/release-check --base origin/${{ github.base_ref }}
