@@ -1,6 +1,7 @@
 """Controller HTTP seam — handle() with no sockets."""
 
 import json
+import sqlite3
 
 import pytest
 
@@ -69,6 +70,37 @@ def test_attach_requires_path(tmp_data_dir):
     assert "path" in body["error"]
 
 
+def test_overlapping_project_operations_return_conflict(tmp_project, tmp_data_dir):
+    from controller import dispatch
+
+    registry.attach("lab", tmp_project)
+    rec = registry.get("lab")
+    with dispatch._operation(rec, "fetch"):
+        status, body = _call("POST", "/api/v1/projects/lab/fetch", {})
+        assert status == 409
+        assert "fetch in progress" in body["error"]
+    with dispatch._operation(rec, "launch"):
+        status, body = _call("POST", "/api/v1/projects/lab/runs", {
+            "exp": "smoke", "dry_run": True,
+        })
+        assert status == 409
+        assert "launch in progress" in body["error"]
+
+
+def test_status_uses_selected_campaign(tmp_project, tmp_data_dir, monkeypatch):
+    from controller import dispatch
+
+    registry.attach("lab", tmp_project)
+    monkeypatch.setattr(dispatch, "_run", lambda _rec, argv, **_kw: {
+        "ok": True, "argv": argv,
+    })
+    status, body = _call("POST", "/api/v1/projects/lab/status", {
+        "campaign": "older-campaign",
+    })
+    assert status == 200
+    assert body["argv"] == ["status", "--campaign", "older-campaign"]
+
+
 def test_jobs_from_attached_ledger(tmp_project, tmp_data_dir):
     registry.attach("lab", tmp_project, primitive="cpu")
     _campaign.record(tmp_project, "2026-09-21", "12345", "smoke", "cpu")
@@ -78,6 +110,44 @@ def test_jobs_from_attached_ledger(tmp_project, tmp_data_dir):
     assert body["jobs"][0]["exp"] == "smoke"
     status, body = _call("GET", "/api/v1/jobs")
     assert any(j["job_id"] == "12345" and j["slug"] == "lab" for j in body["jobs"])
+
+
+def test_jobs_fold_local_telemetry_without_ssh(tmp_project, tmp_data_dir, monkeypatch):
+    from controller import dispatch
+    from lib import paths
+
+    registry.attach("lab", tmp_project, primitive="gpu")
+    _campaign.record(tmp_project, "c1", "12345", "smoke", "gpu")
+    con = sqlite3.connect(paths.summaries_db())
+    con.execute("CREATE TABLE task_run(job_id TEXT, hardware TEXT, elapsed_s REAL, "
+                "wait_s REAL, cpu_eff REAL, mem_eff REAL, max_rss_mb REAL, "
+                "state TEXT, exit_code INTEGER, day_utc TEXT)")
+    con.execute("INSERT INTO task_run VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("12345", "a100", 42.0, None, None, None, None,
+                 "COMPLETED", 0, "2026-09-28"))
+    con.commit()
+    con.close()
+    monkeypatch.setattr(dispatch, "_run", lambda *_args, **_kw: (_ for _ in ()).throw(
+        AssertionError("GET jobs must not call run.sh or SSH")))
+
+    status, body = _call("GET", "/api/v1/jobs")
+    assert status == 200
+    assert body["jobs"][0]["status"] == "COMPLETED"
+    assert body["jobs"][0]["hardware"] == "a100"
+    status, body = _call("GET", "/api/v1/projects/lab/jobs")
+    assert status == 200
+    assert body["jobs"][0]["status"] == "COMPLETED"
+
+
+def test_job_poll_without_telemetry_does_not_rewrite_ledger(tmp_project, tmp_data_dir):
+    registry.attach("lab", tmp_project)
+    _campaign.record(tmp_project, "c1", "12345", "smoke", "cpu")
+    db = tmp_project / ".unity_state" / "c1.db"
+    before = db.stat().st_mtime_ns
+    status, body = _call("GET", "/api/v1/jobs")
+    assert status == 200
+    assert body["jobs"][0]["status"] == "PENDING"
+    assert db.stat().st_mtime_ns == before
 
 
 def test_root_serves_the_dashboard(tmp_data_dir):

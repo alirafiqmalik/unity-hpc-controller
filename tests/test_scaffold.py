@@ -172,3 +172,20 @@ def test_run_sh_can_report_its_own_version(tmp_project, materialise):
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert scaffold.plugin_version() in result.stdout
+
+
+def test_repeated_setup_preserves_project_transfer_adapters_and_secrets(tmp_project):
+    dest = tmp_project / 'unityHPC'
+    dest.mkdir()
+    contents = {
+        'sync.sh': '# UNITY_SCAFFOLD_VERSION=older\n# locally adapted\nrsync --exclude=data source target\n',
+        'fetch.sh': '#!/bin/bash\n# project retrieval contract\n',
+        '.env': 'TOKEN=project-secret\n',
+        'project.json': '{"schema_version":1,"project_owned":true}\n',
+    }
+    for name, content in contents.items():
+        (dest / name).write_text(content)
+    for _ in range(2):
+        scaffold.apply(scaffold.plan(tmp_project, 'gpu'))
+        for name, content in contents.items():
+            assert (dest / name).read_text() == content

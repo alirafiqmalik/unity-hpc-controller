@@ -38,7 +38,7 @@ _TEMPLATE_NAME = {".env": "env.example"}
 BACKUP_DIRNAME = ".pre-redesign"
 
 #: files that become user data once written, and are never replaced afterwards
-_USER_OWNED = frozenset({".env"})
+_USER_OWNED = frozenset({".env", "sync.sh", "fetch.sh"})
 
 
 def plugin_root() -> Path:
@@ -91,7 +91,7 @@ def plan(project_dir: Path, ptype: str) -> list[Action]:
 
     - absent          -> create
     - byte-identical  -> skip
-    - user-owned      -> skip (`.env` is the user's once it exists)
+    - user-owned      -> skip (environment and transfer adapters stay project-owned)
     - differing       -> replace, displacing the original to .pre-redesign/
     """
     if ptype not in TYPES:

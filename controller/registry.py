@@ -21,7 +21,7 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 _FIELDS = (
     "slug", "path", "primitive", "remote_dir", "unity_host",
-    "campaign", "attached_utc", "overrides",
+    "campaign", "attached_utc", "overrides", "resources", "sync_policy",
 )
 
 
@@ -91,9 +91,13 @@ def _validate_slug(slug: str) -> str:
 
 
 def _normalise(record: dict) -> dict:
-    out = {k: record.get(k, "" if k != "overrides" else {}) for k in _FIELDS}
-    if not isinstance(out["overrides"], dict):
-        out["overrides"] = {}
+    out = {k: record.get(k, "") for k in _FIELDS}
+    for key in ("overrides", "resources"):
+        if not isinstance(out[key], dict):
+            out[key] = {}
+    # Existing registries predate sync policy and retain their old behavior.
+    if out["sync_policy"] not in ("run_sh", "disabled"):
+        out["sync_policy"] = "run_sh"
     return out
 
 
@@ -120,6 +124,8 @@ def attach(
     unity_host: str = "unity",
     campaign: str = "",
     overrides: dict | None = None,
+    resources: dict | None = None,
+    sync_policy: str | None = None,
 ) -> dict:
     """Register or update an attached project. Returns the stored record."""
     slug = _validate_slug(slug)
@@ -130,6 +136,12 @@ def attach(
         raise RegistryError(
             f"unknown primitive {primitive!r}; expected one of {', '.join(TYPES)}"
         )
+    if not isinstance(overrides if overrides is not None else {}, dict):
+        raise RegistryError("overrides must be an object")
+    if not isinstance(resources if resources is not None else {}, dict):
+        raise RegistryError("resources must be an object")
+    if sync_policy is not None and sync_policy not in ("run_sh", "disabled"):
+        raise RegistryError("sync_policy must be 'run_sh' or 'disabled'")
     record = {
         "slug": slug,
         "path": str(project_dir),
@@ -139,6 +151,8 @@ def attach(
         "campaign": campaign or "",
         "attached_utc": _now(),
         "overrides": dict(overrides or {}),
+        "resources": dict(resources or {}),
+        "sync_policy": sync_policy or "run_sh",
     }
 
     def _write():
@@ -148,6 +162,14 @@ def attach(
         existing = next((p for p in data["projects"] if p.get("slug") == slug), None)
         if existing and existing.get("attached_utc"):
             record["attached_utc"] = existing["attached_utc"]
+        # A second connect call supplies only connection fields. Keep the
+        # operator's safety policy and resource declaration unless supplied.
+        if existing and resources is None:
+            record["resources"] = _normalise(existing)["resources"]
+        if existing and overrides is None:
+            record["overrides"] = _normalise(existing)["overrides"]
+        if existing and sync_policy is None:
+            record["sync_policy"] = _normalise(existing)["sync_policy"]
         projects.append(record)
         projects.sort(key=lambda p: p.get("slug", ""))
         _write_unlocked(store, {"projects": projects})
@@ -163,6 +185,7 @@ def update(slug: str, **fields) -> dict:
         raise RegistryError(f"unknown project {slug!r}")
     allowed = {
         "path", "primitive", "remote_dir", "unity_host", "campaign", "overrides",
+        "resources", "sync_policy",
     }
     unknown = sorted(k for k in fields if k not in allowed)
     if unknown:
@@ -177,6 +200,8 @@ def update(slug: str, **fields) -> dict:
         unity_host=merged["unity_host"],
         campaign=merged["campaign"],
         overrides=merged.get("overrides") or {},
+        resources=merged.get("resources") or {},
+        sync_policy=merged.get("sync_policy") or "run_sh",
     )
 
 

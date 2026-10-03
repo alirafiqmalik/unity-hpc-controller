@@ -40,11 +40,13 @@ set -euo pipefail
 UNITY_SCAFFOLD_VERSION="@@UNITY_HPC_VERSION@@"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$HERE/.." && pwd)"
+PROJECT_DIR="${UNITY_WORKSPACE_PROJECT_DIR:-$(cd "$HERE/.." && pwd)}"
 STATE_DIR="$PROJECT_DIR/.unity_state"
 
 if [ -f "$HERE/.env" ]; then
     ENV_FILE="$HERE/.env"
+elif [ -f "$PROJECT_DIR/unityHPC/.env" ]; then
+    ENV_FILE="$PROJECT_DIR/unityHPC/.env"
 elif [ -f "$PROJECT_DIR/.env" ]; then
     ENV_FILE="$PROJECT_DIR/.env"
 else
@@ -59,8 +61,8 @@ fi
 # VENV_PATH and HF_HOME were missing, so they could not be set for one run the
 # way their siblings could -- and a caller passing MODULES=gcc silently got
 # .env's empty value instead, which looks exactly like a broken module system.
-UNITY_OVERRIDABLE="JOB_COMMAND WALLTIME SLURM_PARTITION SLURM_CPUS SLURM_MEM
-                   SLURM_NODES SLURM_GPUS SLURM_GPU_TYPE SLURM_CONSTRAINT SLURM_ACCOUNT
+UNITY_OVERRIDABLE="UNITY_JOB_TEMPLATE JOB_COMMAND WALLTIME SLURM_PARTITION SLURM_CPUS SLURM_MEM
+                   SLURM_NODES SLURM_NTASKS SLURM_GPUS SLURM_GPU_TYPE SLURM_CONSTRAINT SLURM_ACCOUNT
                    SLURM_PARTITION_FALLBACK SLURM_PARTITION_WALLTIME_CAP
                    REMOTE_DIR REMOTE_RESULTS_DIR UNITY_HOST CAMPAIGN
                    MODULES VENV_PATH HF_HOME USER_EMAIL
@@ -146,15 +148,15 @@ PY
     target="${UNITY_CID}/manifests/${job_id}.json"
     printf -v qmanifest '%q' "${UNITY_CID}/manifests"
     printf -v qtarget '%q' "$target"
-    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" \
+    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=10 "$UNITY_HOST" \
         "mkdir -p -- ${qmanifest}"
-    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" \
+    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=10 "$UNITY_HOST" \
         "cat > ${qtarget}" <"$tmp"
     rm -f "$tmp"
 }
 
 _ssh() {
-    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$@"
+    timeout --foreground "$UNITY_SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=10 "$@"
 }
 
 # An experiment or campaign name becomes a SLURM job name, a local filename, a
@@ -464,7 +466,9 @@ elif mode == "ids":
         "THEN substr(job_id, 1, instr(job_id, '_') - 1) ELSE job_id END "
         "FROM jobs ORDER BY rowid")))
 elif mode == "newest":
-    for r in con.execute("SELECT job_id, exp FROM jobs ORDER BY rowid DESC LIMIT 1"):
+    selected = sys.argv[4] if len(sys.argv) > 4 else ""
+    query = "SELECT job_id, exp FROM jobs WHERE job_id=?" if selected else "SELECT job_id, exp FROM jobs ORDER BY rowid DESC LIMIT 1"
+    for r in con.execute(query, (selected,) if selected else ()):
         print("\t".join(str(x) for x in r))
 elif mode == "update":
     current = {r["job_id"]: r["status"] for r in con.execute("SELECT job_id, status FROM jobs")}
@@ -584,6 +588,7 @@ render() {
     echo "#SBATCH --partition=${SLURM_PARTITION}"
     echo "#SBATCH --time=${WALLTIME}"
     echo "#SBATCH --nodes=${SLURM_NODES}"
+    if [ -n "${SLURM_NTASKS:-}" ]; then echo "#SBATCH --ntasks=${SLURM_NTASKS}"; fi
     echo "#SBATCH --cpus-per-task=${SLURM_CPUS}"
     echo "#SBATCH --mem=${SLURM_MEM}"
     echo "#SBATCH --output=${REMOTE_DIR}/_slurm/${exp}-%j.out"
@@ -619,7 +624,7 @@ render() {
     printf 'export MODULES=%q\n' "${MODULES:-}"
     printf 'export HF_HOME=%q\n' "${HF_HOME:-}"
     echo ""
-    cat "$HERE/job_template.sh"
+    cat "${UNITY_JOB_TEMPLATE:-$HERE/job_template.sh}"
 }
 
 cmd_run() {
@@ -700,6 +705,7 @@ render_array() {
     echo "#SBATCH --partition=${SLURM_PARTITION}"
     echo "#SBATCH --time=${WALLTIME}"
     echo "#SBATCH --nodes=${SLURM_NODES}"
+    if [ -n "${SLURM_NTASKS:-}" ]; then echo "#SBATCH --ntasks=${SLURM_NTASKS}"; fi
     echo "#SBATCH --cpus-per-task=${SLURM_CPUS}"
     echo "#SBATCH --mem=${SLURM_MEM}"
     echo "#SBATCH --output=${REMOTE_DIR}/_slurm/${campaign}-%A_%a.out"
@@ -776,7 +782,7 @@ ARRAY_MANIFEST_WAIT
     printf 'export MODULES=%q\n' "${MODULES:-}"
     printf 'export HF_HOME=%q\n' "${HF_HOME:-}"
     echo ""
-    cat "$HERE/job_template.sh"
+    cat "${UNITY_JOB_TEMPLATE:-$HERE/job_template.sh}"
 }
 
 cmd_array() {
@@ -848,6 +854,16 @@ cmd_array() {
     fi
 }
 
+cmd_workspace_environment() {
+    # Public execution settings only. Secret values never enter plan metadata.
+    export SLURM_ACCOUNT SLURM_PARTITION SLURM_GPU_TYPE SLURM_CONSTRAINT REMOTE_DIR REMOTE_RESULTS_DIR UNITY_HOST VENV_PATH MODULES HF_HOME USER_EMAIL
+    python3 - <<'UNITY_WORKSPACE_ENV'
+import json, os
+keys = "SLURM_ACCOUNT SLURM_PARTITION SLURM_GPU_TYPE SLURM_CONSTRAINT REMOTE_DIR REMOTE_RESULTS_DIR UNITY_HOST VENV_PATH MODULES HF_HOME USER_EMAIL".split()
+print(json.dumps({key: os.environ.get(key, "") for key in keys}))
+UNITY_WORKSPACE_ENV
+}
+
 cmd_sync() {
     bash "$HERE/sync.sh"
 }
@@ -891,10 +907,11 @@ cmd_status() {
 }
 
 cmd_logs() {
-    local lines=40
+    local lines=40 selected_job=""
     local args=()
     while [ $# -gt 0 ]; do
         case "$1" in
+            --job) selected_job="${2:?missing job}"; shift 2 ;;
             -n) lines="${2:-40}"; shift 2 ;;
             -n*) lines="${1#-n}"; shift ;;
             *) args+=("$1"); shift ;;
@@ -905,7 +922,7 @@ cmd_logs() {
 
     local campaign newest job_id exp
     campaign="$(_campaign)"
-    newest="$(_ledger newest "$campaign")"
+    newest="$(_ledger newest "$campaign" "$selected_job")"
     if [ -z "$newest" ]; then
         echo "No jobs recorded for campaign ${campaign}."
         return 0
@@ -921,6 +938,110 @@ cmd_logs() {
         echo "--- ${log_name}.${stream} (last ${lines} lines) ---"
         _ssh "$UNITY_HOST" "tail -n ${lines} ${REMOTE_DIR}/_slurm/${log_name}.${stream} 2>&1 || true"
     done
+}
+
+# Exact workspace stream transport. The ledger resolves names; callers cannot
+# provide a filesystem path. Text reads remain bounded to 64 KiB.
+_log_target() {
+    LOG_JOB='' LOG_STREAM=out LOG_OFFSET=-1 LOG_LIMIT=65536 LOG_HASH=0
+    local args=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --job) LOG_JOB="${2:?missing job}"; shift 2 ;;
+            --stream) LOG_STREAM="${2:?missing stream}"; shift 2 ;;
+            --offset) LOG_OFFSET="${2:?missing offset}"; shift 2 ;;
+            --limit) LOG_LIMIT="${2:?missing limit}"; shift 2 ;;
+            --full-hash) LOG_HASH=1; shift ;;
+            *) args+=("$1"); shift ;;
+        esac
+    done
+    [[ "$LOG_JOB" =~ ^[0-9]+(_[0-9]+)?$ ]] || { echo 'Exact numeric job identity required' >&2; return 2; }
+    [[ "$LOG_STREAM" == out || "$LOG_STREAM" == err ]] || { echo 'Invalid stream' >&2; return 2; }
+    [[ "$LOG_OFFSET" =~ ^-?[0-9]+$ && "$LOG_LIMIT" =~ ^[0-9]+$ ]] || return 2
+    [ "$LOG_LIMIT" -ge 1 ] && [ "$LOG_LIMIT" -le 65536 ] && [ "$LOG_OFFSET" -ge -1 ] || return 2
+    _take_campaign ${args[@]+"${args[@]}"}
+    require REMOTE_DIR
+    LOG_CAMPAIGN="$(_campaign)"
+    local row exp
+    row="$(_ledger newest "$LOG_CAMPAIGN" "$LOG_JOB")"
+    [ -n "$row" ] || { echo 'Job does not belong to this campaign' >&2; return 2; }
+    exp="$(printf '%s' "$row" | cut -f2)"
+    _require_safe_name 'experiment' "$exp"
+    LOG_STEM="${exp}-${LOG_JOB}"
+    [[ "$LOG_JOB" != *_* ]] || LOG_STEM="${LOG_CAMPAIGN}-${LOG_JOB}"
+}
+
+cmd_log_read() {
+    _log_target "$@"
+    local command
+    printf -v command 'python3 - %q %q %q %q %q' "$REMOTE_DIR" "${LOG_STEM}.${LOG_STREAM}" "$LOG_OFFSET" "$LOG_LIMIT" "$LOG_HASH"
+    _ssh "$UNITY_HOST" "$command" <<'PYLOG'
+import base64,hashlib,json,os,sys
+from pathlib import Path
+from datetime import datetime,timezone
+root=Path(sys.argv[1]).resolve(); path=root/'_slurm'/sys.argv[2]
+if path.is_symlink() or not path.resolve().is_relative_to(root):
+    raise SystemExit('Unsafe log path')
+if not path.is_file():
+    print(json.dumps({'availability':'not-created','reason':'Not created yet'})); raise SystemExit(0)
+with path.open('rb') as stream:
+    stat=os.fstat(stream.fileno()); size=stat.st_size
+    if size > 268435456 and sys.argv[5]=='1':
+        raise SystemExit('Full log retrieval exceeds 256 MiB; use bounded reads')
+    prefix=hashlib.sha256(stream.read(min(4096,size))).hexdigest()
+    full=None
+    if sys.argv[5]=='1':
+        stream.seek(0); hasher=hashlib.sha256()
+        while True:
+            block=stream.read(1048576)
+            if not block: break
+            hasher.update(block)
+        full=hasher.hexdigest()
+    offset=int(sys.argv[3]); limit=int(sys.argv[4]); start=max(0,size-limit) if offset==-1 else offset
+    stream.seek(start); data=stream.read(limit)
+print(json.dumps({'availability':'available','file_id':f'{stat.st_dev}:{stat.st_ino}',
+    'size':size,'offset':start,'next_offset':start+len(data),'data':base64.b64encode(data).decode(),
+    'prefix':prefix,'prefix_size':min(4096,size),'sha256':full,
+    'observed_at':datetime.now(timezone.utc).isoformat(),
+    'modified_at':datetime.fromtimestamp(stat.st_mtime,timezone.utc).isoformat()}))
+PYLOG
+}
+
+cmd_log_fetch() {
+    _log_target "$@"
+    local metadata dest temporary
+    metadata="$(cmd_log_read --campaign "$LOG_CAMPAIGN" --job "$LOG_JOB" --stream "$LOG_STREAM" --limit 1 --full-hash)"
+    python3 -c 'import json,sys; r=json.loads(sys.argv[1]); sys.exit(0 if r.get("availability")=="available" and r.get("sha256") else 2)' "$metadata"
+    dest="$PROJECT_DIR/_results/$LOG_CAMPAIGN"
+    python3 -c 'import pathlib,sys; root=pathlib.Path(sys.argv[1]).resolve(); dest=pathlib.Path(sys.argv[2]); sys.exit(0 if dest.resolve().is_relative_to(root) and not dest.is_symlink() else 2)' "$PROJECT_DIR" "$dest"
+    mkdir -p "$dest"
+    temporary="$(mktemp "$dest/.log-transfer.XXXXXXXX")"
+    if ! rsync --protect-args -az -- "${UNITY_HOST}:${REMOTE_DIR}/_slurm/${LOG_STEM}.${LOG_STREAM}" "$temporary"; then
+        rm -f "$temporary"
+        return 1
+    fi
+    python3 - "$temporary" "$dest/${LOG_STEM}.${LOG_STREAM}" "$metadata" <<'PYFETCH'
+import hashlib,json,os,sys
+from pathlib import Path
+source=Path(sys.argv[1]); target=Path(sys.argv[2]); metadata=json.loads(sys.argv[3])
+def sha(path):
+    with path.open('rb') as stream:
+        value=hashlib.sha256()
+        for block in iter(lambda:stream.read(1048576),b''): value.update(block)
+        return value.hexdigest()
+try:
+    if source.stat().st_size!=metadata['size'] or sha(source)!=metadata['sha256']:
+        raise SystemExit('Log changed during transfer; retry this exact stream')
+    if target.is_symlink(): raise SystemExit('Cached log target is a symlink')
+    if target.exists():
+        previous=sha(target); history=target.parent/'.log-history'; history.mkdir(exist_ok=True)
+        saved=history/(target.name+'.'+previous)
+        if not saved.exists(): os.link(target,saved)
+    os.replace(source,target)
+    print(json.dumps({'state':'complete','path':str(target),'sha256':metadata['sha256'],'size':metadata['size']}))
+finally:
+    source.unlink(missing_ok=True)
+PYFETCH
 }
 
 cmd_fetch() {
@@ -1014,10 +1135,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         run)    shift; cmd_run "$@" ;;
         array)  shift; cmd_array "$@" ;;
         render) shift; render "${1:-preview}" ;;
+        workspace-env) cmd_workspace_environment ;;
         sync)   cmd_sync ;;
         status) shift; cmd_status "$@" ;;
         jobs)   shift; cmd_jobs "$@" ;;
         logs)   shift; cmd_logs "$@" ;;
+        log-read) shift; cmd_log_read "$@" ;;
+        log-fetch) shift; cmd_log_fetch "$@" ;;
         fetch)  shift; cmd_fetch "$@" ;;
         cancel) shift; cmd_cancel "$@" ;;
         *)      echo "usage: run.sh {run <exp> [--campaign N] [--dry-run] [sbatch args] |" >&2

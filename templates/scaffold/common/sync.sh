@@ -13,8 +13,11 @@ if [ -f "$HERE/.env" ]; then . "$HERE/.env"; elif [ -f "$PROJECT_DIR/.env" ]; th
 
 printf -v QREMOTE '%q' "$REMOTE_DIR"
 
-timeout --foreground "$UNITY_SSH_TIMEOUT" ssh "$UNITY_HOST" "mkdir -p -- $QREMOTE"
-rsync -az --delete \
+timeout --foreground "$UNITY_SSH_TIMEOUT" ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    "$UNITY_HOST" "mkdir -p -- $QREMOTE"
+: "${RSYNC_RSH:=ssh -o BatchMode=yes -o ConnectTimeout=10}"
+export RSYNC_RSH
+rsync -az --timeout=120 --delete \
     --exclude '.git/' --exclude '__pycache__/' --exclude '.venv/' \
     --exclude '_results/' --exclude '.unity_state/' --exclude '_slurm/' \
     "$PROJECT_DIR/" "${UNITY_HOST}:${REMOTE_DIR}/"

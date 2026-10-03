@@ -3,6 +3,9 @@
 Always-on HTTP service for Unity HPC: project registry, cluster snapshot,
 dispatch through `unityHPC/run.sh`, and the dashboard.
 
+For one-time SSH key unlocking with a shared agent and desktop keyring, see
+[SSH authentication](../docs/ssh-authentication.md).
+
 ```bash
 scripts/hpc-controller                      # background + Tailscale HTTPS
 scripts/hpc-controller --status
@@ -17,6 +20,68 @@ Do not use `tailscale funnel`.
 
 Operator runbooks (the old skill bodies) are in `ops/`. The HTTP seam is
 `http.handle` — tests call it without sockets.
+
+## Attached projects and experiment catalogs
+
+`POST /api/v1/projects` and `PATCH /api/v1/projects/{slug}` accept a
+`resources` JSON object for project-wide requirements and a `sync_policy` of
+`run_sh` or `disabled`. The policy defaults to `run_sh` for old registries.
+Once set, a second attach without a policy or resources keeps both settings.
+When disabled, `POST /api/v1/projects/{slug}/sync` rejects the call before it
+can invoke `run.sh sync`. Use this for projects whose generated `sync.sh` could
+delete remote data.
+
+The project may declare `unityHPC/experiments.json` with this shape:
+
+```json
+{
+  "schema_version": 1,
+  "experiments": [
+    {
+      "id": "example-canary",
+      "title": "Toolchain canary",
+      "status": "ready",
+      "resources": {"gpus_per_task": 1, "walltime": "00:20:00"},
+      "launch": {
+        "kind": "script",
+        "path": "slurm/canary.sh",
+        "args": [],
+        "dry_run_arg": "--dry-run"
+      }
+    }
+  ]
+}
+```
+
+`GET /api/v1/projects/{slug}` and the project list include these entries.
+`GET /api/v1/projects/{slug}/experiments` returns the catalog alone. A missing
+catalog yields an empty list; a malformed one reports `experiments_error`.
+Each `id` is URL-safe and unique. `status` is `ready`, `needs_input`, or
+`historical`. The optional `launch` may be a project-local `.sh` script with
+fixed arguments as above, or a fixed dispatcher plan:
+
+```json
+{"kind":"run","exp":"canary","campaign":"validation","overrides":{"WALLTIME":"00:20:00"}}
+```
+
+`POST /api/v1/projects/{slug}/experiments/{id}/runs` accepts only
+`{"dry_run": true|false}`. `ready` entries can launch or preview;
+`needs_input` entries can preview, and `historical` entries cannot launch.
+The script path must resolve inside the project. Project-owned scripts must
+call `unityHPC/run.sh` for live submission so the ledger remains complete.
+
+Job list reads fold any matching rows from the local `summaries.db` into each
+project ledger before answering. This updates observed state and hardware
+without SSH. No ledger write occurs when telemetry has no matching rows.
+
+`POST /api/v1/projects/{slug}/fetch` runs `run.sh fetch` for scheduler logs.
+If the project has `unityHPC/fetch.sh`, it then runs that project-owned
+artifact pull hook and returns separate `logs` and `artifacts` results. A hook
+must stay inside the project directory and has a 30-minute timeout. The HTTP
+request waits for both steps, so a large pull may outlast a browser or proxy
+timeout; the hook's local files and controller event log remain available for
+inspection. The project detail reports `artifact_fetch: true` when a hook is
+available.
 
 ## Telemetry retrieval
 

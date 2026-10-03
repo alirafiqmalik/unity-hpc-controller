@@ -115,8 +115,24 @@ def test_the_router_has_no_page_the_drawer_hides():
     declared = set(re.findall(r'path="(/[^"*]+)"', app))
     declared.discard("/")
     declared.discard("/settings")
+    declared.discard("/projects/:slug")
     assert declared <= set(ALL_ROUTES), \
         f"routes missing from the drawer: {sorted(declared - set(ALL_ROUTES))}"
+
+
+def test_project_routes_have_their_own_navigation_and_overview_landing():
+    app = _read("src/App.tsx")
+    navigation = _read("src/modules/navigation/routes.ts")
+    drawer = _read("src/ui/layout/NavigationDrawer.tsx")
+    assert 'path="/projects/:slug"' in app
+    assert '<Navigate to="overview" replace' in app
+    sections = re.search(r'PROJECT_SECTIONS = \[([^\]]+)\]', navigation).group(1)
+    for label in re.findall(r"'([^']+)'", sections):
+        assert f'path="{label.lower()}"' in app
+    assert 'PROJECT_SECTIONS.map' in drawer
+    assert 'to={projectsReturn}' in drawer
+    assert "let projectsReturn = '/jobs/project'" in drawer
+    assert "sessionStorage.getItem('unity-hpc.projects-return')" in drawer
 
 
 def test_the_default_route_is_the_overview():
@@ -139,7 +155,10 @@ def _get(path: str):
 
 
 @needs_build
-@pytest.mark.parametrize("path", ["/", *ALL_ROUTES])
+@pytest.mark.parametrize("path", ["/", *ALL_ROUTES, "/projects/demo/overview",
+                                  "/projects/demo/experiments/exp-example",
+                                  "/projects/demo/review/plan-example",
+                                  "/projects/demo/runs?execution=plan-example"])
 def test_every_route_answers_with_the_page(path):
     """A deep link must work on a cold load, not only after client routing."""
     resp = _get(path)

@@ -12,6 +12,8 @@ import re
 import shlex
 import subprocess
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +35,9 @@ _LOG_END = "--- unity-hpc-session-log-end ---"
 SESSION_LOG_KEEP = 50
 #: An SSH config Host alias. No user@host, no options, no spaces.
 _HOST_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_restore_lock = threading.Lock()
+_last_restore_attempt: dict[str, float] = {}
+_RESTORE_RETRY_S = 30
 
 
 def inactivity_timeout_s(interval_minutes: int) -> int:
@@ -102,8 +107,8 @@ def clean_ssh_identity(value) -> str:
 def ssh_argv(host: str, identity: str = "") -> list[str]:
     """The ssh invocation. The host is an SSH config alias (e.g. `unity`).
 
-    No BatchMode, no ConnectTimeout: those flags bypass ~/.ssh/config and
-    are what produced Permission denied against the resolved FQDN.
+    Use the configured alias and its SSH settings. Command-line -o options
+    override individual config values; they do not bypass ~/.ssh/config.
     """
     dest = clean_ssh_host(host)
     ident = clean_ssh_identity(identity)
@@ -153,6 +158,25 @@ def _run(argv, run=None, **kwargs):
     return subprocess.run(argv, capture_output=True, text=True, **kwargs)
 
 
+def _agent_env(host: str) -> dict[str, str]:
+    """Use the socket selected by SSH's Host entry when it names one."""
+    env = dict(os.environ)
+    try:
+        proc = subprocess.run(
+            ["ssh", "-G", clean_ssh_host(host)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return env
+    for line in proc.stdout.splitlines():
+        if line.lower().startswith("identityagent "):
+            socket = line.split(" ", 1)[1].strip()
+            if socket.startswith("/") or socket.startswith("~/"):
+                env["SSH_AUTH_SOCK"] = str(Path(socket).expanduser())
+            break
+    return env
+
+
 def agent_status(host: str, identity: str = "", run=None) -> dict:
     """Whether the alias key is loaded. A missing load is a passphrase prompt."""
     path = resolve_identity(host, identity) if identity else (
@@ -166,7 +190,8 @@ def agent_status(host: str, identity: str = "", run=None) -> dict:
         "needs_passphrase": False, "agent": False,
     }
     try:
-        listed = _run(["ssh-add", "-l"], run=run)
+        listed = _run(["ssh-add", "-l"], run=run,
+                      env=_agent_env(host) if run is None else None)
     except OSError:
         empty["needs_passphrase"] = exists
         return empty
@@ -205,31 +230,115 @@ def _wipe(path: str) -> None:
         pass
 
 
-def _ensure_agent() -> None:
-    """Start an ssh-agent in this process when none is listening."""
+def _ensure_agent(env: dict[str, str] | None = None) -> bool:
+    """Reuse an agent, including an empty one; start one only if absent."""
+    env = env if env is not None else os.environ
     try:
         listed = subprocess.run(
             ["ssh-add", "-l"], capture_output=True, text=True, timeout=5,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         listed = None
-    if listed is not None and listed.returncode == 0:
-        return
+    # ssh-add returns 1 when the agent is healthy but contains no keys.
+    if listed is not None and listed.returncode in (0, 1):
+        return True
+    # An explicit IdentityAgent cannot be replaced with a private process.
+    if env.get("SSH_AUTH_SOCK") and env is not os.environ:
+        return False
     try:
         proc = subprocess.run(
             ["ssh-agent", "-s"], capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
+        return False
     for line in (proc.stdout or "").splitlines():
         if line.startswith("SSH_AUTH_SOCK="):
-            os.environ["SSH_AUTH_SOCK"] = line.split("=", 1)[1].split(";")[0]
+            env["SSH_AUTH_SOCK"] = line.split("=", 1)[1].split(";")[0]
         elif line.startswith("SSH_AGENT_PID="):
-            os.environ["SSH_AGENT_PID"] = line.split("=", 1)[1].split(";")[0]
+            env["SSH_AGENT_PID"] = line.split("=", 1)[1].split(";")[0]
+    if env is not os.environ:
+        os.environ.update({k: env[k] for k in ("SSH_AUTH_SOCK", "SSH_AGENT_PID") if k in env})
+    return bool(env.get("SSH_AUTH_SOCK"))
+
+
+def _identity_fingerprint(path: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["ssh-keygen", "-l", "-f", path],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return _first_fp(proc.stdout) if proc.returncode == 0 else ""
+
+
+def _keyring_args(fingerprint: str) -> list[str]:
+    # libsecret attributes are not encrypted, so they identify only a public key.
+    return ["application", "unity-hpc", "ssh-key-fingerprint", fingerprint]
+
+
+def keyring_unlocked() -> bool:
+    """Do not let an unattended lookup open a desktop unlock prompt."""
+    try:
+        proc = subprocess.run([
+            "busctl", "--user", "get-property", "org.freedesktop.secrets",
+            "/org/freedesktop/secrets/aliases/default",
+            "org.freedesktop.Secret.Collection", "Locked",
+        ], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and proc.stdout.strip() == "b false"
+
+
+def _keyring_lookup(fingerprint: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["secret-tool", "lookup", *_keyring_args(fingerprint)],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return proc.stdout.rstrip("\n") if proc.returncode == 0 else ""
+
+
+def _keyring_store(fingerprint: str, passphrase: str) -> bool:
+    if not keyring_unlocked():
+        return False
+    try:
+        proc = subprocess.run(
+            ["secret-tool", "store", "--label=Unity HPC SSH key",
+             *_keyring_args(fingerprint)],
+            input=passphrase, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def restore_identity(host: str, identity: str = "") -> bool:
+    """Load a remembered key after an agent or controller restart."""
+    with _restore_lock:
+        if agent_status(host, identity)["unlocked"]:
+            return True
+        path = resolve_identity(host, identity)
+        if not path or not Path(path).is_file() or not keyring_unlocked():
+            return False
+        fingerprint = _identity_fingerprint(path)
+        if not fingerprint:
+            return False
+        now = time.monotonic()
+        if now - _last_restore_attempt.get(fingerprint, float("-inf")) < _RESTORE_RETRY_S:
+            return False
+        _last_restore_attempt[fingerprint] = now
+        phrase = _keyring_lookup(fingerprint)
+        if not phrase:
+            return False
+        return bool(unlock_identity(path, phrase, host=host, remember=False).get("ok"))
 
 
 def unlock_identity(identity: str, passphrase: str, host: str = "unity",
-                    run=None) -> dict:
+                    run=None, remember: bool = True) -> dict:
     """Load the key into the agent. The passphrase is never returned."""
     phrase = str(passphrase or "").split("\n", 1)[0].strip("\r")
     if not phrase:
@@ -246,11 +355,15 @@ def unlock_identity(identity: str, passphrase: str, host: str = "unity",
         return {"ok": ok, "key_path": path, "unlocked": ok,
                 "output": ((getattr(proc, "stdout", "") or "")
                            + (getattr(proc, "stderr", "") or "")).strip()[-300:]}
-    _ensure_agent()
+    env = _agent_env(host)
+    if not _ensure_agent(env):
+        return {"ok": False, "error": "configured SSH agent is unavailable",
+                "key_path": path, "unlocked": False}
     secret = None
     helper = None
     try:
-        fd, secret = tempfile.mkstemp(prefix="unity-askpass-")
+        memory_dir = "/dev/shm" if Path("/dev/shm").is_dir() else None
+        fd, secret = tempfile.mkstemp(prefix="unity-askpass-", dir=memory_dir)
         os.write(fd, phrase.encode())
         os.close(fd)
         os.chmod(secret, 0o600)
@@ -264,7 +377,6 @@ def unlock_identity(identity: str, passphrase: str, host: str = "unity",
         ))
         os.close(fd)
         os.chmod(helper, 0o700)
-        env = dict(os.environ)
         env["UNITY_HPC_ASKPASS_FILE"] = secret
         env["SSH_ASKPASS"] = helper
         env["SSH_ASKPASS_REQUIRE"] = "force"
@@ -294,10 +406,17 @@ def unlock_identity(identity: str, passphrase: str, host: str = "unity",
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     if not ok and not out:
         out = "bad passphrase or the agent refused the key"
+    remembered = False
+    if ok and remember:
+        fingerprint = _identity_fingerprint(path)
+        remembered = bool(fingerprint) and _keyring_store(fingerprint, phrase)
+        if fingerprint:
+            _last_restore_attempt.pop(fingerprint, None)
     return {
         "ok": ok,
         "key_path": path,
         "unlocked": ok,
+        "remembered": remembered,
         "output": out[-300:],
     }
 
@@ -382,11 +501,14 @@ def save_session_log(output: str) -> str:
 
 def ssh_run(host: str, script: str, timeout_s: int,
             identity: str = "") -> subprocess.CompletedProcess:
-    """Run `script` on `host` the same way a shell runs `ssh unity`."""
+    """Run an unattended command through the configured alias and key."""
     return subprocess.run(
         [
             "timeout", "--foreground", str(int(timeout_s)),
-            *ssh_argv(host, identity),
+            *ssh_argv(host, identity)[:-1],
+            "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+            clean_ssh_host(host),
             "bash", "-s",
         ],
         input=script,
@@ -401,7 +523,8 @@ def probe(host: str, identity: str = "", run=None) -> dict:
     ident = clean_ssh_identity(identity)
     argv = [
         "timeout", "--foreground", str(PROBE_WAIT_S),
-        *ssh_argv(dest, ident),
+        *ssh_argv(dest, ident)[:-1],
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", dest,
         "echo", "unity-ok",
     ]
     runner = run or (lambda cmd: subprocess.run(
