@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Give one Unity SSH alias a stable, user-owned agent socket.
+
+Run once on the controller machine. The private key and its passphrase never
+enter this script; Settings > Config saves the passphrase in Secret Service
+after ssh-add verifies it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+SETTINGS = {
+    "IdentityAgent": None,  # filled from XDG_RUNTIME_DIR
+    "ForwardAgent": "no",
+    "ConnectTimeout": "10",
+    "ServerAliveInterval": "15",
+    "ServerAliveCountMax": "3",
+}
+
+
+def with_agent_config(body: str, host: str, socket: str) -> str:
+    """Change only an exact Host block; refuse an ambiguous config."""
+    lines = body.splitlines(keepends=True)
+    blocks = [i for i, line in enumerate(lines)
+              if re.fullmatch(r"\s*Host\s+" + re.escape(host) + r"\s*", line,
+                              flags=re.IGNORECASE)]
+    if len(blocks) != 1:
+        raise ValueError(f"expected one exact 'Host {host}' block in ~/.ssh/config")
+    start = blocks[0]
+    end = next((i for i in range(start + 1, len(lines))
+                if re.match(r"\s*(Host|Match)\s+", lines[i], re.IGNORECASE)),
+               len(lines))
+    values = {**SETTINGS, "IdentityAgent": socket}
+    out = lines[:start + 1]
+    seen: set[str] = set()
+    for line in lines[start + 1:end]:
+        match = re.match(r"(\s*)([A-Za-z]+)(?:\s+|=)", line)
+        key = next((name for name in values
+                    if match and name.lower() == match.group(2).lower()), None)
+        if key is None:
+            out.append(line)
+        elif key not in seen:
+            out.append(f"  {key} {values[key]}\n")
+            seen.add(key)
+    for key, value in values.items():
+        if key not in seen:
+            out.append(f"  {key} {value}\n")
+    out.extend(lines[end:])
+    return "".join(out)
+
+
+def effective_agent(host: str) -> str:
+    proc = subprocess.run(["ssh", "-G", host], capture_output=True,
+                          text=True, timeout=5, check=True)
+    return next((line.split(" ", 1)[1].strip()
+                 for line in proc.stdout.splitlines()
+                 if line.lower().startswith("identityagent ")), "")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="unity", help="exact SSH Host alias")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.host):
+        parser.error("host must be an SSH config alias")
+    runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    socket = str(Path(runtime) / "ssh-agent.socket")
+    config = Path.home() / ".ssh" / "config"
+    try:
+        original = config.read_text()
+        updated = with_agent_config(original, args.host, socket)
+    except (OSError, ValueError) as exc:
+        print(f"SSH setup: {exc}", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        print(f"Would enable ssh-agent.socket and update Host {args.host} in {config}")
+        print("Would set IdentityAgent, disable ForwardAgent, and bound connection stalls")
+        return 0
+    proc = subprocess.run(["systemctl", "--user", "enable", "--now",
+                           "ssh-agent.socket"], capture_output=True, text=True)
+    if not Path(socket).is_socket():
+        # Some desktop sessions export an older agent PID to the user manager.
+        # The distro socket unit skips itself while that variable is present.
+        manager_env = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True, text=True,
+        )
+        if any(line.startswith("SSH_AGENT_PID=")
+               for line in manager_env.stdout.splitlines()):
+            subprocess.run(["systemctl", "--user", "unset-environment",
+                            "SSH_AGENT_PID"], check=True)
+            proc = subprocess.run(["systemctl", "--user", "start",
+                                   "ssh-agent.socket"], capture_output=True,
+                                  text=True)
+    if proc.returncode or not Path(socket).is_socket():
+        print("SSH setup: could not start the persistent user agent socket",
+              file=sys.stderr)
+        return 1
+    if updated != original:
+        temporary = config.with_name(config.name + ".unity-hpc-tmp")
+        temporary.write_text(updated)
+        temporary.chmod(0o600)
+        temporary.replace(config)
+    if effective_agent(args.host) != socket:
+        if updated != original:
+            config.write_text(original)
+            config.chmod(0o600)
+        print("SSH setup: an earlier SSH config rule overrides IdentityAgent; "
+              "the config edit was reverted", file=sys.stderr)
+        return 1
+    print(f"Host {args.host} now uses the shared agent socket: {socket}")
+    print("Enter the key passphrase once in the controller's Settings > Config > Unlock key.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
