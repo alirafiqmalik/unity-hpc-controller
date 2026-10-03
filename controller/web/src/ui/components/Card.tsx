@@ -21,6 +21,12 @@ const StyledCardHeader = styled.header`
   justify-content: space-between;
   margin-bottom: ${({ theme }) => theme.spacing(3)};
   min-height: 20px;
+
+  @media (max-width: 600px) {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: ${({ theme }) => theme.spacing(1)};
+  }
 `;
 
 const CardTitle = styled.h3`
@@ -36,6 +42,12 @@ const CardNote = styled.div<{ $warn?: boolean }>`
   flex-shrink: 0;
   font-size: ${({ theme }) => theme.font.size.xs};
   text-align: right;
+
+  @media (max-width: 600px) {
+    flex-shrink: 1;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
 `;
 
 export type CardHeaderProps = {

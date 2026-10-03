@@ -10,6 +10,10 @@
 /** One row of a project's job ledger, plus the two fields the API joins on. */
 export type Job = {
   job_id: string;
+  purpose?: string | null;
+  execution_id?: string | null;
+  stage_id?: string | null;
+  attempt_id?: string | null;
   exp?: string | null;
   partition?: string | null;
   status?: string | null;
@@ -85,17 +89,67 @@ export type Fairshare = {
 
 export type ClusterUser = {
   user: string;
+  /** Account with the most jobs. */
   account?: string;
+  /** Every account this user billed, most frequent first. */
+  accounts?: string[];
   jobs: number;
+  /** Settled and live counts. They sum to `jobs`. */
+  completed?: number;
+  failed?: number;
+  timeout?: number;
+  oom?: number;
+  preempted?: number;
+  cancelled?: number;
+  running?: number;
+  pending?: number;
+  requeued?: number;
+  other?: number;
+  /** Wall-clock elapsed hours. */
   hours: number;
   gpu_jobs: number;
+  /** GPUs allocated × elapsed hours. */
   gpu_hours: number;
+  /** CPUs allocated × elapsed hours. */
+  cpu_hours?: number;
+  /** Nodes allocated × elapsed hours. */
+  node_hours?: number;
+  /** Allocated memory × elapsed time, in GB-hours. */
+  mem_gb_hours?: number;
+  /** Mean CPUs held over elapsed hours. Null when no time was recorded. */
+  avg_cpus?: number | null;
+  /** Mean GPUs held on jobs that allocated a GPU. */
+  avg_gpus?: number | null;
+  /** Mean seconds from submit to start. Null when no job recorded both. */
+  avg_wait_s?: number | null;
+  /** Completed ÷ settled jobs, as a percent. Null when none are settled. */
+  success_pct?: number | null;
+  /** Newest end, else start, else submit, as UTC. */
+  last_seen?: string | null;
+  /** True when this row only covers part of the selected window. */
+  partial?: boolean;
+  /** Partition with the most jobs. */
+  partition?: string;
+  /** Every partition this user used, most frequent first. */
+  partitions?: string[];
+  /** GPU type with the most GPU jobs. Empty when none was named. */
+  gpu_type?: string;
 };
 
 export type UsersBlock = {
   available: boolean;
   rows: ClusterUser[];
   source?: string | null;
+  /** Null when every live job is included. */
+  hours?: number | null;
+  /** `recent` is the selected span ending now. It does not slide backward. */
+  window?: 'all' | 'recent' | string;
+  /** True when live samples do not cover the whole selected span. */
+  partial?: boolean;
+  covered_start_utc?: string | null;
+  covered_end_utc?: string | null;
+  window_start_utc?: string | null;
+  window_end_utc?: string | null;
 };
 
 export type HardwareStat = {
@@ -156,12 +210,24 @@ export type UsageBlock = {
   /** GPU type to one value per slot. A null is a slot with no sample. */
   series: Record<string, (number | null)[]>;
   by_type: { gpu_type: string; avg: number; peak: number; median: number }[];
-  heatmap: { dow: number; hour: number; value: number }[];
-  /** `latest-available` means the window slid back to the newest rows. */
-  window: 'recent' | 'latest-available' | string;
-  hours: number;
+  heatmap: { dow: number; hour: number; value: number; samples?: number }[];
+  /** The selected span ending now. It does not slide backward. */
+  window: 'recent' | 'all' | string;
+  /** True when stored samples do not cover that whole span. */
+  partial?: boolean;
+  /** Null when the window is every stored row. */
+  hours: number | null;
   freshness_utc?: string | null;
   stale_s?: number | null;
+  window_start_utc?: string | null;
+  window_end_utc?: string | null;
+  /** sacct counts allocated GPUs; collector samples are percentages. */
+  unit?: 'gpus' | 'percent';
+  source?: 'sacct' | 'samples';
+  covered_hours?: number;
+  gpu_hours?: number;
+  avg_allocated?: number;
+  peak_allocated?: number;
 };
 
 export type UsageAnswer = {
@@ -200,6 +266,7 @@ export type SshStatus = {
   key_path?: string;
   needs_passphrase?: boolean;
   unlocked?: boolean;
+  keyring_unlocked?: boolean;
   last_probe?: { ok: boolean; output?: string } | null;
 };
 

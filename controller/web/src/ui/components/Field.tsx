@@ -1,6 +1,7 @@
 /** Form controls. Every input in the dashboard is one of these. */
 
 import styled from '@emotion/styled';
+import { IconSearch, IconX } from '@tabler/icons-react';
 import type {
   InputHTMLAttributes,
   ReactNode,
@@ -158,6 +159,97 @@ export const InlineRow = styled.div`
 export const TextInput = (props: InputHTMLAttributes<HTMLInputElement>) => (
   <StyledInput {...props} />
 );
+
+const SearchShell = styled.div`
+  align-items: center;
+  background: ${({ theme }) => theme.background.primary};
+  border: 1px solid ${({ theme }) => theme.border.color.medium};
+  border-radius: ${({ theme }) => theme.border.radius.sm};
+  color: ${({ theme }) => theme.font.color.tertiary};
+  display: flex;
+  gap: ${({ theme }) => theme.spacing(1.5)};
+  height: 30px;
+  min-width: 0;
+  padding: ${({ theme }) => theme.spacing(0, 2)};
+  transition: ${({ theme }) => theme.animation.clickable};
+  width: 100%;
+
+  &:hover {
+    border-color: ${({ theme }) => theme.border.color.strong};
+  }
+
+  &:focus-within {
+    border-color: ${({ theme }) => theme.border.color.accent};
+    box-shadow: 0 0 0 3px ${({ theme }) => theme.accent.quaternary};
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
+`;
+
+const SearchNative = styled.input`
+  background: transparent;
+  border: 0;
+  color: ${({ theme }) => theme.font.color.primary};
+  flex: 1;
+  font-size: ${({ theme }) => theme.font.size.sm};
+  min-width: 0;
+  outline: none;
+  padding: 0;
+
+  &::placeholder {
+    color: ${({ theme }) => theme.font.color.light};
+  }
+`;
+
+const SearchClear = styled.button`
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: ${({ theme }) => theme.border.radius.xs};
+  color: ${({ theme }) => theme.font.color.tertiary};
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 18px;
+  justify-content: center;
+  padding: 0;
+  width: 18px;
+
+  &:hover {
+    background: ${({ theme }) => theme.background.transparent.secondary};
+    color: ${({ theme }) => theme.font.color.primary};
+  }
+`;
+
+type SearchFieldProps = InputHTMLAttributes<HTMLInputElement> & {
+  /** A count or other note, drawn after the text and before the clear control. */
+  trailing?: ReactNode;
+  onClear?: () => void;
+};
+
+/** A full-width search control. The value matches as the operator types. */
+export const SearchField = ({
+  trailing,
+  onClear,
+  value,
+  ...rest
+}: SearchFieldProps) => {
+  const filled = String(value ?? '').length > 0;
+  return (
+    <SearchShell>
+      <IconSearch size={14} stroke={1.6} />
+      <SearchNative value={value} {...rest} />
+      {trailing}
+      {filled && onClear ? (
+        <SearchClear type="button" aria-label="Clear search" onClick={onClear}>
+          <IconX size={13} stroke={1.8} />
+        </SearchClear>
+      ) : null}
+    </SearchShell>
+  );
+};
 
 export const TextArea = (props: TextareaHTMLAttributes<HTMLTextAreaElement>) => (
   <StyledTextArea {...props} />

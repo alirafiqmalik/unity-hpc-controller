@@ -1,5 +1,6 @@
 /**
- * The write path to a project: dispatch, stop, fetch, sync, patch, detach.
+ * The write path to a project: attach, dispatch, stop, fetch, sync, status,
+ * patch, detach.
  *
  * Every call reports what the controller answered, then refreshes the shared
  * snapshot, so a panel never shows a state the controller has already left.
@@ -8,8 +9,16 @@
 import { useCallback, useState } from 'react';
 
 import { useSync } from '../controller/ControllerSync';
-import { controllerApi, errorText, type DispatchBody } from '../controller/api';
-import type { Project } from '../controller/types';
+import {
+  ApiError,
+  controllerApi,
+  errorText,
+  type AttachBody,
+  type DispatchBody,
+  type FetchResult,
+  type ProjectPatch,
+  type RunResult,
+} from '../controller/api';
 import { useToast } from '../../ui/components/Toast';
 
 /** The first line of a command's output, short enough for a notice. */
@@ -40,6 +49,9 @@ export const useProjectCommands = () => {
         return answer;
       } catch (error) {
         toast(errorText(error), 'error');
+        if (error instanceof ApiError && 'ok' in error.payload) {
+          return error.payload as FetchResult;
+        }
         return null;
       } finally {
         setBusy(false);
@@ -48,13 +60,22 @@ export const useProjectCommands = () => {
     [refresh, toast],
   );
 
+  /**
+   * Post a run. Returns the controller's answer, including a failed run.sh
+   * result, so a caller can show its output. Null means no answer at all.
+   */
   const dispatch = useCallback(
-    async (slug: string, body: DispatchBody) => {
+    async (slug: string, body: DispatchBody): Promise<RunResult | null> => {
       setBusy(true);
       try {
         const answer = await controllerApi.dispatch(slug, body);
         const text = headline(String(answer.output || answer.error || 'ok'));
-        const verb = body.dry_run ? 'Validated' : 'Dispatched';
+        // A manifest goes to `run.sh array`, which has no dry-run.
+        const verb = body.manifest
+          ? 'Fan-out submitted'
+          : body.dry_run
+            ? 'Validated'
+            : 'Dispatched';
         toast(
           answer.ok === false ? `Failed: ${text}` : `${verb}: ${text}`,
           answer.ok === false ? 'error' : 'success',
@@ -63,6 +84,30 @@ export const useProjectCommands = () => {
         return answer;
       } catch (error) {
         toast(errorText(error), 'error');
+        if (error instanceof ApiError && 'ok' in error.payload) {
+          return error.payload as RunResult;
+        }
+        return null;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refresh, toast],
+  );
+
+  const launchExperiment = useCallback(
+    async (slug: string, id: string, dryRun: boolean): Promise<RunResult | null> => {
+      setBusy(true);
+      try {
+        const answer = await controllerApi.launchExperiment(slug, id, dryRun);
+        toast(`${dryRun ? 'Previewed' : 'Launched'} ${id}: ${headline(answer.output || 'ok')}`, 'success');
+        await refresh();
+        return answer;
+      } catch (error) {
+        toast(errorText(error), 'error');
+        if (error instanceof ApiError && 'ok' in error.payload) {
+          return error.payload as RunResult;
+        }
         return null;
       } finally {
         setBusy(false);
@@ -72,7 +117,7 @@ export const useProjectCommands = () => {
   );
 
   const patchProject = useCallback(
-    async (slug: string, body: Partial<Project>) => {
+    async (slug: string, body: ProjectPatch) => {
       setBusy(true);
       try {
         await controllerApi.patchProject(slug, body);
@@ -108,16 +153,17 @@ export const useProjectCommands = () => {
   );
 
   const attachProject = useCallback(
-    async (body: { path: string; slug?: string; primitive?: string }) => {
+    async (body: AttachBody) => {
       setBusy(true);
       try {
         const answer = await controllerApi.attachProject(body);
         toast(`Attached ${answer.project?.slug ?? body.slug ?? body.path}`, 'success');
         await refresh();
-        return true;
+        // The new slug, or '' when the answer did not name it. Null is failure.
+        return answer.project?.slug ?? body.slug ?? '';
       } catch (error) {
         toast(errorText(error), 'error');
-        return false;
+        return null;
       } finally {
         setBusy(false);
       }
@@ -125,5 +171,5 @@ export const useProjectCommands = () => {
     [refresh, toast],
   );
 
-  return { runCommand, dispatch, patchProject, detachProject, attachProject, busy };
+  return { runCommand, dispatch, launchExperiment, patchProject, detachProject, attachProject, busy };
 };

@@ -1,6 +1,7 @@
 /** One job, read from the snapshot the dashboard already holds. */
 
 import { IconDownload, IconFolder, IconSquareX } from '@tabler/icons-react';
+import { Link } from 'react-router-dom';
 import { useRecoilValue } from 'recoil';
 
 import { Button, ButtonGroup } from '../../ui/components/Button';
@@ -9,21 +10,24 @@ import { EmptyState } from '../../ui/components/EmptyState';
 import { SidePanel } from '../../ui/components/SidePanel';
 import { Tag, TagRow } from '../../ui/components/Tag';
 import { useProjectCommands } from '../projects/useProjectCommands';
-import { exitOf, fmtElapsed, isLiveState, stateTag, statusOf } from '../controller/format';
+import { purposeLabel, exitOf, fmtElapsed, isLiveState, stateTag, statusOf } from '../controller/format';
 import { jobsState } from '../controller/state';
 import { usePanels } from './PanelProvider';
 
 export const JobPanel = ({
   jobId,
+  slug: projectSlug,
   onClose,
 }: {
   jobId: string;
+  slug?: string;
   onClose: () => void;
 }) => {
   const jobs = useRecoilValue(jobsState);
   const { openProject } = usePanels();
   const { runCommand, busy } = useProjectCommands();
-  const job = jobs.find((one) => String(one.job_id) === String(jobId));
+  const job = jobs.find((one) =>
+    String(one.job_id) === String(jobId) && (!projectSlug || one.slug === projectSlug));
 
   if (!job) {
     return (
@@ -55,6 +59,8 @@ export const JobPanel = ({
 
       <Card>
         <CardHeader title="Detail" />
+        <KeyValue label="Purpose">{purposeLabel(job.purpose)}</KeyValue>
+        <KeyValue label="Execution">{job.execution_id || '—'}</KeyValue>
         <KeyValue label="Runtime">{fmtElapsed(job.elapsed_s)}</KeyValue>
         <KeyValue label="Exit">{exitOf(job)}</KeyValue>
         <KeyValue label="Attempt">{job.attempt ?? '—'}</KeyValue>
@@ -70,13 +76,14 @@ export const JobPanel = ({
         </EmptyState>
       </Card>
 
+      {job.execution_id ? <Card><CardHeader title="Experiment evidence" /><p>Purpose: {purposeLabel(job.purpose)}</p><Link onClick={onClose} to={`/projects/${encodeURIComponent(slug)}/runs?execution=${encodeURIComponent(job.execution_id)}`}>Open execution logs and artifacts</Link></Card> : null}
       <ButtonGroup>
         <Button
           Icon={IconSquareX}
           size="small"
           disabled={!slug || busy || !isLiveState(state)}
           onClick={() =>
-            void runCommand(slug, 'stop', { job: job.job_id }, 'Cancel sent')
+            void runCommand(slug, 'stop', { job: job.job_id, campaign: job.campaign }, 'Cancel sent')
           }
         >
           Cancel
@@ -85,9 +92,9 @@ export const JobPanel = ({
           Icon={IconDownload}
           size="small"
           disabled={!slug || busy}
-          onClick={() => void runCommand(slug, 'fetch', {}, 'Fetch started')}
+          onClick={() => void runCommand(slug, 'fetch', { campaign: job.campaign }, 'Fetch finished')}
         >
-          Fetch results
+          Fetch campaign results
         </Button>
         <Button
           Icon={IconFolder}

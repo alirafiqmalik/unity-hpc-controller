@@ -98,7 +98,12 @@ export const SettingsConfigPage = () => {
       if (answer.ok) {
         setPassOpen(false);
         setPassError('');
-        toast('SSH key unlocked', 'success');
+        toast(
+          answer.remembered
+            ? 'SSH key unlocked; passphrase saved in the desktop keyring'
+            : 'SSH key unlocked, but the desktop keyring could not save it',
+          answer.remembered ? 'success' : 'info',
+        );
         await reload();
         return;
       }
@@ -285,15 +290,23 @@ export const SettingsConfigPage = () => {
             </Field>
             <ButtonGroup style={{ marginTop: 16 }}>
               <Button Icon={IconLock} size="small" onClick={() => setPassOpen(true)}>
-                Unlock key
+                {telemetry?.ssh.keyring_unlocked ? 'Unlock key and remember' : 'Unlock key for this session'}
               </Button>
             </ButtonGroup>
             <Hint>
               The controller runs this alias the same way a shell does:{' '}
               <code>ssh {sshHost || 'unity'}</code>. Put the host entry in{' '}
               <code>~/.ssh/config</code>. An identity file is only needed when
-              that config does not already name one.
+              that config does not already name one. After one unlock, the
+              desktop keyring can restore the key when the agent restarts.
             </Hint>
+            {telemetry?.ssh.keyring_unlocked === false ? (
+              <Hint>
+                The desktop keyring is locked or unavailable. The key can be
+                unlocked for this session, but its passphrase cannot be saved
+                until the desktop keyring is unlocked.
+              </Hint>
+            ) : null}
           </Card>
 
           <Card>
@@ -313,13 +326,21 @@ export const SettingsConfigPage = () => {
 
       <Modal
         open={passOpen}
-        onClose={() => setPassOpen(false)}
+        onClose={() => {
+          setPassOpen(false);
+          setPassphrase('');
+          setPassError('');
+        }}
         title="Unlock SSH key"
       >
         <Hint style={{ marginTop: 0 }}>
           {`ssh ${telemetry?.ssh.host || sshHost || 'unity'}`}
           <br />
           {`Enter passphrase for key '${telemetry?.ssh.key_path || telemetry?.ssh.identity || ''}':`}
+          <br />
+          {telemetry?.ssh.keyring_unlocked
+            ? 'The passphrase will be saved in this machine’s desktop keyring after the key unlocks.'
+            : 'The desktop keyring is locked or unavailable. This unlock lasts only while the agent keeps the key.'}
         </Hint>
         <Field label="Passphrase">
           <TextInput
@@ -335,7 +356,11 @@ export const SettingsConfigPage = () => {
         </Field>
         {passError ? <Hint style={{ color: 'inherit' }}>{passError}</Hint> : null}
         <ButtonGroup align="right">
-          <Button variant="tertiary" onClick={() => setPassOpen(false)}>
+          <Button variant="tertiary" onClick={() => {
+            setPassOpen(false);
+            setPassphrase('');
+            setPassError('');
+          }}>
             Cancel
           </Button>
           <Button variant="primary" onClick={() => void unlock()}>

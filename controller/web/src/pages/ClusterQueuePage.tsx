@@ -10,11 +10,13 @@ import { useTheme } from '@emotion/react';
 import { useRecoilValue } from 'recoil';
 
 import { TrendChart } from '../modules/charts/TrendChart';
+import { TimeWindowPicker, windowPhrase } from '../modules/controller/TimeWindow';
 import {
   clusterState,
   jobsState,
   liveBlockSelector,
   queueState,
+  usageHoursState,
 } from '../modules/controller/state';
 import {
   dash,
@@ -42,6 +44,8 @@ import { Page } from '../ui/layout/AppLayout';
 
 export const ClusterQueuePage = () => {
   const theme = useTheme();
+  const hours = useRecoilValue(usageHoursState);
+  const span = windowPhrase(hours);
   const queue = useRecoilValue(queueState);
   const cluster = useRecoilValue(clusterState);
   const live = useRecoilValue(liveBlockSelector);
@@ -81,7 +85,7 @@ export const ClusterQueuePage = () => {
   })();
 
   return (
-    <Page>
+    <Page actions={<TimeWindowPicker />}>
       <Grid $min="200px">
         <StatCard
           label="Partitions"
@@ -115,7 +119,9 @@ export const ClusterQueuePage = () => {
       <Card>
         <CardHeader
           title="Partition load"
-          note={partitions.length ? 'allocated against capacity' : undefined}
+          note={
+            partitions.length ? `${span} · allocated against capacity` : undefined
+          }
         />
         {partitions.length ? (
           <Grid $min="260px">
@@ -198,7 +204,7 @@ export const ClusterQueuePage = () => {
                       <TRow
                         key={job.job_id}
                         $clickable
-                        onClick={() => openJob(String(job.job_id))}
+                        onClick={() => openJob(String(job.job_id), job.slug || undefined)}
                       >
                         <MonoCell>{job.job_id}</MonoCell>
                         <MutedCell>{job.slug || '—'}</MutedCell>

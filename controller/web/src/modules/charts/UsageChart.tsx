@@ -120,6 +120,7 @@ export const UsageChart = ({
     CHART_SERIES_COLORS[names.indexOf(name) % CHART_SERIES_COLORS.length];
   const shown = names.filter((name) => !isHidden(name));
   const rows = toRows(usage, shown);
+  const countMode = usage.unit === 'gpus';
 
   const note =
     usingDefault && hiddenByDefault.length
@@ -164,11 +165,11 @@ export const UsageChart = ({
               tickLine={false}
               axisLine={false}
               width={38}
-              domain={[0, 100]}
-              unit="%"
+              domain={countMode ? [0, 'auto'] : [0, 100]}
+              unit={countMode ? '' : '%'}
             />
             <Tooltip
-              content={<ChartTooltip suffix="%" />}
+              content={<ChartTooltip suffix={countMode ? ' GPUs' : '%'} />}
               labelFormatter={(label) => slotTitle(String(label ?? ''))}
               cursor={{ stroke: theme.border.color.strong, strokeWidth: 1 }}
             />

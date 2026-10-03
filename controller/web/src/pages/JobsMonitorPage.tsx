@@ -1,10 +1,14 @@
-/** Every ledger row across the attached projects, with a filter and a search. */
+/**
+ * Every ledger row across the attached projects, with a state filter, a
+ * project filter and a search.
+ */
 
 import { IconAlertTriangle, IconSearch } from '@tabler/icons-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useRecoilState, useRecoilValue } from 'recoil';
 
 import {
+  purposeLabel,
   exitOf,
   FAIL_STATES,
   fmtElapsed,
@@ -24,7 +28,7 @@ import { usePanels } from '../modules/panels/PanelProvider';
 import { useProjectCommands } from '../modules/projects/useProjectCommands';
 import { Button } from '../ui/components/Button';
 import { Card, CardHeader, Grid } from '../ui/components/Card';
-import { TextInput } from '../ui/components/Field';
+import { Select, TextInput } from '../ui/components/Field';
 import { StatCard } from '../ui/components/StatCard';
 import {
   MonoCell,
@@ -53,10 +57,22 @@ export const JobsMonitorPage = () => {
   const [search, setSearch] = useRecoilState(jobSearchState);
   const { openJob } = usePanels();
   const { runCommand, busy } = useProjectCommands();
+  // Local on purpose: a project filter should not follow the operator to
+  // other pages the way the shared state filter does.
+  const [purpose, setPurpose] = useState('');
+  const [projectFilter, setProjectFilter] = useState('');
+  const activeProject = projects.some((one) => one.slug === projectFilter)
+    ? projectFilter
+    : '';
+
+  const scoped = useMemo(
+    () => (activeProject ? jobs.filter((job) => job.slug === activeProject) : jobs),
+    [jobs, activeProject],
+  );
 
   const counts = useMemo(() => {
     const byState = { running: 0, pending: 0, completed: 0, failed: 0 };
-    for (const job of jobs) {
+    for (const job of scoped) {
       const state = statusOf(job);
       if (state === 'RUNNING') byState.running += 1;
       else if (state === 'PENDING') byState.pending += 1;
@@ -64,11 +80,12 @@ export const JobsMonitorPage = () => {
       else if (isFailState(state)) byState.failed += 1;
     }
     return byState;
-  }, [jobs]);
+  }, [scoped]);
 
   const rows = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return jobs
+    return scoped
+      .filter((job) => !purpose || job.purpose === purpose)
       .filter((job) => {
         const state = statusOf(job);
         if (filter === 'running') return state === 'RUNNING';
@@ -84,7 +101,9 @@ export const JobsMonitorPage = () => {
           .some((one) => one.includes(needle));
       })
       .reverse();
-  }, [jobs, filter, search]);
+  }, [scoped, filter, search, purpose]);
+
+  const scope = activeProject ? `in ${activeProject}` : 'across the attached ledgers';
 
   return (
     <Page
@@ -107,7 +126,7 @@ export const JobsMonitorPage = () => {
         <StatCard
           label="Running"
           value={counts.running}
-          caption="across the attached ledgers"
+          caption={scope}
           accent="green"
         />
         <StatCard
@@ -135,13 +154,27 @@ export const JobsMonitorPage = () => {
         <CardHeader
           title={`Jobs${rows.length ? ` · ${rows.length}` : ''}`}
           action={
-            <div style={{ alignItems: 'center', display: 'flex', gap: 8 }}>
-              <IconSearch size={14} style={{ opacity: 0.5 }} />
+            <div
+              style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 8 }}
+            >
+              <Select
+                aria-label="Project"
+                value={activeProject}
+                options={[
+                  { value: '', label: 'All projects' },
+                  ...projects.map((one) => ({ value: one.slug, label: one.slug })),
+                ]}
+                onChange={(event) => setProjectFilter(event.target.value)}
+                style={{ width: 180 }}
+              />
+              <Select aria-label="Purpose" value={purpose} options={[{ value: '', label: 'All purposes' }, { value: 'experiment', label: 'Experiments' }, { value: 'smoke-test', label: 'Smoke tests' }]} onChange={(event) => setPurpose(event.target.value)} style={{ width: 150 }} />
+              <IconSearch size={14} style={{ opacity: 0.5 }} aria-hidden />
               <TextInput
                 value={search}
+                aria-label="Search jobs"
                 placeholder="Job id, exp, project, partition"
                 onChange={(event) => setSearch(event.target.value)}
-                style={{ width: 260 }}
+                style={{ width: 240 }}
               />
             </div>
           }
@@ -153,6 +186,7 @@ export const JobsMonitorPage = () => {
                 <th>Job</th>
                 <th>Project / campaign</th>
                 <th>State</th>
+                <th>Purpose</th>
                 <th>Partition</th>
                 <th>Hardware</th>
                 <th>Runtime</th>
@@ -166,11 +200,21 @@ export const JobsMonitorPage = () => {
                   const state = statusOf(job);
                   const tag = stateTag(job.status);
                   const exit = exitOf(job);
+                  const open = () => openJob(String(job.job_id), job.slug || undefined);
                   return (
                     <TRow
                       key={`${job.slug}-${job.job_id}`}
                       $clickable
-                      onClick={() => openJob(String(job.job_id))}
+                      tabIndex={0}
+                      aria-label={`Open job ${job.job_id}`}
+                      onClick={open}
+                      onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          open();
+                        }
+                      }}
                     >
                       <td>
                         <b style={{ fontFamily: 'inherit' }}>{job.exp || job.job_id}</b>
@@ -189,6 +233,7 @@ export const JobsMonitorPage = () => {
                           dot={tag.live ? 'pulsing' : true}
                         />
                       </td>
+                      <td>{purposeLabel(job.purpose)}</td>
                       <td>{job.partition || '—'}</td>
                       <MonoCell>{job.hardware || '—'}</MonoCell>
                       <MonoCell>{fmtElapsed(job.elapsed_s)}</MonoCell>
@@ -199,12 +244,14 @@ export const JobsMonitorPage = () => {
                             size="small"
                             variant="tertiary"
                             disabled={busy}
+                            aria-label={`Cancel job ${job.job_id}`}
+                            onKeyDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
                               event.stopPropagation();
                               void runCommand(
                                 job.slug as string,
                                 'stop',
-                                { job: job.job_id },
+                                { job: job.job_id, campaign: job.campaign },
                                 'Cancel sent',
                               );
                             }}
@@ -217,12 +264,14 @@ export const JobsMonitorPage = () => {
                   );
                 })
               ) : (
-                <TableEmptyRow colSpan={8}>
-                  {jobs.length
+                <TableEmptyRow colSpan={9}>
+                  {scoped.length
                     ? 'No job matches this filter'
-                    : projects.length
-                      ? 'The attached projects have no ledger rows yet'
-                      : 'No attached projects. Register one on the Project page.'}
+                    : activeProject
+                      ? `${activeProject} has no ledger rows yet`
+                      : projects.length
+                        ? 'The attached projects have no ledger rows yet'
+                        : 'No attached projects. Attach one on the Project page.'}
                 </TableEmptyRow>
               )}
             </tbody>

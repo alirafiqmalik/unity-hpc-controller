@@ -64,7 +64,7 @@ export const NAVIGATION: NavigationSection[] = [
         path: '/cluster/users',
         label: 'Users',
         title: 'Users & Fairshare',
-        subtitle: 'People in the job history, and this account’s fairshare',
+        subtitle: 'Live cluster users in the selected window, and this account’s fairshare',
         Icon: IconUsers,
       },
       {
@@ -136,6 +136,9 @@ export const NAVIGATION: NavigationSection[] = [
 
 /** The page the app opens on, and the target of `/`. */
 export const DEFAULT_ROUTE = '/cluster/overview';
+
+/** Project sections replace global navigation inside the dedicated workspace. */
+export const PROJECT_SECTIONS = ['Overview', 'Experiments', 'Runs', 'Results', 'Files', 'Settings'] as const;
 
 export const ALL_NAVIGATION_ITEMS: NavigationItem[] = NAVIGATION.flatMap(
   (section) => section.items,
