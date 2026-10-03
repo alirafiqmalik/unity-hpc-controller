@@ -6,8 +6,8 @@ and fetches. It does not know what a project's metrics mean.
 ## Language
 
 **Primitive**:
-A named legal pairing of a resource and an orchestration. The five primitives
-are `cpu`, `gpu`, `multi-cpu`, `multi-gpu` and `ml`.
+A named legal pairing of a resource and an orchestration. The workspace primitives are `cpu`, `gpu`, `multi-cpu`, and `multi-gpu`.
+Legacy CLI configurations also accept `ml`. See ADR 0008.
 _Avoid_: type, job type, backend, scaffold type
 
 **Resource**:
@@ -40,13 +40,14 @@ Fan-out of independent CPU tasks. Today's `run.sh array` on a CPU resource.
 _Avoid_: MPI, multi-node CPU, ntasks
 
 **multi-gpu**:
-Fan-out of independent GPU tasks. Today's `run.sh array` on a GPU resource.
-_Avoid_: torchrun, data-parallel (those name a coordinated job)
+GPU work with an explicit execution mode: independent experiments or coordinated ranks.
+Legacy configurations without a mode retain independent fan-out behavior.
+Variant concurrency and rank counts are separate controls.
 
 **ml**:
-One coordinated GPU job. Today's `ml` template. Ranks share one allocation and
-exchange messages.
-_Avoid_: training, workload, multi-gpu (that name is the fan-out case)
+An application category in the workspace. Legacy `ml` primitive configurations
+map to `multi-gpu` with coordinated mode. Historical values remain unchanged.
+The legacy CLI template continues to accept `ml`.
 
 **Hardware**:
 A device class on a finished task (`cpu`, `a100`, `gpu:unspecified`). It is not
@@ -116,3 +117,21 @@ The three LLM-facing skills (`connect`, `dispatch`, `doctor`). They write
 wiring and HTTP to the controller. They do not SSH.
 _Avoid_: agent, MCP, marketplace plugin (the install unit is still this
 repo; this term is the thin skill catalog)
+
+**Experiment**:
+A reusable project-declared study with editable revisions and immutable executions.
+
+**Reviewed plan**:
+The checked expansion of one revision: variants, stages, resources, scripts, source, and input identities.
+One plan approves at most one execution. Repeat creates another plan with fresh outputs.
+
+**Execution**:
+One approved plan and its durable attempts, ledger links, artifacts, and continuation history.
+It does not replace a campaign or scheduler job identity.
+
+**Purpose**:
+Explicit stage metadata: Experiment or Smoke test. Historical jobs remain Unclassified.
+Purpose is separate from scheduler State and never inferred from names.
+
+**Analysis revision**:
+A reviewed analysis of selected saved artifacts, with fresh report outputs and preserved input provenance.
