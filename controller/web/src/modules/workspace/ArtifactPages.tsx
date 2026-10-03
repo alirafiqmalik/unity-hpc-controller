@@ -42,7 +42,7 @@ export function FilesPage() {
       const t = await workspaceRequest<{ transfers: Transfer[]; capability: { supported: boolean; reason?: string } }>(slug, 'transfers'); setTransfers(t.transfers); setCapability(t.capability);
       if (artifactId) {
         const a = await workspaceRequest<Artifact>(slug, `artifacts/${encodeURIComponent(artifactId)}`); setArtifact(a);
-        setEntries((a.remote_files?.length ? a.remote_files : a.files).map(f => ({ ...f, name:f.path.split('/').pop() || f.path,kind:'file',availability:a.files.some(local=>local.path===f.path)?'local':'remote',integrity:a.integrity,execution_ids:a.execution_id?[a.execution_id]:[],variant_ids:a.variant_id?[a.variant_id]:[],stage_ids:a.stage_id?[a.stage_id]:[],purposes:[a.purpose||'unclassified'],artifact_ids:[a.id] }))); 
+        setEntries((a.remote_files?.length ? a.remote_files : a.files).map(f => ({ ...f, name:f.path.split('/').pop() || f.path,kind:'file',availability:a.files.some(local=>local.path===f.path)?'local':'remote',integrity:a.integrity,execution_ids:a.execution_id?[a.execution_id]:[],variant_ids:a.variant_id?[a.variant_id]:[],stage_ids:a.stage_id?[a.stage_id]:[],purposes:[a.purpose||'unclassified'],artifact_ids:[a.id] })));
       } else {
         setArtifact(null);
         const listing = await workspaceRequest<{ entries: FileEntry[]; observed_at: string; next_offset: number | null; version: string }>(slug, `files?${directoryParams}`);

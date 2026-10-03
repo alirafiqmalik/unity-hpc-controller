@@ -123,7 +123,7 @@ def query(slug, filters):
         artifact['coverage'] = {'expected': declared_coverage.get('expected'), 'observed': declared_coverage.get('observed'),
                                 'assessed': declared_coverage.get('assessed', field(artifact,'provenance.measurements.denominator')),
                                 'duplicates': declared_coverage.get('duplicates'), 'exclusions': declared_coverage.get('exclusions'),
-                                'missing_identities': declared_coverage.get('missing_identities')} 
+                                'missing_identities': declared_coverage.get('missing_identities')}
         artifact['derived_views'] = bool(mapping)
         artifact['derived_reason'] = None if mapping else 'This artifact schema has no declared sample field mapping; file inspection remains available.'
         artifact.update(project_currency(artifact, all_artifacts, executions, plans))
