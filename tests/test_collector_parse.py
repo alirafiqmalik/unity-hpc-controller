@@ -122,6 +122,7 @@ def test_parse_task_runs_reads_user_when_sacct_includes_it():
             "00:40:50|cpu=8,mem=16384M,gres/gpu:a100=1|0:0|1002M|01:00:00\n")
     run = cp.parse_task_runs(text)[0]
     assert run["user"] == "alice_umass_edu"
+    assert run["account"] == "pi_yourlab_umass_edu"
     assert run["job_id"] == "62009039"
 
 
@@ -137,6 +138,23 @@ def test_parse_task_runs_reads_alloctres_and_exit():
     assert r["used"]["elapsed_s"] == 2450
     assert r["used"]["max_rss_mb"] == 1002
     assert r["state"] == "COMPLETED" and r["exit_code"] == 0
+
+
+def test_parse_task_runs_keeps_jobs_with_symbolic_time_limits():
+    rows = (
+        "62009039|alice|acct|gpu|PENDING|2026-10-02T10:00:00|Unknown|Unknown|"
+        "00:00:00|cpu=8|0:0||Partition_Limit|\n"
+        "62009040|alice|acct|gpu|RUNNING|2026-10-02T10:00:00|"
+        "2026-10-02T10:05:00|Unknown|00:10:00|cpu=8|0:0||UNLIMITED|\n"
+        "62009041|alice|acct|gpu|COMPLETED|2026-10-02T10:00:00|"
+        "2026-10-02T10:05:00|2026-10-02T10:45:50|00:40:50|"
+        "cpu=8|0:0|1002M|1-01:00:00|\n"
+    )
+    runs = cp.parse_task_runs(rows)
+    assert [run["job_id"] for run in runs] == ["62009039", "62009040", "62009041"]
+    assert "walltime_s" not in runs[0]["req"]
+    assert "walltime_s" not in runs[1]["req"]
+    assert runs[2]["req"]["walltime_s"] == 90000
 
 
 def test_parse_task_runs_reads_job_provenance(tmp_path):

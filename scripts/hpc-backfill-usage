@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# One bounded sacct query, then a local hourly GPU allocation archive.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$HERE/../cluster-intel/backfill_usage.py" "$@"

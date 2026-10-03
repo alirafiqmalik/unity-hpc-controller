@@ -39,7 +39,7 @@ python3 serve.py --port 9000
 ```
 
 It needs nothing beyond Python 3.10 or later. It refreshes every minute, and it has
-a 7d/30d/all window switch and a light/dark toggle.
+a 24h/7d/30d/60d/90d window switch and a light/dark toggle.
 
 ## Serve it over Tailscale
 

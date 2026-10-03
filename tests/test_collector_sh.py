@@ -121,6 +121,36 @@ def test_seff_efficiency_only_recorded_for_terminal_jobs(cid, tmp_path):
     assert recs["444"]["mem_eff_pct"] is None
 
 
+def test_seff_enrichment_has_a_bounded_terminal_job_budget(cid, tmp_path):
+    bin_dir = _stub_bin(tmp_path)
+    calls = tmp_path / "seff-calls"
+    (bin_dir / "sacct").write_text(
+        "#!/usr/bin/env bash\n"
+        "for i in $(seq 1 14); do\n"
+        "  state=COMPLETED; [ \"$i\" -eq 14 ] && state=RUNNING\n"
+        "  printf '10%02d|alice|acct|gpu|%s|2026-07-22T10:00:00|"
+        "2026-07-22T10:05:00|2026-07-22T10:45:50|00:40:50|"
+        "cpu=8|0:0|100M|01:00:00\\n' \"$i\" \"$state\"\n"
+        "done\n"
+    )
+    (bin_dir / "sacct").chmod(0o755)
+    (bin_dir / "seff").write_text(
+        '#!/usr/bin/env bash\n'
+        'echo "$1" >> "$SEFF_CALLS"\n'
+        'echo "CPU Efficiency: 55.00%"\n'
+    )
+    (bin_dir / "seff").chmod(0o755)
+    env = _env(cid, bin_dir)
+    env["SEFF_CALLS"] = str(calls)
+    result = subprocess.run(["bash", str(COLLECTOR), "sample"],
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    queried = calls.read_text().splitlines()
+    assert len(queried) <= 12
+    assert "1014" not in queried, "running jobs have no final efficiency"
+    assert "1013" in queried, "the newest terminal job gets the budget"
+
+
 def test_once_exits_cleanly_when_lock_held(cid, tmp_path):
     bin_dir = _stub_bin(tmp_path)
     lock_path = cid / "collector.lock"

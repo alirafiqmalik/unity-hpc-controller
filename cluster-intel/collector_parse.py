@@ -341,6 +341,18 @@ def _parse_elapsed(s: str) -> int:
     return days * 86400 + h * 3600 + m * 60 + sec
 
 
+def _parse_time_limit(s: str) -> int | None:
+    """Return seconds only when sacct supplies a numeric time limit.
+
+    Pending jobs can have Partition_Limit, and jobs without a limit can have
+    UNLIMITED. Neither is a duration, so leave walltime_s unset for them.
+    """
+    value = (s or "").strip()
+    if not re.fullmatch(r"(?:\d+-)?\d+(?::\d+){0,2}", value):
+        return None
+    return _parse_elapsed(value)
+
+
 def _parse_mem_mb(s: str) -> float | None:
     m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([KMGT]?)", s or "")
     if not m:
@@ -456,22 +468,23 @@ def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
         # 12 fields, or 13 with a trailing empty pad, is the pre-User format.
         # 13 nonempty fields, or 14 with a pad, includes User after JobID.
         if len(f) >= 14 or (len(f) == 13 and f[-1] != ""):
-            (job_id, user, _acct, part, state, submit, start, end,
+            (job_id, user, account, part, state, submit, start, end,
              elapsed, tres, exit_code, max_rss, timelimit) = f[:13]
         else:
-            (job_id, _acct, part, state, submit, start, end,
+            (job_id, account, part, state, submit, start, end,
              elapsed, tres, exit_code, max_rss, timelimit) = f[:12]
             user = None
         gpu_type, req = _parse_tres(tres)
-        if timelimit and timelimit.strip():
-            req["walltime_s"] = _parse_elapsed(timelimit)
+        walltime_s = _parse_time_limit(timelimit)
+        if walltime_s is not None:
+            req["walltime_s"] = walltime_s
         try:
             rc = int(exit_code.split(":", 1)[0])
         except (ValueError, AttributeError):
             rc = None
         provenance = _provenance(provenance_dir, job_id)
         out.append({
-            "job_id": job_id, "user": user or None,
+            "job_id": job_id, "user": user or None, "account": account or None,
             "project": provenance.get("project"),
             "skill": provenance.get("skill"), "campaign": provenance.get("campaign"),
             "experiment": provenance.get("experiment"),

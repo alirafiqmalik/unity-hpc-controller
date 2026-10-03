@@ -51,7 +51,28 @@ enrich_seff() {
     [ -f "$runs" ] || return 0
     command -v seff >/dev/null 2>&1 || return 0
     local jobs eff_json
-    jobs="$(cut -d'|' -f1 "$tmp/sacct.raw" 2>/dev/null | grep -E '^[0-9]+$' || true)"
+    # seff is optional and can stall for each job. A seven-day sacct catch-up
+    # can contain thousands of rows, so inspect only the newest 12 terminal
+    # jobs and give each query at most five seconds (60 seconds total).
+    jobs="$(python3 - "$runs" "$HERE" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+from collector_parse import is_terminal
+rows = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    rec = json.loads(line)
+    jid = str(rec.get("job_id") or "")
+    if jid.isdigit() and is_terminal(rec.get("state")):
+        rows.append((rec.get("end") or rec.get("start") or "", jid))
+seen = set()
+for _, jid in sorted(rows, reverse=True):
+    if jid not in seen:
+        print(jid)
+        seen.add(jid)
+    if len(seen) == 12:
+        break
+PY
+)"
     [ -n "$jobs" ] || return 0
     eff_json="$tmp/seff.json"
     {
@@ -59,7 +80,7 @@ enrich_seff() {
         local first=1 jid seff_out cpu mem
         while IFS= read -r jid; do
             [ -n "$jid" ] || continue
-            seff_out="$(timeout 20 nice -n 19 seff "$jid" 2>/dev/null || true)"
+            seff_out="$(timeout 5 nice -n 19 seff "$jid" 2>/dev/null || true)"
             cpu="$(printf '%s\n' "$seff_out" | sed -n 's/^CPU Efficiency: \([0-9.]*\)%.*/\1/p')"
             mem="$(printf '%s\n' "$seff_out" | sed -n 's/^Memory Efficiency: \([0-9.]*\)%.*/\1/p')"
             [ -n "$cpu$mem" ] || continue

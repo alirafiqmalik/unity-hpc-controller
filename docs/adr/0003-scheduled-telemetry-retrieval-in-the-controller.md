@@ -73,21 +73,13 @@ writes it. `UNITY_SNAPSHOT_SRC` overrides that guess and an empty value turns
 the step off. The step is best-effort: it runs after the rollup, and a cluster
 that publishes no such file logs a line and still exits 0.
 
-## The usage window slides back to the newest data
+## The selected window stays on the clock
 
-`snapshot.usage(hours)` asked for the last `hours` up to *now*. A mirror that is
-a week old therefore answered `available: false`, and every chart drew empty —
-the same answer a machine with no data at all gives. The window now slides back
-to the last `hours` of data that exists when the clock window is empty, and the
-payload says which of the two happened:
-
-```json
-{"window": "recent" | "latest-available", "freshness_utc": ..., "stale_s": ...}
-```
-
-The rows are real rows either way. Nothing is interpolated, extended or
-synthesised. The Settings panel prints the window and the age of the newest
-slot, so a stale mirror reads as stale instead of as empty.
+`snapshot.usage(hours)` is the last `hours` ending now. An empty span stays
+empty. A sacct backfill that stopped before now does not take the place of
+newer live samples, and it does not move the window onto itself. When the
+samples cover only part of the span, `partial` is true and the hour map
+underlines those cells. Missing hours stay blank.
 
 ## The mock integration toggles are gone
 
