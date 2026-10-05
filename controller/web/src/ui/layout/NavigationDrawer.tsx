@@ -23,7 +23,7 @@ import {
   jobsState,
   projectsState,
 } from '../../modules/controller/state';
-import { NAVIGATION, PROJECT_SECTIONS } from '../../modules/navigation/routes';
+import { GENAI_APPLICATION, GENAI_SECTIONS, NAVIGATION, PROJECT_SECTIONS, RUNNER_SECTIONS } from '../../modules/navigation/routes';
 import { useColorScheme } from '../theme/AppThemeProvider';
 
 const Drawer = styled.nav<{ $collapsed: boolean }>`
@@ -251,7 +251,38 @@ export const NavigationDrawer = ({
       </Brand>
 
       <Sections>
-        {match ? <div><SectionLabel $collapsed={collapsed}>{project?.slug ?? match.params.slug}</SectionLabel>{PROJECT_SECTIONS.map((label) => <Item key={label} to={`/projects/${encodeURIComponent(match.params.slug!)}/${label.toLowerCase()}`} $collapsed={collapsed} title={label}><ItemLabel>{collapsed ? label[0] : label}</ItemLabel></Item>)}</div> : NAVIGATION.map((section) => (
+        {match && project?.application === GENAI_APPLICATION ? (
+          <>
+            <SectionLabel $collapsed={collapsed} title={project.slug}>{project.slug}</SectionLabel>
+            {GENAI_SECTIONS.map((section) => (
+              <div key={section.id}>
+                <SectionLabel $collapsed={collapsed}>{section.label}</SectionLabel>
+                {section.items.map((item) => (
+                  <Item
+                    key={item.path}
+                    to={`/projects/${encodeURIComponent(match.params.slug!)}/${item.path}`}
+                    $collapsed={collapsed}
+                    title={collapsed ? item.label : undefined}
+                  >
+                    <item.Icon size={16} stroke={1.7} />
+                    {collapsed ? null : <ItemLabel>{item.label}</ItemLabel>}
+                  </Item>
+                ))}
+              </div>
+            ))}
+          </>
+        ) : match && projects.length === 0 ? (
+          // The project list has not loaded yet; its application picks the sections.
+          <SectionLabel $collapsed={collapsed}>{match.params.slug}</SectionLabel>
+        ) : match ? <SectionLabel $collapsed={collapsed}>{project?.slug ?? match.params.slug}</SectionLabel> : null}
+        {match ? <>
+          {RUNNER_SECTIONS.map((item) => <Item key={item.path} to={`/projects/${encodeURIComponent(match.params.slug!)}/${item.path}`} $collapsed={collapsed} title={item.label}><item.Icon size={16} stroke={1.7} />{collapsed ? null : <ItemLabel>{item.label}</ItemLabel>}</Item>)}
+          <details open={/^\/projects\/[^/]+\/(overview|experiments|review|runs|results|files|settings|research)(\/|$)/.test(location.pathname)}>
+            <summary><SectionLabel $collapsed={collapsed}>Research tools</SectionLabel></summary>
+            {PROJECT_SECTIONS.map((label) => <Item key={label} to={`/projects/${encodeURIComponent(match.params.slug!)}/${label.toLowerCase()}`} $collapsed={collapsed} title={label}><ItemLabel>{collapsed ? label[0] : label}</ItemLabel></Item>)}
+          </details>
+        </> : null}
+        {NAVIGATION.map((section) => (
           <div key={section.id}>
             <SectionLabel $collapsed={collapsed}>{section.label}</SectionLabel>
             {section.items.map((item) => (

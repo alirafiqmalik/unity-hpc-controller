@@ -492,6 +492,6 @@ The manager inspected the workspace and rich preview captures. These are rendere
 The user approved Pilot A's bounded read-only survey through the controller's configured `unity` SSH alias.
 The [survey record](remaining-workspace-pilot-a-evidence.md) reports its site observations and 31 focused checks.
 The remote root lacks the new declaration and adapters, and its dispatcher differs from the local file.
-Pilots B and C require separate reviewed targets and approval. The scheduler adapter still lacks live scope proof.
-Real GPU collection also requires the approved environment lock and any missing immutable dataset declarations.
+The user then approved Pilots B and C. The [pilot record](remaining-workspace-pilot-bc-evidence.md) reports one exact running-task cancellation and one fixture transfer.
+Production cancellation and pending changes stay disabled. Real GPU collection still requires the approved environment lock and any missing immutable dataset declarations.
 Production migration remains outside the authorized local verification scope.

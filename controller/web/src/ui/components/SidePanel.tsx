@@ -138,7 +138,7 @@ const ModalOverlay = styled.div`
   z-index: ${({ theme }) => theme.zIndex.modal};
 `;
 
-const ModalCard = styled.div`
+const ModalCard = styled.div<{ $width: number }>`
   background: ${({ theme }) => theme.background.secondary};
   border: 1px solid ${({ theme }) => theme.border.color.medium};
   border-radius: ${({ theme }) => theme.border.radius.lg};
@@ -148,7 +148,7 @@ const ModalCard = styled.div`
   gap: ${({ theme }) => theme.spacing(3)};
   max-width: 100%;
   padding: ${({ theme }) => theme.spacing(5)};
-  width: 420px;
+  width: ${({ $width }) => $width}px;
 `;
 
 const ModalTitle = styled.h3`
@@ -161,18 +161,21 @@ export const Modal = ({
   onClose,
   title,
   children,
+  width = 420,
 }: {
   open: boolean;
   onClose: () => void;
   title: ReactNode;
   children: ReactNode;
+  /** The card width in pixels. It never exceeds the viewport. */
+  width?: number;
 }) => {
   useEscape(open, onClose);
   if (!open) return null;
 
   return (
     <ModalOverlay onClick={onClose} role="dialog" aria-modal="true">
-      <ModalCard onClick={(event) => event.stopPropagation()}>
+      <ModalCard $width={width} onClick={(event) => event.stopPropagation()}>
         <ModalTitle>{title}</ModalTitle>
         {children}
       </ModalCard>

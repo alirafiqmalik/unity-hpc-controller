@@ -18,7 +18,7 @@ controller/web/
     ├── App.tsx           the router
     ├── ui/               the design system
     │   ├── theme/        THEME_DARK, THEME_LIGHT, the Emotion provider
-    │   ├── components/   Button, Tag, Card, Table, Field, SidePanel, Toast …
+    │   ├── components/   Button, Tag, Card, Table, Field, ActionBar, SidePanel, Toast …
     │   └── layout/       the navigation drawer and the page chrome
     ├── modules/
     │   ├── controller/   types, the JSON client, the store, the refresh cycle

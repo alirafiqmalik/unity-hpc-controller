@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Link, Outlet, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, Outlet, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { sectionKeys } from './navigation';
 import {
   controllerApi,
@@ -20,7 +20,7 @@ import {
   Hint,
   KeyValue,
 } from '../../ui/components/Card';
-import { Select, TextInput } from '../../ui/components/Field';
+import { Field, Select, TextInput } from '../../ui/components/Field';
 import { Tag } from '../../ui/components/Tag';
 import { Page } from '../../ui/layout/AppLayout';
 import {
@@ -137,6 +137,32 @@ export const WorkspacePage = ({
     </Page>
   );
 };
+/** A project with no executions opens on experiment setup. Later visits open Runs. */
+export const ProjectEntry = () => {
+  const { slug } = useWorkspace();
+  const [dest, setDest] = useState('');
+  useEffect(() => {
+    let active = true;
+    workspaceApi
+      .executions(slug)
+      .then((result) => {
+        if (active) setDest(result.executions.length ? 'runs' : 'experiments');
+      })
+      .catch(() => {
+        if (active) setDest('experiments');
+      });
+    return () => {
+      active = false;
+    };
+  }, [slug]);
+  if (!dest)
+    return (
+      <WorkspacePage title="Project">
+        <p>Opening project…</p>
+      </WorkspacePage>
+    );
+  return <Navigate to={`/projects/${encodeURIComponent(slug)}/${dest}`} replace />;
+};
 export const ProjectOverview = () => {
   const { slug, connection, project } = useWorkspace();
   return (
@@ -198,7 +224,7 @@ export const ProjectConnection = ({
   section?: string;
 }) => {
   const { slug, connection, project } = useWorkspace();
-  const { openLegacyProject } = usePanels();
+  const { openProjectControls } = usePanels();
   return (
     <WorkspacePage title={section}>
       <Card>
@@ -218,8 +244,8 @@ export const ProjectConnection = ({
         </KeyValue>
         <JsonDetails title="Versioned connection" value={connection} />
         {section === 'Settings' ? (
-          <Button onClick={() => openLegacyProject(slug)}>
-            Legacy project controls
+          <Button onClick={() => openProjectControls(slug)}>
+            Project controls
           </Button>
         ) : null}
         <Hint>The broader {section} interface is planned separately.</Hint>
@@ -238,6 +264,8 @@ export const ExperimentLibrary = () => {
   const [readiness, setReadiness] = useState('');
   const [newWorkflow, setNewWorkflow] = useState('');
   const [name, setName] = useState('');
+  const [nameReady, setNameReady] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [creating, setCreating] = useState(query.get('new') === '1');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -248,9 +276,19 @@ export const ExperimentLibrary = () => {
   const refresh = () =>
     workspaceApi.experiments(slug).then((r) => setExperiments(r.experiments));
   useEffect(() => {
+    if (nameReady || !connection) return;
+    const declared = Object.values(connection.manifest?.workflows ?? {});
+    setName(declared.length === 1 ? declared[0].title || 'Experiment' : 'New experiment');
+    setNameReady(true);
+  }, [connection, nameReady]);
+  useEffect(() => {
     workspaceApi
       .experiments(slug)
-      .then((r) => setExperiments(r.experiments))
+      .then((r) => {
+        setExperiments(r.experiments);
+        setLoaded(true);
+        if (!r.experiments.length) setCreating(true);
+      })
       .catch((e) => setError(errorText(e)));
   }, [slug]);
   const run = async (operation: () => Promise<unknown>) => {
@@ -265,6 +303,55 @@ export const ExperimentLibrary = () => {
       setBusy(false);
     }
   };
+  const workflowChosen = choices.length === 1 || Boolean(newWorkflow);
+  const chosenWorkflow = newWorkflow || (choices.length === 1 ? choices[0].value : '');
+  const startForm = (
+    <Card>
+      <CardHeader title="Start experiment" />
+      <Field label="Name">
+        <TextInput
+          aria-label="Experiment name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </Field>
+      {choices.length > 1 ? (
+        <Field label="Workflow">
+          <Select
+            aria-label="Declared workflow"
+            value={newWorkflow}
+            options={[{ value: '', label: 'Select a workflow' }, ...choices]}
+            onChange={(e) => setNewWorkflow(e.target.value)}
+          />
+        </Field>
+      ) : (
+        <Field label="Workflow">
+          <TextInput
+            aria-label="Declared workflow"
+            readOnly
+            value={choices[0]?.label || 'No declared workflow'}
+          />
+        </Field>
+      )}
+      <ButtonGroup>
+        <Button
+          variant="primary"
+          disabled={busy || !name.trim() || !workflowChosen || !choices.length}
+          onClick={() =>
+            void run(async () => {
+              const e = await workspaceApi.create(slug, chosenWorkflow, name.trim());
+              navigate(e.id);
+            })
+          }
+        >
+          Continue
+        </Button>
+        {experiments.length ? (
+          <Button onClick={() => setCreating(false)}>Cancel</Button>
+        ) : null}
+      </ButtonGroup>
+    </Card>
+  );
   const rows = experiments.filter(
     (e) =>
       (archived === 'all' || e.archived === (archived === 'archived')) &&
@@ -274,15 +361,17 @@ export const ExperimentLibrary = () => {
   );
   return (
     <WorkspacePage
-      title="Experiments"
+      title={loaded && !experiments.length ? 'Start experiment' : 'Experiments'}
       actions={
-        <Button
-          variant="primary"
-          disabled={!connection?.valid || !choices.length}
-          onClick={() => setCreating(true)}
-        >
-          New experiment
-        </Button>
+        experiments.length ? (
+          <Button
+            variant="primary"
+            disabled={!connection?.valid || !choices.length}
+            onClick={() => setCreating(true)}
+          >
+            New experiment
+          </Button>
+        ) : null
       }
     >
       <ErrorNotice error={error} />
@@ -292,42 +381,8 @@ export const ExperimentLibrary = () => {
           <Link to="../settings">Inspect connection details</Link>
         </Card>
       ) : null}
-      {creating ? (
-        <Card>
-          <CardHeader title="New experiment" />
-          <TextInput
-            aria-label="Experiment name"
-            placeholder="Experiment name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <Select
-            aria-label="Declared workflow"
-            value={newWorkflow || choices[0]?.value || ''}
-            options={choices}
-            onChange={(e) => setNewWorkflow(e.target.value)}
-          />
-          <ButtonGroup>
-            <Button
-              disabled={busy || !name.trim()}
-              onClick={() =>
-                void run(async () => {
-                  const e = await workspaceApi.create(
-                    slug,
-                    newWorkflow || choices[0].value,
-                    name.trim(),
-                  );
-                  navigate(e.id);
-                })
-              }
-            >
-              Create experiment
-            </Button>
-            <Button onClick={() => setCreating(false)}>Cancel</Button>
-          </ButtonGroup>
-        </Card>
-      ) : null}
-      <Card>
+      {creating ? startForm : null}
+      {experiments.length ? <Card>
         <CardHeader title="Experiment library" />
         <Grid>
           <TextInput
@@ -370,8 +425,8 @@ export const ExperimentLibrary = () => {
             ]}
           />
         </Grid>
-      </Card>
-      {!rows.length ? (
+      </Card> : null}
+      {!experiments.length ? null : !rows.length ? (
         <Card>
           No experiments match this view. Create an experiment from a declared
           workflow.

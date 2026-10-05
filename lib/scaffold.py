@@ -17,6 +17,10 @@ VERSION_PLACEHOLDER = "@@UNITY_HPC_VERSION@@"
 TYPES: tuple[str, ...] = ("cpu", "gpu", "ml", "multi-cpu", "multi-gpu")
 SCAFFOLD_FILES: tuple[str, ...] = ("run.sh", "job_template.sh", "sync.sh", ".env")
 
+#: Workflow applications. `machine-learning` is reserved and has no runner.
+APPLICATIONS: tuple[str, ...] = ("llms-agents", "machine-learning")
+RUNNABLE_APPLICATIONS: frozenset[str] = frozenset({"llms-agents"})
+
 #: files taken from templates/scaffold/common/ rather than the per-type dir
 _COMMON_FILES = frozenset({"run.sh", "sync.sh"})
 
@@ -84,6 +88,88 @@ def _template_path(ptype: str, target_name: str) -> Path:
     return template_root() / subdir / source_name
 
 
+def application_dir(application: str) -> Path:
+    """The template directory for one application id."""
+    if application not in APPLICATIONS:
+        raise ValueError(
+            f"unknown application {application!r}; expected one of {', '.join(APPLICATIONS)}"
+        )
+    return template_root() / "applications" / application
+
+
+#: application template files that belong to the user once written; the
+#: scaffold never replaces them (the project's data and prompts are not ours)
+_APPLICATION_USER_OWNED_DIRS = ("project",)
+
+#: application files the README tells the user to rewrite (the predict function
+#: and the scorers); a later scaffold must not swap the code an evaluation runs
+_APPLICATION_USER_OWNED_FILES = frozenset({"agent.py", "scorers.py"})
+
+
+def _plan_pairs(project_dir: Path, pairs: list[tuple[Path, Path]]) -> list[Action]:
+    """Turn (source, dest) pairs into create/skip/replace actions.
+
+    A destination under ``unityHPC/`` that differs is replaced and displaced
+    into ``unityHPC/.pre-redesign/``. A destination elsewhere in the project
+    (the ``project/`` subtree of an application: example dataset, prompts) is
+    created once and then left alone.
+    """
+    dest_dir = project_dir / "unityHPC"
+    actions: list[Action] = []
+    for source, dest in pairs:
+        content = render(source.read_text(encoding="utf-8"))
+        if not dest.exists():
+            actions.append(Action(kind="create", path=dest, content=content))
+            continue
+        inside_unity = dest.resolve().is_relative_to(dest_dir.resolve()) if dest_dir.exists() else str(dest).startswith(str(dest_dir))
+        user_owned = dest.name in _USER_OWNED or dest.name in _APPLICATION_USER_OWNED_FILES
+        if user_owned or not inside_unity or dest.read_bytes() == content.encode():
+            actions.append(Action(kind="skip", path=dest, content=content))
+            continue
+        rel = dest.relative_to(dest_dir)
+        actions.append(Action(
+            kind="replace",
+            path=dest,
+            content=content,
+            displaced_to=dest_dir / BACKUP_DIRNAME / rel,
+        ))
+    return actions
+
+
+def plan_application(project_dir: Path, application: str) -> list[Action]:
+    """Install one application plus the common submitter and sync script.
+
+    ``machine-learning`` is reserved. It has a README and no runner, so this
+    raises instead of writing a job script.
+    """
+    if application not in APPLICATIONS:
+        raise ValueError(
+            f"unknown application {application!r}; expected one of {', '.join(APPLICATIONS)}"
+        )
+    if application not in RUNNABLE_APPLICATIONS:
+        raise ValueError(
+            f"application {application!r} is reserved and has no runner"
+        )
+    root = application_dir(application)
+    dest_dir = project_dir / "unityHPC"
+    pairs: list[tuple[Path, Path]] = []
+    for name in ("run.sh", "sync.sh"):
+        pairs.append((template_root() / "common" / name, dest_dir / name))
+    for source in sorted(p for p in root.rglob("*") if p.is_file()):
+        if "__pycache__" in source.parts or source.suffix == ".pyc":
+            continue
+        rel = source.relative_to(root)
+        if source.name == "env.example" and source.parent == root:
+            dest = dest_dir / ".env"
+        elif rel.parts[0] in _APPLICATION_USER_OWNED_DIRS:
+            # templates/…/<app>/project/dataset/example → <project>/dataset/example
+            dest = project_dir.joinpath(*rel.parts[1:])
+        else:
+            dest = dest_dir / rel
+        pairs.append((source, dest))
+    return _plan_pairs(project_dir, pairs)
+
+
 def plan(project_dir: Path, ptype: str) -> list[Action]:
     """Compute the actions needed to bring project_dir/unityHPC/ to canonical form.
 
@@ -141,12 +227,23 @@ def _free_backup_slot(preferred: Path) -> Path:
     raise RuntimeError(f"no free backup slot beside {preferred}")
 
 
+def _label(path: Path) -> str:
+    """The path as the report names it: relative to the project when it holds unityHPC/."""
+    parts = path.parts
+    if "unityHPC" in parts:
+        index = len(parts) - 1 - parts[::-1].index("unityHPC")
+        return "/".join(parts[index:])
+    # An application's project-root file (dataset/example/records.jsonl): show the
+    # last three components so the line still says where it went.
+    return "/".join(parts[-3:]) if len(parts) >= 3 else path.name
+
+
 def apply(actions: list[Action]) -> list[str]:
     """Perform the planned actions. Returns report lines naming every change."""
     report: list[str] = []
     for action in actions:
         if action.kind == "skip":
-            report.append(f"  skip     unityHPC/{action.path.name} (unchanged)")
+            report.append(f"  skip     {_label(action.path)} (unchanged)")
             continue
 
         action.path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +251,7 @@ def apply(actions: list[Action]) -> list[str]:
             original = action.path.read_bytes()
             if _is_generated(original):
                 report.append(
-                    f"  upgraded unityHPC/{action.path.name} "
+                    f"  upgraded {_label(action.path)} "
                     f"(previous copy was generated; no backup needed)"
                 )
             else:
@@ -162,12 +259,12 @@ def apply(actions: list[Action]) -> list[str]:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(original)
                 report.append(
-                    f"  moved    unityHPC/{action.path.name} -> "
+                    f"  moved    {_label(action.path)} -> "
                     f"unityHPC/{BACKUP_DIRNAME}/{target.name}"
                 )
         action.path.write_text(action.content)
         verb = "created" if action.kind == "create" else "replaced"
-        report.append(f"  {verb:<8} unityHPC/{action.path.name}")
+        report.append(f"  {verb:<8} {_label(action.path)}")
         if action.path.suffix == ".sh":
             action.path.chmod(0o755)
     return report

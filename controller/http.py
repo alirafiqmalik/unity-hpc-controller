@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from controller import dispatch, events, experiments, registry, snapshot, telemetry
+from lib import campaign as _campaign
 from controller.dispatch import DispatchError, OperationBusy
 from controller.registry import RegistryError
 from controller.workspace_store import WorkspaceError
@@ -207,6 +208,15 @@ def _route(method: str, path: str, req: Request) -> Response:
     if path == "/api/v1/jobs" and method == "GET":
         return _json(200, {"jobs": snapshot.all_jobs()})
 
+    if path == "/api/v1/jobs/delete" and method == "POST":
+        result = _forget_jobs(_read_json(req))
+        events.record(
+            "forget",
+            f"removed {result['deleted']} rows from Job Monitor",
+            deleted=result["deleted"],
+        )
+        return _json(200, result)
+
     if path == "/api/v1/events" and method == "GET":
         try:
             limit = int(_q(req, "limit", "50") or "50")
@@ -225,16 +235,22 @@ def _route(method: str, path: str, req: Request) -> Response:
         if not body.get("path"):
             return _error(400, "path is required")
         slug = body.get("slug") or _slug_from_path(body["path"])
+        existing = registry.get(slug)
+        if "application" in body:
+            application = body.get("application") or ""
+        else:
+            application = (existing or {}).get("application") or ""
         rec = registry.attach(
             slug=slug,
             path=body["path"],
-            primitive=body.get("primitive") or "cpu",
-            remote_dir=body.get("remote_dir") or "",
+            primitive=body.get("primitive") or (existing or {}).get("primitive") or "cpu",
+            remote_dir=body.get("remote_dir") or (existing or {}).get("remote_dir") or "",
             unity_host=body.get("unity_host") or "unity",
             campaign=body.get("campaign") or "",
             overrides=body.get("overrides"),
             resources=body.get("resources"),
             sync_policy=body.get("sync_policy"),
+            application=application,
         )
         events.record("attach", f"attached {rec['slug']}", slug=rec["slug"])
         _write_client_stub(rec)
@@ -255,9 +271,19 @@ def _route(method: str, path: str, req: Request) -> Response:
 
 
 def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
+    if rest == "runner" or rest.startswith("runner/"):
+        from controller.runner_http import route as runner_route
+        return runner_route(method, slug, rest[len("runner/"):] if rest != "runner" else "", req)
+
     if rest.startswith("workspace/"):
         from controller.workspace_http import route
         return route(method, slug, rest[len("workspace/"):], req)
+
+    if rest == "genai" or rest.startswith("genai/"):
+        from controller.genai_http import route as genai_route
+        if registry.get(slug) is None:
+            return _error(404, f"unknown project {slug!r}")
+        return genai_route(method, slug, rest[len("genai/"):] if rest != "genai" else "", req)
 
     if rest == "" and method == "GET":
         detail = snapshot.project_detail(slug)
@@ -270,7 +296,7 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
         rec = registry.update(slug, **{
             k: body[k] for k in (
                 "path", "primitive", "remote_dir", "unity_host",
-                "campaign", "overrides",
+                "campaign", "overrides", "application",
                 "resources", "sync_policy",
             ) if k in body
         })
@@ -357,6 +383,55 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
     return _error(404, f"no route {method} /api/v1/projects/{slug}/{rest}")
 
 
+def _forget_jobs(body: dict) -> dict:
+    """Hide selected monitor rows while retaining the project ledger receipts.
+
+    The body is ``{"jobs": [{"slug", "campaign", "job_id"}, ...]}``. Each
+    identity must already exist on an attached project. Duplicate identities
+    count once. This does not call ``run.sh``.
+    """
+    if not isinstance(body, dict):
+        raise ValueError("Request body must be an object")
+    items = body.get("jobs")
+    if not isinstance(items, list) or not items:
+        raise ValueError("jobs must list the rows to remove")
+    grouped: dict[tuple[str, str], list[str]] = {}
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("each job needs slug, campaign, and job_id")
+        slug = item.get("slug")
+        campaign_name = item.get("campaign")
+        job_id = item.get("job_id")
+        if (
+            not isinstance(slug, str)
+            or not isinstance(campaign_name, str)
+            or not isinstance(job_id, str)
+            or not slug
+            or not campaign_name
+            or not job_id
+        ):
+            raise ValueError("each job needs slug, campaign, and job_id")
+        rec = registry.get(slug)
+        if rec is None:
+            raise ValueError(f"unknown project {slug!r}")
+        root = Path(rec["path"])
+        if campaign_name not in _campaign.campaigns(root):
+            raise ValueError(f"unknown campaign {campaign_name!r} on {slug}")
+        identity = (slug, campaign_name, job_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        grouped.setdefault((slug, campaign_name), []).append(job_id)
+    deleted = 0
+    for (slug, campaign_name), ids in grouped.items():
+        rec = registry.get(slug)
+        if rec is None:
+            raise ValueError(f"unknown project {slug!r}")
+        deleted += _campaign.forget(Path(rec["path"]), campaign_name, ids)
+    return {"ok": True, "deleted": deleted, "missing": len(seen) - deleted}
+
+
 def _write_client_stub(rec: dict) -> None:
     """Write unityHPC/controller.json so the plugin knows where to POST."""
     unity = Path(rec["path"]) / "unityHPC"
@@ -367,6 +442,8 @@ def _write_client_stub(rec: dict) -> None:
         "slug": rec["slug"],
         "primitive": rec["primitive"],
     }
+    if rec.get("application"):
+        stub["application"] = rec["application"]
     try:
         (unity / "controller.json").write_text(json.dumps(stub, indent=2) + "\n")
     except OSError:

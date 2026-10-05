@@ -10,7 +10,7 @@ import type {
   ProjectRecord,
   SyncPolicy,
 } from '../modules/controller/api';
-import { countStates, FAIL_STATES, PRIMITIVES } from '../modules/controller/format';
+import { APPLICATIONS, countStates, FAIL_STATES, PRIMITIVES } from '../modules/controller/format';
 import { jobsState, projectsState } from '../modules/controller/state';
 import { usePanels } from '../modules/panels/PanelProvider';
 import {
@@ -81,6 +81,13 @@ const PathLine = styled.div`
 `;
 
 const PRIMITIVE_OPTIONS = PRIMITIVES.map((one) => ({ value: one, label: one }));
+const APPLICATION_OPTIONS = [
+  { value: '', label: 'Resource project' },
+  ...APPLICATIONS.map((one) => ({
+    value: one.id,
+    label: one.runnable ? one.label : `${one.label} (reserved)`,
+  })),
+];
 
 const SYNC_OPTIONS: { value: SyncPolicy; label: string }[] = [
   { value: 'run_sh', label: 'run_sh — controller may run run.sh sync' },
@@ -91,6 +98,7 @@ type AttachForm = {
   path: string;
   slug: string;
   primitive: string;
+  application: string;
   remote_dir: string;
   unity_host: string;
   campaign: string;
@@ -102,6 +110,7 @@ const EMPTY_ATTACH: AttachForm = {
   path: '',
   slug: '',
   primitive: 'cpu',
+  application: '',
   remote_dir: '',
   unity_host: '',
   campaign: '',
@@ -132,6 +141,8 @@ export const JobsProjectPage = () => {
   const attachedPath = projects.find((one) => one.path === form.path.trim());
   const usedSlug = projects.find((one) => one.slug === form.slug.trim());
   const slugConflict = usedSlug && usedSlug.path !== form.path.trim();
+  const selectedApp = APPLICATIONS.find((one) => one.id === form.application);
+  const reserved = Boolean(selectedApp && !selectedApp.runnable);
 
   const submit = async () => {
     if (pathMissing) {
@@ -150,9 +161,14 @@ export const JobsProjectPage = () => {
       toast(parsed.error, 'error');
       return;
     }
+    if (reserved) {
+      toast(`${selectedApp?.label} is reserved and cannot be submitted`, 'error');
+      return;
+    }
     const body: AttachBody = {
       path: form.path.trim(),
       primitive: form.primitive,
+      application: form.application,
     };
     if (syncPolicyChanged) body.sync_policy = form.sync_policy;
     if (form.slug.trim()) body.slug = form.slug.trim();
@@ -162,7 +178,7 @@ export const JobsProjectPage = () => {
     if (Object.keys(parsed.value).length) body.resources = parsed.value;
     const slug = await attachProject(body);
     if (slug === null) return;
-    setForm({ ...EMPTY_ATTACH, primitive: form.primitive });
+    setForm({ ...EMPTY_ATTACH, primitive: form.primitive, application: form.application });
     setSyncPolicyChanged(false);
     if (slug) openProject(slug);
   };
@@ -188,7 +204,18 @@ export const JobsProjectPage = () => {
               >
                 <CardTop>
                   <div style={{ minWidth: 0 }}>
-                    <Tag color="purple" text={project.primitive || 'project'} />
+                    <TagRow>
+                      {project.application ? (
+                        <Tag
+                          color="blue"
+                          text={
+                            APPLICATIONS.find((one) => one.id === project.application)?.label ??
+                            project.application
+                          }
+                        />
+                      ) : null}
+                      <Tag color="purple" text={project.primitive || 'project'} />
+                    </TagRow>
                     <Slug style={{ marginTop: 6 }}>{project.slug}</Slug>
                   </div>
                   <Tag
@@ -247,6 +274,15 @@ export const JobsProjectPage = () => {
               onChange={(event) => setForm({ ...form, slug: event.target.value })}
             />
           </Field>
+          <Field label="Application">
+            <Select
+              value={form.application}
+              options={APPLICATION_OPTIONS}
+              onChange={(event) => setForm({ ...form, application: event.target.value })}
+            />
+          </Field>
+        </FieldRow>
+        <FieldRow $columns={3}>
           <Field label="Primitive">
             <Select
               value={form.primitive}
@@ -323,7 +359,7 @@ export const JobsProjectPage = () => {
           <Button
             variant="primary"
             Icon={IconFolderPlus}
-            disabled={busy || pathMissing || !parsed.ok || Boolean(slugConflict)}
+            disabled={busy || pathMissing || !parsed.ok || Boolean(slugConflict) || reserved}
             onClick={() => void submit()}
           >
             {attachedPath ? 'Open attached project' : 'Attach project'}
@@ -336,8 +372,11 @@ export const JobsProjectPage = () => {
           </Hint>
         ) : null}
         <Hint>
-          Open a card to see its readiness, declared resources and experiment
-          catalog, dispatch a run, stop it, fetch results, or detach it.
+          {reserved
+            ? `${selectedApp?.label} is reserved. It has no runner, so you cannot submit it.`
+            : form.application === 'llms-agents'
+              ? 'An LLMs & Agents project opens as an evaluation workspace: datasets, evaluation runs, traces and assessments.'
+              : 'Open a card to configure a declared workflow, review a run, and follow its execution. Project controls remain available in the project header.'}
         </Hint>
       </Card>
     </Page>

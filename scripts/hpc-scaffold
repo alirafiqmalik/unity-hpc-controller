@@ -3,6 +3,7 @@
 
 Usage:
   hpc-scaffold --type {cpu,gpu,ml,multi-cpu,multi-gpu} [--project-dir DIR] [--dry-run]
+  hpc-scaffold --application llms-agents [--project-dir DIR] [--dry-run]
   UNITY_HPC_NONINTERACTIVE=1 hpc-scaffold --type cpu --account ACCOUNT \
     --remote-dir /work/ACCOUNT/user/project --job-command 'python run.py'
 
@@ -171,7 +172,13 @@ def _deploy_collector(values: dict[str, str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="hpc-scaffold")
-    parser.add_argument("--type", dest="ptype", required=True, choices=scaffold.TYPES)
+    selector = parser.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--type", dest="ptype", choices=scaffold.TYPES)
+    selector.add_argument(
+        "--application",
+        choices=scaffold.APPLICATIONS,
+        help="workflow application; llms-agents is runnable, machine-learning is reserved",
+    )
     parser.add_argument("--project-dir", default=".")
     parser.add_argument("--dry-run", action="store_true",
                         help="print what would change and exit without writing")
@@ -208,10 +215,14 @@ def main() -> int:
         return 2
 
     try:
-        actions = scaffold.plan(project_dir, args.ptype)
+        if args.application:
+            actions = scaffold.plan_application(project_dir, args.application)
+        else:
+            actions = scaffold.plan(project_dir, args.ptype)
     except ValueError as exc:
         print(f"hpc-scaffold: {exc}", file=sys.stderr)
         return 2
+    kind_label = args.application or args.ptype
 
     env_path = project_dir / "unityHPC" / ".env"
     existing = _read_env(env_path)
@@ -227,10 +238,21 @@ def main() -> int:
                   " (use flags or provide non-empty values in unityHPC/.env)", file=sys.stderr)
             return 2
 
+    def _rel(action: scaffold.Action) -> str:
+        unity = project_dir / "unityHPC"
+        if action.path.is_relative_to(unity):
+            rel = action.path.relative_to(unity).as_posix()
+            label = f"unityHPC/{rel}"
+            if rel == ".env":
+                label += "  (env.example)"
+            return label
+        return action.path.relative_to(project_dir).as_posix()
+
     if args.dry_run:
-        print(f"Would generate the {args.ptype} scaffold in {project_dir}/unityHPC:")
+        noun = "application" if args.application else "scaffold"
+        print(f"Would generate the {kind_label} {noun} in {project_dir}/unityHPC:")
         for action in actions:
-            print(f"  {action.kind:<8} unityHPC/{action.path.name}")
+            print(f"  {action.kind:<8} {_rel(action)}")
         if supplied:
             print("  configure unityHPC/.env: " + ", ".join(sorted(supplied)))
         if args.write_guidance:
@@ -244,7 +266,8 @@ def main() -> int:
             print("  copy sample scripts (explicit request; no resident loop)")
         return 0
 
-    print(f"Generating the {args.ptype} scaffold in {project_dir}/unityHPC:")
+    noun = "application" if args.application else "scaffold"
+    print(f"Generating the {kind_label} {noun} in {project_dir}/unityHPC:")
     for line in scaffold.apply(actions):
         print(line)
 

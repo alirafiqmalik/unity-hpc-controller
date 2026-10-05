@@ -2,7 +2,8 @@
 
 This document defines separate live pilots. The user approved and completed the read-only Pilot A survey on 2026-10-03.
 The [Pilot A evidence](remaining-workspace-pilot-a-evidence.md) records the site observations and focused local checks.
-Pilots B and C remain unapproved. Local fixtures do not establish scheduler mutation or remote transport behavior.
+The user later approved Pilots B and C. Their [evidence](remaining-workspace-pilot-bc-evidence.md) records one running two-task cancellation and one fixture transfer.
+Those runs do not enable production cancellation or pending changes. Local fixtures still do not establish the remaining site cases.
 
 ## Capability status
 
@@ -67,5 +68,5 @@ Do not overwrite scientific datasets, reports, existing logs, or a production at
 ## Approval boundary
 
 Record each pilot’s exact configured targets before requesting its separate approval.
-Pilot A supplies missing site facts. It does not authorize Pilots B or C.
-GPU collection and production migration need separate plans and remain outside these pilots.
+Pilot A supplies missing site facts. The user separately approved one Pilot B array and one Pilot C fixture on 2026-10-03.
+That approval does not authorize a repeat run, cleanup, GPU collection, or production migration.

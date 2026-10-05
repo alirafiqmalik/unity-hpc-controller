@@ -1,7 +1,8 @@
 # Results and Files capability review
 
 Research date: 2026-10-03. Local source and representative artifacts only. No cluster operation ran.
-This report supports [Results](../design/results-spec.md) and [Files](../design/files-spec.md).
+This report records evidence for the retired Results and Files page specifications.
+The [execution contract](../workspace-contract-v1.md) retains the backend requirements.
 It extends the [connection review](project-connection-harness.md) and [tool review](project-workspace-tools.md).
 
 ## Evidence boundary
@@ -10,7 +11,8 @@ The worktree contains concurrent Experiments implementation and unrelated change
 The observations below describe inspected source, not a deployed or tested release.
 New workspace files appeared during this review. Their presence does not prove complete runtime support.
 [ADR 0008](../adr/0008-project-workspace-and-approved-executions.md) supplies the current connection, storage, and API direction.
-The accepted [Experiments specification](../design/experiments-spec.md) remains the product authority for Q1–Q23.
+The retired Experiments specification supplied the original product decisions Q1–Q23.
+The execution contract retains the requirements that still apply to the backend.
 
 ## Capability inventory
 
@@ -66,7 +68,7 @@ These are agent-selected design consequences. They do not change Q1–Q23.
 ## Sources
 
 [C1]: ../../controller/dispatch.py
-[C2]: ../../controller/web/src/modules/workspace/Workspace.tsx
+[C2]: https://github.com/alirafiqmalik/phd-plugin-unity-hpc/blob/2af7bcf8761ed78ecdc2bef4a55054402e2c986d/controller/web/src/modules/workspace/Workspace.tsx
 [C3]: ../../controller/workspace_store.py
 [P1]: the attached research project/harness/catalog.py
 [P2]: the attached research project/tlaibench/report.py

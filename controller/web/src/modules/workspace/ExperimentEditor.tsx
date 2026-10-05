@@ -7,7 +7,7 @@ import {
 } from 'react-router-dom';
 import { errorText } from '../controller/api';
 import { Button, ButtonGroup } from '../../ui/components/Button';
-import { Card, CardHeader, Grid, Hint, Stack } from '../../ui/components/Card';
+import { Card, CardHeader, Grid, Hint, KeyValue, Stack } from '../../ui/components/Card';
 import {
   Checkbox,
   Field,
@@ -23,6 +23,7 @@ import {
   type Draft,
   type Experiment,
   type Parameter,
+  type Plan,
   type Resource,
   type Value,
   type Variant,
@@ -106,10 +107,12 @@ export const ExperimentEditor = () => {
   const [savedDraft, setSavedDraft] = useState<Draft | null>(null);
   const [revisions, setRevisions] = useState<unknown[] | null>(null);
   const [check, setCheck] = useState<Check | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [approved, setApproved] = useState(false);
+  const [phase, setPhase] = useState<'idle' | 'checking' | 'dispatching'>('idle');
   const [expandedVariants, setExpandedVariants] = useState<Variant[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [defaultsPreview, setDefaultsPreview] = useState<{expected_version:number;declaration_digest:string;differences:unknown;draft:Draft}|null>(null);
-  const [page, setPage] = useState<'editor' | 'measurements'>('editor');
   const editCounter = useRef(0);
   const savedCounter = useRef(0);
   const saving = useRef(false);
@@ -208,6 +211,8 @@ export const ExperimentEditor = () => {
     editCounter.current += 1;
     setSaveState(saving.current ? 'Saving' : 'Unsaved');
     setCheck(null);
+    setPlan(null);
+    setApproved(false);
     if (
       'parameters' in patch ||
       'variant_parameters' in patch ||
@@ -273,39 +278,89 @@ export const ExperimentEditor = () => {
   const safe = saveState === 'Saved' && !busy && !experiment.archived;
   const toggle = <T,>(items: T[], item: T, enabled: boolean): T[] =>
     enabled ? [...new Set([...items, item])] : items.filter((v) => v !== item);
+  const openFields = fields.filter(
+    ([id, field]) =>
+      field.default === undefined && workflow.defaults?.[id] === undefined,
+  );
+  const lead = workflow.stages.find((stage) => {
+    const location =
+      stage.location ?? manifest?.operations?.[stage.operation]?.location;
+    return location !== 'controller' && includedStages.includes(stage.id);
+  });
+  const leadResource: Resource | null = lead
+    ? {
+        primitive: manifest?.default_primitive,
+        mode: manifest?.default_mode,
+        cpus: 1,
+        gpus: 1,
+        nodes: 1,
+        ranks: 1,
+        memory_gb: 4,
+        walltime: '00:30:00',
+        ...lead.resources,
+        ...draft.resources?.[lead.id],
+      }
+    : null;
+  const updateLead = (key: string, value: string | number) => {
+    if (!lead) return;
+    change({
+      resources: {
+        ...draft.resources,
+        [lead.id]: { ...draft.resources?.[lead.id], [key]: value },
+      },
+    });
+  };
+  const dispatch = () =>
+    void action(async () => {
+      if (!plan || !check?.valid) {
+        setPhase('checking');
+        try {
+          const result = await workspaceApi.check(slug, experimentId);
+          setCheck(result);
+          setExpandedVariants(result.variants ?? []);
+          if (!result.valid) return;
+          const created = await workspaceApi.plan(slug, experimentId);
+          setPlan(created);
+          setApproved(false);
+        } finally {
+          setPhase('idle');
+        }
+        return;
+      }
+      if (!approved) return;
+      setPhase('dispatching');
+      try {
+        const execution = await workspaceApi.dispatch(
+          slug,
+          plan.id,
+          `review:${plan.id}`,
+        );
+        navigate(
+          `/projects/${encodeURIComponent(slug)}/runs?execution=${encodeURIComponent(execution.id)}`,
+        );
+      } finally {
+        setPhase('idle');
+      }
+    });
   return (
     <WorkspacePage
-      title={page === 'measurements' ? 'Measurements' : 'Experiment editor'}
+      title="Start experiment"
       actions={
         <ButtonGroup>
           <span aria-live="polite" data-testid="autosave-status">
             {saveState}
           </span>
           <Button
-            disabled={!safe}
-            onClick={() =>
-              void action(async () => {
-                const result = await workspaceApi.check(slug, experimentId);
-                setCheck(result);
-                setExpandedVariants(result.variants ?? []);
-              })
-            }
-          >
-            Check setup
-          </Button>
-          <Button
             variant="primary"
-            disabled={!safe || !check?.valid}
-            onClick={() =>
-              void action(async () => {
-                const plan = await workspaceApi.plan(slug, experimentId);
-                navigate(
-                  `/projects/${encodeURIComponent(slug)}/review/${plan.id}`,
-                );
-              })
+            disabled={
+              !safe ||
+              !connection?.valid ||
+              phase !== 'idle' ||
+              Boolean(plan && check?.valid && !approved)
             }
+            onClick={dispatch}
           >
-            Review plan
+            {phase === 'dispatching' ? 'Dispatching…' : 'Dispatch'}
           </Button>
         </ButtonGroup>
       }
@@ -314,13 +369,6 @@ export const ExperimentEditor = () => {
         Back to library
       </Link>
       <ErrorNotice error={error} />
-      <details><summary>Project defaults</summary><Hint>Saved drafts retain their resources. Review the differences before adopting current project defaults.</Hint>
-        <Button disabled={!safe} onClick={() => void action(async () => setDefaultsPreview(await workspaceRequest(slug, `experiments/${experimentId}/defaults`, 'POST', {})))}>Preview current defaults</Button>
-        {defaultsPreview ? <><JsonDetails title="Default changes" value={defaultsPreview.differences} /><Button disabled={!safe} onClick={() => void action(async () => {
-          const updated = await workspaceRequest<Experiment>(slug, `experiments/${experimentId}/defaults`, 'POST', {apply:true, expected_version:defaultsPreview.expected_version, declaration_digest:defaultsPreview.declaration_digest});
-          setExperiment(updated);setDraft(updated.draft);setCheck(null);setDefaultsPreview(null);sessionStorage.removeItem(key);
-        })}>Adopt reviewed defaults</Button><Button onClick={() => setDefaultsPreview(null)}>Keep saved values</Button></> : null}
-      </details>
       {error && saveState === 'Unsaved' ? (
         <Card>
           <p>
@@ -384,37 +432,143 @@ export const ExperimentEditor = () => {
       ) : null}
       {search.get('repeat') ? (
         <Card>
-          Repeat creates fresh outputs. Check setup and review a new plan before
-          dispatch.
+          Repeat creates fresh outputs. Dispatch checks this setup and shows the
+          exact plan before it submits.
         </Card>
       ) : null}
       <Hint>
         Revision {experiment.revision} · Saving does not run checks or submit
-        jobs. Checks run on the controller host.
+        jobs. Checks run on the controller host when you dispatch.
       </Hint>
-      <Button
-        onClick={() =>
-          void action(async () => {
-            const result = await workspaceRequest<{ revisions: unknown[] }>(
-              slug,
-              `experiments/${experimentId}/revisions`,
-            );
-            setRevisions(result.revisions);
-          })
-        }
-      >
-        Revision history
-      </Button>
-      {revisions ? (
-        <Card>
-          <CardHeader title="Immutable revision history" />
-          <JsonDetails title="Saved revisions" value={revisions} />
+      {!connection?.valid ? (
+        <Card role="alert">
+          <CardHeader title="Connection is not ready" />
+          <p>Dispatch stays unavailable until the project connection is valid.</p>
+          <Link to={`/projects/${encodeURIComponent(slug)}/settings`}>
+            Open connection settings
+          </Link>
         </Card>
       ) : null}
-      {page === 'measurements' ? (
-        <>
-          <Button onClick={() => setPage('editor')}>Back to editor</Button>
-          {Object.entries(metrics).map(([id, metric]) => (
+      <Card>
+        <CardHeader title={draft.name || experiment.name} note={saveState} />
+        <Field label="Name">
+          <TextInput
+            aria-label="Name"
+            value={draft.name ?? experiment.name}
+            onChange={(e) => change({ name: e.target.value })}
+          />
+        </Field>
+        <Field label="Workflow">
+          <TextInput
+            aria-label="Workflow"
+            readOnly
+            value={workflow.title || draft.workflow}
+          />
+        </Field>
+      </Card>
+      {openFields.length ? (
+        <Card>
+          <CardHeader title="Required values" />
+          <Grid>
+            {openFields.map(([id, f]) => (
+              <Field
+                key={id}
+                label={`${id}${f.unit ? ` (${f.unit})` : ''}${f.required ? ' *' : ''}`}
+              >
+                <TypedInput
+                  label={id}
+                  field={f}
+                  value={valueFor(id, f)}
+                  onChange={(v) =>
+                    change({ parameters: { ...draft.parameters, [id]: v } })
+                  }
+                />
+              </Field>
+            ))}
+          </Grid>
+        </Card>
+      ) : (
+        <Hint>Parameters keep the workflow defaults until you open the section below.</Hint>
+      )}
+      <Card>
+        <CardHeader title="Resources this dispatch will submit" />
+        {lead && leadResource ? (
+          <Grid>
+            <Field label="Primitive">
+              <Select
+                aria-label="Dispatch primitive"
+                value={String(leadResource.primitive ?? 'cpu')}
+                options={['cpu', 'gpu', 'multi-cpu', 'multi-gpu'].map((v) => ({
+                  value: v,
+                  label: v,
+                }))}
+                onChange={(e) => updateLead('primitive', e.target.value)}
+              />
+            </Field>
+            <Field label="GPUs">
+              <TextInput
+                aria-label="Dispatch GPUs"
+                type="number"
+                min={0}
+                value={String(leadResource.gpus ?? 0)}
+                onChange={(e) => updateLead('gpus', Number(e.target.value))}
+              />
+            </Field>
+            <Field label="Walltime">
+              <TextInput
+                aria-label="Dispatch walltime"
+                value={String(leadResource.walltime ?? '')}
+                placeholder="01:00:00"
+                onChange={(e) => updateLead('walltime', e.target.value)}
+              />
+            </Field>
+          </Grid>
+        ) : (
+          <Hint>This workflow has no cluster stage on the default path.</Hint>
+        )}
+        {workflow.smoke_test_required ? (
+          <Checkbox
+            label="Include cluster smoke test"
+            checked
+            disabled
+            onChange={() => {}}
+          />
+        ) : null}
+        <Hint>
+          {lead
+            ? `Stage ${lead.id}. Other stages stay at their defaults.`
+            : 'Open the section below to change stages.'}
+        </Hint>
+      </Card>
+      <details>
+        <summary style={{ cursor: 'pointer', fontWeight: 600, margin: '8px 0' }}>
+          Variants, measurements, and resources
+        </summary>
+        <Card>
+          <CardHeader title="Research notes" />
+          <Field label="Research question or notes">
+            <TextArea
+              aria-label="Research question or notes"
+              value={draft.question ?? draft.notes ?? ''}
+              onChange={(e) => change({ question: e.target.value })}
+            />
+          </Field>
+          <Field label="Outcome measure">
+            <Select
+              aria-label="Outcome measure"
+              value={draft.outcome_measure ?? ''}
+              options={[
+                { value: '', label: 'Select outcome measure' },
+                ...Object.keys(metrics).map((id) => ({
+                  value: id,
+                  label: id,
+                })),
+              ]}
+              onChange={(e) => change({ outcome_measure: e.target.value })}
+            />
+          </Field>
+        </Card>
+        {Object.entries(metrics).map(([id, metric]) => (
             <Card key={id}>
               <Checkbox
                 label={id}
@@ -490,77 +644,35 @@ export const ExperimentEditor = () => {
               )}
             </Card>
           ))}
-        </>
-      ) : (
-        <>
-          <Card>
-            <CardHeader title="Research context" />
-            <Field label="Name">
-              <TextInput
-                aria-label="Name"
-                value={draft.name ?? experiment.name}
-                onChange={(e) => change({ name: e.target.value })}
-              />
-            </Field>
-            <Field label="Workflow">
-              <TextInput
-                aria-label="Workflow"
-                readOnly
-                value={workflow.title || draft.workflow}
-              />
-            </Field>
-            <Field label="Research question or notes">
-              <TextArea
-                aria-label="Research question or notes"
-                value={draft.question ?? draft.notes ?? ''}
-                onChange={(e) => change({ question: e.target.value })}
-              />
-            </Field>
-            <Field label="Outcome measure">
-              <Select
-                aria-label="Outcome measure"
-                value={draft.outcome_measure ?? ''}
-                options={[
-                  { value: '', label: 'Select outcome measure' },
-                  ...Object.keys(metrics).map((id) => ({
-                    value: id,
-                    label: id,
-                  })),
-                ]}
-                onChange={(e) => change({ outcome_measure: e.target.value })}
-              />
-            </Field>
-            <Button onClick={() => setPage('measurements')}>
-              Measurements ({selectedMetrics.length})
-            </Button>
-          </Card>
-          <Card>
-            <CardHeader title="Data, models, and parameters" />
-            <Grid>
-              {fields.map(([id, f]) => (
-                <Field
-                  key={id}
-                  label={`${id}${f.unit ? ` (${f.unit})` : ''}${f.required ? ' *' : ''}`}
-                >
-                  <TypedInput
-                    label={id}
-                    field={f}
-                    value={valueFor(id, f)}
-                    onChange={(v) =>
-                      change({ parameters: { ...draft.parameters, [id]: v } })
-                    }
-                  />
-                  <Hint>
-                    {f.min !== undefined ? `Minimum ${f.min}. ` : ''}
-                    {f.max !== undefined ? `Maximum ${f.max}. ` : ''}
-                    {f.variant_eligible
-                      ? 'Eligible for variant expansion.'
-                      : 'Shared unless declared eligible for expansion.'}
-                  </Hint>
-                </Field>
-              ))}
-            </Grid>
-          </Card>
+          {fields.some(([id]) => !openFields.some(([openId]) => openId === id)) ? (
+            <Card>
+              <CardHeader title="Parameter defaults" />
+              <Grid>
+                {fields
+                  .filter(([id]) => !openFields.some(([openId]) => openId === id))
+                  .map(([id, f]) => (
+                    <Field
+                      key={id}
+                      label={`${id}${f.unit ? ` (${f.unit})` : ''}`}
+                    >
+                      <TypedInput
+                        label={id}
+                        field={f}
+                        value={valueFor(id, f)}
+                        onChange={(v) =>
+                          change({ parameters: { ...draft.parameters, [id]: v } })
+                        }
+                      />
+                      <Hint>
+                        {f.min !== undefined ? `Minimum ${f.min}. ` : ''}
+                        {f.max !== undefined ? `Maximum ${f.max}. ` : ''}
+                        Default {String(valueFor(id, f) ?? 'unset')}.
+                      </Hint>
+                    </Field>
+                  ))}
+              </Grid>
+            </Card>
+          ) : null}
           <Card>
             <CardHeader title="Variants" />
             <Select
@@ -687,7 +799,7 @@ export const ExperimentEditor = () => {
                 ))
             )}
             <Hint>
-              Check setup shows the exact expanded list. Invalid combinations
+              Dispatch shows the exact expanded list. Invalid combinations
               remain visible until corrected or explicitly excluded.
             </Hint>
           </Card>
@@ -909,8 +1021,35 @@ export const ExperimentEditor = () => {
               })}
             </Stack>
           </Card>
-        </>
-      )}
+          <details>
+            <summary>Project defaults</summary>
+            <Hint>Saved drafts retain their resources. Review the differences before adopting current project defaults.</Hint>
+            <Button disabled={!safe} onClick={() => void action(async () => setDefaultsPreview(await workspaceRequest(slug, `experiments/${experimentId}/defaults`, 'POST', {})))}>Preview current defaults</Button>
+            {defaultsPreview ? <><JsonDetails title="Default changes" value={defaultsPreview.differences} /><Button disabled={!safe} onClick={() => void action(async () => {
+              const updated = await workspaceRequest<Experiment>(slug, `experiments/${experimentId}/defaults`, 'POST', {apply:true, expected_version:defaultsPreview.expected_version, declaration_digest:defaultsPreview.declaration_digest});
+              setExperiment(updated);setDraft(updated.draft);setCheck(null);setPlan(null);setApproved(false);setDefaultsPreview(null);sessionStorage.removeItem(key);
+            })}>Adopt reviewed defaults</Button><Button onClick={() => setDefaultsPreview(null)}>Keep saved values</Button></> : null}
+          </details>
+          <Button
+            onClick={() =>
+              void action(async () => {
+                const result = await workspaceRequest<{ revisions: unknown[] }>(
+                  slug,
+                  `experiments/${experimentId}/revisions`,
+                );
+                setRevisions(result.revisions);
+              })
+            }
+          >
+            Revision history
+          </Button>
+          {revisions ? (
+            <Card>
+              <CardHeader title="Immutable revision history" />
+              <JsonDetails title="Saved revisions" value={revisions} />
+            </Card>
+          ) : null}
+      </details>
       {check ? (
         <Card>
           <CardHeader
@@ -936,7 +1075,7 @@ export const ExperimentEditor = () => {
           <CardHeader
             title={`Expanded variants · ${expandedVariants.length}`}
           />
-          <Hint>Edits require another setup check before review.</Hint>
+          <Hint>An edit clears this plan. Dispatch checks the setup again.</Hint>
           {expandedVariants.map((variant) => (
             <div key={variant.id}>
               <Checkbox
@@ -955,6 +1094,40 @@ export const ExperimentEditor = () => {
               <JsonDetails title={variant.id} value={variant.parameters} />
             </div>
           ))}
+        </Card>
+      ) : null}
+      {plan && check?.valid ? (
+        <Card>
+          <CardHeader
+            title={`Exact plan ${plan.id}`}
+            note={`${plan.variants.length} variants · ${plan.stages.length} stages`}
+          />
+          <p>
+            This approval covers only the exact source, configuration, stages,
+            resources, and outputs shown here. An edit requires a new check.
+          </p>
+          <KeyValue label="Source digest">{plan.source?.digest}</KeyValue>
+          <JsonDetails title="Frozen configuration" value={plan.config} />
+          {plan.stages.map((stage) => (
+            <div key={stage.id}>
+              <KeyValue label={stage.id}>
+                {stage.purpose} · {stage.resources.primitive} ·{' '}
+                {stage.resources.gpus ?? 0} GPUs · {stage.resources.walltime} ·{' '}
+                {stage.output_dir}
+              </KeyValue>
+              <JsonDetails title={`${stage.id} script and outputs`} value={{
+                script: stage.script,
+                argv: stage.argv,
+                outputs: stage.outputs,
+                resources: stage.resources,
+              }} />
+            </div>
+          ))}
+          <Checkbox
+            label="I reviewed this exact plan, including its scripts, resources, and outputs"
+            checked={approved}
+            onChange={(e) => setApproved(e.target.checked)}
+          />
         </Card>
       ) : null}
     </WorkspacePage>

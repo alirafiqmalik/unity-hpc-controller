@@ -168,12 +168,12 @@ def test_project_controls_remain_visible_and_catalog_confirmation_resets(dashboa
     from lib import campaign
     campaign.record(tmp_path / "ui-a", "older-campaign", "12345", "entry-0", "cpu")
 
-    def open_legacy_controls(browser):
-        assert browser.eval('location.pathname') == '/projects/ui-a/overview'
+    def open_project_controls(browser):
+        assert browser.eval('location.pathname') == '/projects/ui-a/runner'
         browser.eval("document.querySelector('nav a[href=\"/projects/ui-a/settings\"]').click()")
         time.sleep(.2)
         browser.eval("[...document.querySelectorAll('button')]"
-                     ".find(x => x.textContent === 'Legacy project controls').click()")
+                     ".find(x => x.textContent === 'Project controls').click()")
         time.sleep(.3)
 
     try:
@@ -184,7 +184,7 @@ def test_project_controls_remain_visible_and_catalog_confirmation_resets(dashboa
                 ".find(x => x.getAttribute('aria-label') === 'Open project ui-a').click()"
             )
             time.sleep(0.5)
-            open_legacy_controls(browser)
+            open_project_controls(browser)
             sizes = browser.eval("""(() => {
               const run = [...document.querySelectorAll('h3')]
                 .find(x => x.textContent === 'Run').closest('section');
@@ -252,7 +252,7 @@ def test_project_controls_remain_visible_and_catalog_confirmation_resets(dashboa
             browser.eval("[...document.querySelectorAll('button')]"
                          ".find(x => x.getAttribute('aria-label') === 'Open project ui-a').click()")
             time.sleep(0.3)
-            open_legacy_controls(browser)
+            open_project_controls(browser)
             browser.eval("[...document.querySelectorAll('button')]"
                          ".find(x => x.textContent === 'Fetch logs + artifacts').click()")
             time.sleep(0.3)

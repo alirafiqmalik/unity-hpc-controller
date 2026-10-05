@@ -137,10 +137,16 @@ export const Page = ({
   children,
   title,
   subtitle,
+  lead,
+  titleExtra,
 }: {
   title?: string;
   subtitle?: string;
   actions?: ReactNode;
+  /** Drawn before the title: a back control, an icon. */
+  lead?: ReactNode;
+  /** Drawn after the title on the same line: a chip, a menu. */
+  titleExtra?: ReactNode;
   children: ReactNode;
 }) => {
   const location = useLocation();
@@ -162,9 +168,15 @@ export const Page = ({
   return (
     <>
       <Header>
-        <div style={{ minWidth: 0 }}>
-          <Title>{title ?? item?.title ?? 'Unity HPC'}</Title>
-          {(subtitle ?? item?.subtitle) ? <Subtitle>{subtitle ?? item?.subtitle}</Subtitle> : null}
+        <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lead}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <Title>{title ?? item?.title ?? 'Unity HPC'}</Title>
+              {titleExtra}
+            </div>
+            {(subtitle ?? item?.subtitle) ? <Subtitle>{subtitle ?? item?.subtitle}</Subtitle> : null}
+          </div>
         </div>
         <HeaderRight>
           {actions}

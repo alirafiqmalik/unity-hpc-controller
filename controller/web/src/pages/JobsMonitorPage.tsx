@@ -1,12 +1,14 @@
 /**
  * Every ledger row across the attached projects, with a state filter, a
- * project filter and a search.
+ * project filter, a search, and multi-select delete.
  */
 
-import { IconAlertTriangle, IconSearch } from '@tabler/icons-react';
-import { useMemo, useState } from 'react';
-import { useRecoilState, useRecoilValue } from 'recoil';
+import { IconAlertTriangle, IconSearch, IconTrash, IconX } from '@tabler/icons-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 
+import { controllerApi, errorText } from '../modules/controller/api';
+import { useSync } from '../modules/controller/ControllerSync';
 import {
   purposeLabel,
   exitOf,
@@ -24,15 +26,20 @@ import {
   projectsState,
   type JobFilter,
 } from '../modules/controller/state';
+import type { Job } from '../modules/controller/types';
 import { usePanels } from '../modules/panels/PanelProvider';
 import { useProjectCommands } from '../modules/projects/useProjectCommands';
-import { Button } from '../ui/components/Button';
+import { ActionBar, ActionBarCount, ActionBarDivider } from '../ui/components/ActionBar';
+import { Button, ButtonGroup, IconButton } from '../ui/components/Button';
 import { Card, CardHeader, Grid } from '../ui/components/Card';
-import { Select, TextInput } from '../ui/components/Field';
+import { Select, SelectionCheckbox, TextInput } from '../ui/components/Field';
+import { Modal } from '../ui/components/SidePanel';
 import { StatCard } from '../ui/components/StatCard';
 import {
   MonoCell,
   MutedCell,
+  SelectCell,
+  SelectHead,
   Table,
   TableEmptyRow,
   TableScroller,
@@ -40,7 +47,11 @@ import {
   TRow,
 } from '../ui/components/Table';
 import { Chip, ChipRow, Tag } from '../ui/components/Tag';
+import { useToast } from '../ui/components/Toast';
 import { Page } from '../ui/layout/AppLayout';
+
+const jobKey = (job: Pick<Job, 'slug' | 'campaign' | 'job_id'>): string =>
+  `${job.slug ?? ''}\u0000${job.campaign ?? ''}\u0000${job.job_id}`;
 
 const FILTERS: { id: JobFilter; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -52,11 +63,18 @@ const FILTERS: { id: JobFilter; label: string }[] = [
 
 export const JobsMonitorPage = () => {
   const jobs = useRecoilValue(jobsState);
+  const setJobs = useSetRecoilState(jobsState);
   const projects = useRecoilValue(projectsState);
   const [filter, setFilter] = useRecoilState(jobFilterState);
   const [search, setSearch] = useRecoilState(jobSearchState);
   const { openJob } = usePanels();
   const { runCommand, busy } = useProjectCommands();
+  const { refresh } = useSync();
+  const toast = useToast();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [pending, setPending] = useState<Job[]>([]);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   // Local on purpose: a project filter should not follow the operator to
   // other pages the way the shared state filter does.
   const [purpose, setPurpose] = useState('');
@@ -103,7 +121,105 @@ export const JobsMonitorPage = () => {
       .reverse();
   }, [scoped, filter, search, purpose]);
 
+  const visibleKeys = useMemo(() => rows.map(jobKey), [rows]);
+  const selectedKeys = useMemo(
+    () => selected.filter((key) => visibleKeys.includes(key)),
+    [selected, visibleKeys],
+  );
+  const allSelected = visibleKeys.length > 0 && selectedKeys.length === visibleKeys.length;
+  const someSelected = selectedKeys.length > 0 && !allSelected;
+  const selectedRows = useMemo(
+    () => rows.filter((job) => selectedKeys.includes(jobKey(job))),
+    [rows, selectedKeys],
+  );
+  const pendingLive = pending.filter((job) => isLiveState(statusOf(job))).length;
+  const pendingLinked = pending.filter((job) => job.execution_id).length;
+
+  useEffect(() => {
+    setSelected((current) => {
+      const next = current.filter((key) => visibleKeys.includes(key));
+      return next.length === current.length ? current : next;
+    });
+  }, [visibleKeys]);
+
+  const askDelete = useCallback(() => {
+    const next = selectedRows.filter((job) => job.slug && job.campaign);
+    if (!next.length) return;
+    setPending(next);
+    setConfirming(true);
+  }, [selectedRows]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (confirming || deleting) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (!selectedKeys.length) return;
+      if (event.key === 'Escape') {
+        setSelected([]);
+        return;
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        askDelete();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [askDelete, confirming, deleting, selectedKeys.length]);
+
+  const toggleAll = () => setSelected(allSelected ? [] : visibleKeys);
+  const toggleOne = (key: string) =>
+    setSelected((current) =>
+      current.includes(key) ? current.filter((one) => one !== key) : [...current, key],
+    );
+
+  const closeConfirm = () => {
+    if (deleting) return;
+    setConfirming(false);
+    setPending([]);
+  };
+
+  const removeSelected = async () => {
+    const payload = pending.flatMap((job) =>
+      job.slug && job.campaign
+        ? [{ slug: job.slug, campaign: job.campaign, job_id: String(job.job_id) }]
+        : [],
+    );
+    if (!payload.length) return;
+    const keys = new Set(payload.map((job) => jobKey(job)));
+    setDeleting(true);
+    try {
+      const result = await controllerApi.deleteJobs(payload);
+      setJobs((current) => current.filter((job) => !keys.has(jobKey(job))));
+      setSelected([]);
+      setPending([]);
+      setConfirming(false);
+      const noun = result.deleted === 1 ? 'row' : 'rows';
+      toast(
+        result.missing
+          ? `Removed ${result.deleted} ${noun} from Job Monitor. ${result.missing} were already gone.`
+          : `Removed ${result.deleted} ${noun} from Job Monitor`,
+        'success',
+      );
+      void refresh();
+    } catch (caught) {
+      toast(errorText(caught), 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const scope = activeProject ? `in ${activeProject}` : 'across the attached ledgers';
+  const selectedCount = selectedKeys.length;
 
   return (
     <Page
@@ -183,6 +299,15 @@ export const JobsMonitorPage = () => {
           <Table>
             <THead>
               <tr>
+                <SelectHead>
+                  <SelectionCheckbox
+                    aria-label="Select all shown jobs"
+                    checked={allSelected}
+                    indeterminate={someSelected}
+                    disabled={!rows.length}
+                    onChange={toggleAll}
+                  />
+                </SelectHead>
                 <th>Job</th>
                 <th>Project / campaign</th>
                 <th>State</th>
@@ -200,11 +325,13 @@ export const JobsMonitorPage = () => {
                   const state = statusOf(job);
                   const tag = stateTag(job.status);
                   const exit = exitOf(job);
+                  const key = jobKey(job);
                   const open = () => openJob(String(job.job_id), job.slug || undefined);
                   return (
                     <TRow
                       key={`${job.slug}-${job.job_id}`}
                       $clickable
+                      $selected={selectedKeys.includes(key)}
                       tabIndex={0}
                       aria-label={`Open job ${job.job_id}`}
                       onClick={open}
@@ -216,6 +343,16 @@ export const JobsMonitorPage = () => {
                         }
                       }}
                     >
+                      <SelectCell
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        <SelectionCheckbox
+                          aria-label={`Select job ${job.job_id}`}
+                          checked={selectedKeys.includes(key)}
+                          onChange={() => toggleOne(key)}
+                        />
+                      </SelectCell>
                       <td>
                         <b style={{ fontFamily: 'inherit' }}>{job.exp || job.job_id}</b>
                         <div style={{ fontSize: 11, opacity: 0.55 }}>
@@ -264,7 +401,7 @@ export const JobsMonitorPage = () => {
                   );
                 })
               ) : (
-                <TableEmptyRow colSpan={9}>
+                <TableEmptyRow colSpan={10}>
                   {scoped.length
                     ? 'No job matches this filter'
                     : activeProject
@@ -278,6 +415,68 @@ export const JobsMonitorPage = () => {
           </Table>
         </TableScroller>
       </Card>
+
+      {selectedCount ? (
+        <ActionBar>
+          <SelectionCheckbox
+            aria-label={allSelected ? 'Clear selection' : 'Select every shown job'}
+            checked={allSelected}
+            indeterminate={someSelected}
+            onChange={toggleAll}
+          />
+          <ActionBarCount>
+            {selectedCount} selected
+          </ActionBarCount>
+          <ActionBarDivider />
+          <Button
+            size="small"
+            variant="danger"
+            Icon={IconTrash}
+            disabled={deleting}
+            aria-label="Delete selected jobs"
+            onClick={askDelete}
+          >
+            Delete
+          </Button>
+          <IconButton
+            Icon={IconX}
+            aria-label="Clear selection"
+            onClick={() => setSelected([])}
+          />
+        </ActionBar>
+      ) : null}
+
+      <Modal
+        open={confirming}
+        onClose={closeConfirm}
+        title={`Delete ${pending.length} monitor ${pending.length === 1 ? 'row' : 'rows'}`}
+      >
+        <p style={{ margin: 0 }}>
+          This removes the selected {pending.length === 1 ? 'row' : 'rows'} from the
+          Job Monitor. The project ledger retains the scheduler receipts.
+          {pendingLive
+            ? ` ${pendingLive} ${pendingLive === 1 ? 'job is' : 'jobs are'} still live on the scheduler and ${pendingLive === 1 ? 'is' : 'are'} not cancelled.`
+            : ''}{' '}
+          Remote files stay.
+          {pendingLinked
+            ? ` ${pendingLinked} ${pendingLinked === 1 ? 'experiment execution that points' : 'experiment executions that point'} at ${pendingLinked === 1 ? 'this row stays' : 'these rows stay'}.`
+            : ''}
+        </p>
+        <ButtonGroup align="right">
+          <Button size="small" disabled={deleting} onClick={closeConfirm}>
+            Cancel
+          </Button>
+          <Button
+            size="small"
+            variant="danger"
+            Icon={IconTrash}
+            disabled={deleting || !pending.length}
+            onClick={() => void removeSelected()}
+          >
+            Delete
+          </Button>
+        </ButtonGroup>
+      </Modal>
     </Page>
   );
 };

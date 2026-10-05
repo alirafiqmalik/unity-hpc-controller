@@ -120,12 +120,14 @@ def test_the_router_has_no_page_the_drawer_hides():
         f"routes missing from the drawer: {sorted(declared - set(ALL_ROUTES))}"
 
 
-def test_project_routes_have_their_own_navigation_and_overview_landing():
+def test_project_routes_keep_research_tools_alongside_application_landings():
     app = _read("src/App.tsx")
     navigation = _read("src/modules/navigation/routes.ts")
     drawer = _read("src/ui/layout/NavigationDrawer.tsx")
     assert 'path="/projects/:slug"' in app
-    assert '<Navigate to="overview" replace' in app
+    assert '<Navigate to="traces" replace' in app
+    assert "result.total > 0 ? 'executions' : 'runner'" in app
+    assert 'path="research"' in app
     sections = re.search(r'PROJECT_SECTIONS = \[([^\]]+)\]', navigation).group(1)
     for label in re.findall(r"'([^']+)'", sections):
         assert f'path="{label.lower()}"' in app
@@ -133,6 +135,8 @@ def test_project_routes_have_their_own_navigation_and_overview_landing():
     assert 'to={projectsReturn}' in drawer
     assert "let projectsReturn = '/jobs/project'" in drawer
     assert "sessionStorage.getItem('unity-hpc.projects-return')" in drawer
+    for section in ('traces', 'sessions', 'datasets', 'evaluations', 'prompts', 'agent-versions', 'runner', 'executions'):
+        assert f'path="{section}"' in app
 
 
 def test_the_default_route_is_the_overview():

@@ -2,11 +2,13 @@
 
 import styled from '@emotion/styled';
 import { IconSearch, IconX } from '@tabler/icons-react';
-import type {
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-  TextareaHTMLAttributes,
+import {
+  useEffect,
+  useRef,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from 'react';
 
 const inputSkin = `
@@ -297,6 +299,29 @@ export const Checkbox = ({
     {label}
   </CheckboxLabel>
 );
+
+const BareCheckbox = styled.input`
+  accent-color: ${({ theme }) => theme.accent.primary};
+  cursor: pointer;
+  height: 14px;
+  margin: 0;
+  width: 14px;
+`;
+
+/**
+ * The record-table checkbox. `indeterminate` is the header state when only
+ * some of the shown rows are selected.
+ */
+export const SelectionCheckbox = ({
+  indeterminate = false,
+  ...rest
+}: InputHTMLAttributes<HTMLInputElement> & { indeterminate?: boolean }) => {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate && rest.checked !== true;
+  }, [indeterminate, rest.checked]);
+  return <BareCheckbox ref={ref} type="checkbox" {...rest} />;
+};
 
 const StyledToggle = styled.button<{ $on: boolean }>`
   background: ${({ theme, $on }) =>

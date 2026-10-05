@@ -39,6 +39,10 @@ Ask only when a scientific assumption or product scope remains unresolved.
 
 **3. Generate the scaffold via hpc-scaffold**
 
+For an LLM evaluation project, select `--application llms-agents` instead of `--type`.
+This installs datasets, the predict function, scorers, and evaluation workflows.
+Keep the selected resource primitive for attachment. `machine-learning` is reserved.
+
 Keep the existing noninteractive flags. For an agent or CI:
 
 ```bash
@@ -62,6 +66,9 @@ Copying the sample scripts is **opt-in**: ask the user before putting `collector
 
 **4. POST attach**
 
+For the LLM application, add `"application":"llms-agents"` to the attachment body.
+For an existing resource project, omit `application` to preserve its stored value.
+
 ```bash
 curl -sS -X POST "${UNITY_CONTROLLER:-http://127.0.0.1:8300}/api/v1/projects" \
   -H 'Content-Type: application/json' \
@@ -72,7 +79,7 @@ curl -sS -X POST "${UNITY_CONTROLLER:-http://127.0.0.1:8300}/api/v1/projects" \
 
 **6. Validate the declared connection**
 
-Read `GET /api/v1/projects/{slug}/connection`. Resolve structured declaration
+Read `GET /api/v1/projects/{slug}/workspace/connection`. Resolve structured declaration
 errors, then run registered bounded fixture/mock checks. Check argument quoting,
 isolated output paths, and generated scripts without submitting cluster work.
 Repeat setup and verify custom adapters and environment remain unchanged.

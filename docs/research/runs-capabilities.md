@@ -2,7 +2,8 @@
 
 Research date: 2026-10-03. Scope: repository inspection and official Slurm documentation. No cluster commands ran.
 
-This report supports the [Runs specification](../design/runs-spec.md). New product choices are agent-selected.
+This report records evidence for the retired Runs page specification.
+The [execution contract](../workspace-contract-v1.md) retains the backend requirements. New product choices were agent-selected.
 The source tree contains concurrent implementation changes. Presence in this tree does not establish released or tested behavior.
 
 ## Existing evidence

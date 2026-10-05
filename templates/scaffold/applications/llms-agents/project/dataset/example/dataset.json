@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "example",
+  "description": "Three labeled question-answer records. Replace with your own test cases, or add traces from the Traces page.",
+  "tags": {"type": "example", "stage": "development"},
+  "created_utc": "2026-01-01T00:00:00Z",
+  "updated_utc": "2026-01-01T00:00:00Z",
+  "source": {"type": "HUMAN", "created_by": "hpc-scaffold --application llms-agents"},
+  "records_file": "records.jsonl"
+}

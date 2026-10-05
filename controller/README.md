@@ -124,7 +124,8 @@ and the idle timeout.
 `web/` is a Vite project on the `twenty-front` stack: React 18, TypeScript,
 Emotion, Recoil and react-router. `npm run build` writes `web/dist/`, and
 `http._static` serves it. ADR 0006 records why this replaced the no-build ES
-modules.
+modules. `web/src/ui/GUIDELINES.md` is the UI rule for lists the user runs:
+those lists always offer multi-select and delete, using the ActionBar.
 
 ```bash
 cd controller/web
@@ -144,7 +145,7 @@ web/src/
 ├── App.tsx           the router
 ├── ui/
 │   ├── theme/        THEME_DARK, THEME_LIGHT, the Emotion provider
-│   ├── components/   Button, Tag, Card, Table, Field, SidePanel, Toast …
+│   ├── components/   Button, Tag, Card, Table, Field, ActionBar, SidePanel, Toast …
 │   └── layout/       the navigation drawer and the page chrome
 ├── modules/
 │   ├── controller/   types, the JSON client, the store, the refresh cycle
@@ -181,3 +182,22 @@ three against each other.
 `tests/test_controller_web_smoke.py` drives the built bundle in headless
 Chrome; run it with `UNITY_HPC_UI_SMOKE=1`, and it skips when Chrome or the
 build is absent.
+
+## Project workflow runner
+
+Attached projects open in a dedicated project page.
+LLMs & Agents projects open on Traces. Other applications open on Workflow runner first and execution history after a run exists.
+The runner shows declared workflows, typed setup fields, checked plans, and execution history.
+Approval starts the exact frozen plan through the existing durable execution engine.
+Execution details show stage states, attempts, bounded logs, and indexed artifact downloads.
+Project controls and declared documentation remain accessible from the project header.
+Research tools retain Overview, Experiments, Runs, Results, Files, and Settings.
+They provide saved drafts, composition, reviewed recovery, schedules, analysis, and file management.
+
+The runner API uses `/api/v1/projects/<slug>/runner/`.
+`workflows` reads declarations. `POST plans` checks setup and prepares review data.
+`POST plans/<id>/approve` requires an idempotency key.
+`executions` and `executions/<id>` read durable history and stage state.
+`executions/<id>/logs` requires an attempt belonging to that execution.
+`document` reads only the declared documentation path.
+See [the runner interface](../docs/workflow-runner.md) for the full route table.

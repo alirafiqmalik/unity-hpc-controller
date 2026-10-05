@@ -11,10 +11,16 @@ import {
   IconAdjustmentsHorizontal,
   IconChartHistogram,
   IconClockHour4,
+  IconDatabase,
   IconFileDescription,
+  IconFileText,
+  IconFlask,
   IconFolders,
   IconLayoutDashboard,
+  IconMessages,
+  IconRobot,
   IconRocket,
+  IconRoute,
   IconServer2,
   IconSettings,
   IconStack2,
@@ -138,7 +144,46 @@ export const NAVIGATION: NavigationSection[] = [
 export const DEFAULT_ROUTE = '/cluster/overview';
 
 /** Project sections replace global navigation inside the dedicated workspace. */
+export const RUNNER_SECTIONS = [{ path: 'runner', label: 'Workflow runner', Icon: IconRocket }, { path: 'executions', label: 'Executions', Icon: IconActivityHeartbeat }];
+
+/** Research tools retain saved drafts, recovery, schedules, and artifact management. */
 export const PROJECT_SECTIONS = ['Overview', 'Experiments', 'Runs', 'Results', 'Files', 'Settings'] as const;
+
+/**
+ * The sections of an LLMs & Agents project. They follow MLflow's GenAI view:
+ * observability over traces, evaluation over datasets and runs, and the
+ * versioned prompts and agents behind them. Paths are relative to
+ * `/projects/:slug/`.
+ */
+export const GENAI_SECTIONS: { id: string; label: string; items: { path: string; label: string; Icon: IconComponent }[] }[] = [
+  {
+    id: 'observability',
+    label: 'Observability',
+    items: [
+      { path: 'traces', label: 'Traces', Icon: IconRoute },
+      { path: 'sessions', label: 'Sessions', Icon: IconMessages },
+    ],
+  },
+  {
+    id: 'evaluation',
+    label: 'Evaluation',
+    items: [
+      { path: 'datasets', label: 'Datasets', Icon: IconDatabase },
+      { path: 'evaluations', label: 'Evaluation runs', Icon: IconFlask },
+    ],
+  },
+  {
+    id: 'versions',
+    label: 'Prompts & versions',
+    items: [
+      { path: 'prompts', label: 'Prompts', Icon: IconFileText },
+      { path: 'agent-versions', label: 'Agent versions', Icon: IconRobot },
+    ],
+  },
+];
+
+/** The application id whose projects open in the GenAI workspace. */
+export const GENAI_APPLICATION = 'llms-agents';
 
 export const ALL_NAVIGATION_ITEMS: NavigationItem[] = NAVIGATION.flatMap(
   (section) => section.items,

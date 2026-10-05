@@ -41,14 +41,20 @@ export const THead = styled.thead<{ $fill?: boolean }>`
   }
 `;
 
-export const TRow = styled.tr<{ $clickable?: boolean }>`
+export const TRow = styled.tr<{ $clickable?: boolean; $selected?: boolean }>`
+  background: ${({ theme, $selected }) =>
+    $selected ? theme.accent.tertiary : 'transparent'};
   border-bottom: 1px solid ${({ theme }) => theme.border.color.light};
   cursor: ${({ $clickable }) => ($clickable ? 'pointer' : 'default')};
   transition: background ${({ theme }) => theme.animation.duration.fast} ease;
 
   &:hover {
-    background: ${({ theme, $clickable }) =>
-      $clickable ? theme.background.transparent.primary : 'transparent'};
+    background: ${({ theme, $clickable, $selected }) =>
+      $selected
+        ? theme.accent.secondary
+        : $clickable
+          ? theme.background.transparent.primary
+          : 'transparent'};
   }
 
   &:last-of-type {
@@ -69,6 +75,27 @@ export const TRow = styled.tr<{ $clickable?: boolean }>`
   td:last-of-type {
     padding-right: 0;
     text-align: right;
+  }
+`;
+
+/** The leading select-all cell. It stays a fixed width so the columns do not jump. */
+export const SelectHead = styled.th`
+  && {
+    padding-left: ${({ theme }) => theme.spacing(3)};
+    padding-right: ${({ theme }) => theme.spacing(1)};
+    text-align: center;
+    text-transform: none;
+    width: 32px;
+  }
+`;
+
+/** The leading selection cell on a data row. */
+export const SelectCell = styled.td`
+  && {
+    padding-left: ${({ theme }) => theme.spacing(3)};
+    padding-right: ${({ theme }) => theme.spacing(1)};
+    text-align: center;
+    width: 32px;
   }
 `;
 

@@ -1,0 +1,17 @@
+---
+description: Lists of items the user runs and can remove always include multi-select and delete
+alwaysApply: true
+---
+
+# User-managed lists
+
+A list of items or logs the user runs and can remove always has multi-select and delete. Job Monitor (`/jobs/monitor`) is the reference. Cluster observations (queue, other users, analytics) are not this list.
+
+Use the twenty-derived controls in `controller/web/src/ui`. The rule and the component names are in `controller/web/src/ui/GUIDELINES.md`.
+
+- Leading checkbox column: `SelectHead`, `SelectCell`, `SelectionCheckbox`. The column stays visible.
+- `ActionBar` with the count and Delete while any row is selected.
+- `Modal` before the delete. Say what is removed and what stays.
+- One API call for the selection, then refresh.
+
+A user-managed table includes that checkbox column and action bar along with open and cancel.

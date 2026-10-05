@@ -87,7 +87,9 @@ def workspace_browser_server():
                     self.path = '/index.html'
                 return super().do_GET()
             payload = {}
-            if route.endswith('/workspace/connection'):
+            if route.endswith('/runner/workflows'):
+                payload = {'valid': True, 'errors': [], 'workflows': [], 'application': 'ml'}
+            elif route.endswith('/workspace/connection'):
                 payload = {'valid': True, 'errors': [], 'manifest': state['manifest']}
             elif route.endswith('/workspace/experiments'):
                 payload = {'experiments': [state['experiment']]}
@@ -180,11 +182,14 @@ def test_routes_autosave_exact_review_dispatch_purpose_and_conflict(workspace_br
         browser.goto(url + '/jobs/project?search=demo', settle=1)
         browser.eval("document.querySelector('[aria-label=\"Open project demo\"]').click()")
         time.sleep(.3)
-        assert browser.eval('location.pathname') == '/projects/demo/overview'
-        assert browser.eval("document.querySelector('h1').textContent") == 'Overview'
+        time.sleep(.6)
+        assert browser.eval('location.pathname') == '/projects/demo/runner'
+        browser.goto(url + '/projects/demo/research', settle=.6)
+        assert browser.eval('location.pathname') == '/projects/demo/experiments'
+        assert browser.eval("document.querySelector('h1').textContent") == 'Experiments'
         assert browser.eval("document.querySelector('[aria-label=\"Home — Projects\"]').getAttribute('href')") == '/jobs/project?search=demo'
         assert browser.eval("document.querySelector('nav').textContent.includes('Job Monitor')") is False
-        assert 'Does token budget' in browser.eval('document.body.textContent')
+        assert browser.eval("!!document.querySelector('nav a[href=\"/projects/demo/results\"]')")
         browser.goto(url + '/projects/demo/experiments/exp-one', settle=.6)
         assert browser.eval("[...document.querySelectorAll('button')].some(b => b.textContent === 'Dispatch this plan')") is False
         fill(browser, 'Name', 'Changed study')
@@ -192,14 +197,13 @@ def test_routes_autosave_exact_review_dispatch_purpose_and_conflict(workspace_br
         assert state['experiment']['draft']['name'] == 'Changed study'
         assert browser.eval("document.querySelector('[data-testid=autosave-status]').textContent") == 'Saved'
         assert len(state['requests']) == 1  # Autosave did not run checks or dispatch.
-        click(browser, 'Check setup')
-        click(browser, 'Review plan')
-        time.sleep(.25)
-        assert browser.eval('location.pathname') == '/projects/demo/review/plan-one'
+        click(browser, 'Dispatch')
+        time.sleep(.4)
+        assert browser.eval('location.pathname') == '/projects/demo/experiments/exp-one'
         assert 'source-sha256' in browser.eval('document.body.textContent')
-        assert browser.eval("[...document.querySelectorAll('button')].find(b => b.textContent==='Dispatch this plan').disabled")
-        browser.eval("document.querySelector('input[type=checkbox]').click()")
-        click(browser, 'Dispatch this plan')
+        assert browser.eval("[...document.querySelectorAll('button')].find(b => b.textContent==='Dispatch').disabled")
+        browser.eval("[...document.querySelectorAll('label')].find(e => e.textContent.includes('I reviewed this exact plan')).querySelector('input').click()")
+        click(browser, 'Dispatch')
         time.sleep(.3)
         assert browser.eval('location.pathname + location.search') == '/projects/demo/runs?execution=execution-one'
         assert browser.eval('window.__workspaceErrors') == []
@@ -266,7 +270,8 @@ def test_prerequisites_are_bound_to_each_checked_variant(workspace_browser_serve
     ]
     with Browser() as browser:
         browser.goto(url + '/projects/demo/experiments/exp-one', settle=.6)
-        click(browser, 'Check setup')
+        click(browser, 'Dispatch')
+        time.sleep(.3)
         browser.eval("""(() => {
           const select=document.querySelector('[aria-label="v-small-64:collect existing artifact"]');
           select.value='corpus-64';select.dispatchEvent(new Event('change',{bubbles:true}));
@@ -280,7 +285,7 @@ def test_prerequisites_are_bound_to_each_checked_variant(workspace_browser_serve
         assert state['experiment']['draft']['existing_artifacts'] == {
             'v-small-64:collect': 'corpus-64', 'v-small-128:collect': 'corpus-128'}
         assert not browser.eval("document.querySelector('[aria-label=\"v-small-64:collect existing artifact\"]').textContent.includes('saved/smoke')")
-        assert browser.eval("[...document.querySelectorAll('button')].find(b=>b.textContent==='Review plan').disabled")
+        assert browser.eval("![...document.querySelectorAll('label')].some(e => e.textContent.includes('I reviewed this exact plan'))")
 
 
 def test_runs_scheduler_observation_integrity_and_scoped_retrieval(workspace_browser_server):

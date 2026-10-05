@@ -808,7 +808,7 @@ def project_jobs(slug: str, campaign_name: str | None = None) -> list[dict]:
     root = Path(rec["path"])
     name = campaign_name or rec.get("campaign") or None
     _campaign.refresh_from_telemetry(root, name)
-    rows = _campaign.jobs(root, name)
+    rows = _campaign.jobs(root, name, include_hidden=False)
     from controller.workspace_worker import job_metadata
     metadata = job_metadata(slug)
     out = []
@@ -831,7 +831,7 @@ def all_jobs() -> list[dict]:
         metadata = job_metadata(rec["slug"])
         for name in _campaign.campaigns(root):
             _campaign.refresh_from_telemetry(root, name)
-            for row in _campaign.jobs(root, name):
+            for row in _campaign.jobs(root, name, include_hidden=False):
                 item = dict(row)
                 item["slug"] = rec["slug"]
                 item["campaign"] = name

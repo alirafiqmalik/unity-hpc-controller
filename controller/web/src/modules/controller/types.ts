@@ -240,6 +240,8 @@ export type Project = {
   slug: string;
   path?: string;
   primitive?: string;
+  /** Workflow application id, for example `llms-agents`. Empty for a resource project. */
+  application?: string;
   remote_dir?: string;
   unity_host?: string;
   campaign?: string;

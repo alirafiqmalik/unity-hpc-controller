@@ -82,7 +82,15 @@ const COMMON = {
   sidePanel: { width: '460px' },
   pageHeader: { height: '52px' },
   table: { rowHeight: '34px', headerHeight: '32px' },
-  zIndex: { drawer: 40, header: 30, sidePanel: 60, overlay: 55, modal: 80, toast: 90 },
+  zIndex: {
+    drawer: 40,
+    header: 30,
+    sidePanel: 60,
+    overlay: 55,
+    actionBar: 70,
+    modal: 80,
+    toast: 90,
+  },
 } as const;
 
 export const THEME_DARK = {

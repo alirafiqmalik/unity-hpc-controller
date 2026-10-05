@@ -139,6 +139,50 @@ def test_jobs_fold_local_telemetry_without_ssh(tmp_project, tmp_data_dir, monkey
     assert body["jobs"][0]["status"] == "COMPLETED"
 
 
+def test_delete_jobs_removes_only_the_selected_ledger_rows(tmp_project, tmp_data_dir, monkeypatch):
+    from controller import dispatch, events
+
+    registry.attach("lab", tmp_project, primitive="cpu")
+    _campaign.record(tmp_project, "c1", "111", "keep", "cpu")
+    _campaign.record(tmp_project, "c1", "222", "drop", "cpu")
+    _campaign.record(tmp_project, "c2", "333", "other", "cpu")
+    monkeypatch.setattr(dispatch, "_run", lambda *_args, **_kw: (_ for _ in ()).throw(
+        AssertionError("deleting a ledger row must not call run.sh")))
+
+    status, body = _call("POST", "/api/v1/jobs/delete", {
+        "jobs": [
+            {"slug": "lab", "campaign": "c1", "job_id": "222"},
+            {"slug": "lab", "campaign": "c1", "job_id": "222"},
+        ],
+    })
+    assert status == 200, body
+    assert body["deleted"] == 1
+    assert body["missing"] == 0
+    assert any(row.get("kind") == "forget" for row in events.recent())
+    assert {row["job_id"] for row in _campaign.jobs(tmp_project, "c1")} == {"111", "222"}
+    assert "222" in _campaign.all_job_ids(tmp_project), "management and recovery retain scheduler receipts"
+
+    status, body = _call("GET", "/api/v1/jobs")
+    assert {(job["campaign"], job["job_id"]) for job in body["jobs"]} == {
+        ("c1", "111"),
+        ("c2", "333"),
+    }
+
+
+def test_delete_jobs_rejects_an_unknown_project(tmp_data_dir):
+    status, body = _call("POST", "/api/v1/jobs/delete", {
+        "jobs": [{"slug": "nope", "campaign": "c1", "job_id": "1"}],
+    })
+    assert status == 400
+    assert "unknown project" in body["error"]
+
+
+def test_delete_jobs_requires_a_list(tmp_data_dir):
+    status, body = _call("POST", "/api/v1/jobs/delete", {})
+    assert status == 400
+    assert "jobs" in body["error"]
+
+
 def test_job_poll_without_telemetry_does_not_rewrite_ledger(tmp_project, tmp_data_dir):
     registry.attach("lab", tmp_project)
     _campaign.record(tmp_project, "c1", "12345", "smoke", "cpu")

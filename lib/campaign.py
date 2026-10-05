@@ -132,7 +132,7 @@ def record(project_dir: Path, campaign: str, job_id: str, exp: str,
         con.close()
 
 
-def jobs(project_dir: Path, campaign: str | None = None) -> list[dict]:
+def jobs(project_dir: Path, campaign: str | None = None, *, include_hidden: bool = True) -> list[dict]:
     """Rows for one campaign (default: the newest). Empty on any failure."""
     name = campaign or latest_campaign(project_dir)
     if name is None:
@@ -145,10 +145,39 @@ def jobs(project_dir: Path, campaign: str | None = None) -> list[dict]:
         # Normalised to the full column set: a ledger written by an older
         # version is missing columns the readers index by name, and a KeyError
         # there would blind every management tool.
-        return [blank | dict(r)
-                for r in con.execute("SELECT * FROM jobs ORDER BY rowid")]
+        query = "SELECT * FROM jobs ORDER BY rowid"
+        if not include_hidden and con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='controller_hidden_jobs'"
+        ).fetchone():
+            query = "SELECT * FROM jobs WHERE job_id NOT IN (SELECT job_id FROM controller_hidden_jobs) ORDER BY rowid"
+        return [blank | dict(r) for r in con.execute(query)]
     except sqlite3.Error:
         return []
+    finally:
+        con.close()
+
+
+def forget(project_dir: Path, campaign: str, job_ids: list[str]) -> int:
+    """Hide selected monitor rows while retaining their scheduler receipts.
+
+    A missing id removes nothing. This does not cancel the scheduler job and
+    does not delete remote files. Execution and management readers keep all rows.
+    """
+    ids = list(dict.fromkeys(str(job_id) for job_id in job_ids if str(job_id)))
+    if not ids or campaign not in campaigns(project_dir):
+        return 0
+    con = _connect(db_path(project_dir, campaign), create=False)
+    if con is None:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    try:
+        with con:
+            con.execute("CREATE TABLE IF NOT EXISTS controller_hidden_jobs (job_id TEXT PRIMARY KEY, hidden_utc TEXT NOT NULL)")
+            cursor = con.execute(
+                "INSERT OR IGNORE INTO controller_hidden_jobs(job_id, hidden_utc) "
+                f"SELECT job_id, datetime('now') FROM jobs WHERE job_id IN ({marks})", ids,
+            )
+            return int(cursor.rowcount)
     finally:
         con.close()
 

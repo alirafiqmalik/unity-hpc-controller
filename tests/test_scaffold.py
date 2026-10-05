@@ -37,7 +37,7 @@ def test_cpu_job_template_has_no_gpu_or_ml_tokens():
 
 def test_shipped_templates_have_no_personal_defaults():
     for path in scaffold.template_root().rglob("*"):
-        if not path.is_file():
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         text = path.read_text().lower()
         for banned in ("autoresearch", "pi_taqi_umass_edu", "ahmalik"):

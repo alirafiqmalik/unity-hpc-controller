@@ -76,7 +76,7 @@ export const JobPanel = ({
         </EmptyState>
       </Card>
 
-      {job.execution_id ? <Card><CardHeader title="Experiment evidence" /><p>Purpose: {purposeLabel(job.purpose)}</p><Link onClick={onClose} to={`/projects/${encodeURIComponent(slug)}/runs?execution=${encodeURIComponent(job.execution_id)}`}>Open execution logs and artifacts</Link></Card> : null}
+      {job.execution_id ? <Card><CardHeader title="Experiment evidence" /><p>Purpose: {purposeLabel(job.purpose)}</p><Link onClick={onClose} to={`/projects/${encodeURIComponent(slug)}/executions/${encodeURIComponent(job.execution_id)}`}>Open execution logs and artifacts</Link></Card> : null}
       <ButtonGroup>
         <Button
           Icon={IconSquareX}

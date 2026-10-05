@@ -27,7 +27,12 @@ def request(method, path, body=None):
 @pytest.fixture
 def connected_project(tmp_path, tmp_data_dir, monkeypatch):
     repository = Path(__file__).resolve().parents[1]
-    source = Path(os.environ.get('UNITY_PROJECT_MOCK_SOURCE', repository.parents[2] / 'research/ai-ml/experiments/llm-thinking-trace'))
+    configured_source = os.environ.get('UNITY_PROJECT_MOCK_SOURCE')
+    if configured_source:
+        source = Path(configured_source)
+    else:
+        candidates = [parent / 'research/ai-ml/experiments/llm-thinking-trace' for parent in repository.parents]
+        source = next((candidate for candidate in candidates if candidate.is_dir()), repository / 'missing-project-fixture')
     if not (source / 'unityHPC/project.json').is_file():
         pytest.skip('project-owned adapter checkout is unavailable; set UNITY_PROJECT_MOCK_SOURCE')
     declaration = json.loads((source / 'unityHPC/project.json').read_text())
