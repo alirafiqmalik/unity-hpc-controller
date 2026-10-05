@@ -66,8 +66,8 @@ export const ControllerSyncProvider = ({ children }: { children: ReactNode }) =>
   const setLastSync = useSetRecoilState(lastSyncState);
   const [syncing, setSyncing] = useState(false);
 
-  // The timer closes over `hours`, so the cycle must read the current value
-  // rather than the one captured when the interval was created.
+  // A range change starts a new cycle immediately. The ref also lets a manual
+  // refresh read the latest selection without recreating its callback.
   const hoursRef = useRef(hours);
   hoursRef.current = hours;
 
@@ -75,8 +75,8 @@ export const ControllerSyncProvider = ({ children }: { children: ReactNode }) =>
     setSyncing(true);
     const settled = await Promise.allSettled([
       controllerApi.health(),
-      controllerApi.cluster(),
-      controllerApi.queue(),
+      controllerApi.cluster(hoursRef.current),
+      controllerApi.queue(hoursRef.current),
       controllerApi.usage(hoursRef.current),
       controllerApi.jobs(),
       controllerApi.events(),
@@ -117,7 +117,7 @@ export const ControllerSyncProvider = ({ children }: { children: ReactNode }) =>
     void refresh();
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, hours]);
 
   // Changing the analytics window must not wait for the next tick.
   useEffect(() => {

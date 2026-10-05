@@ -94,6 +94,9 @@ jobs filed under `gpu` turned out to be a100s.
 
 ### 3.4 Five primitives: resource × orchestration, one public name
 
+Workspace behavior is superseded by [ADR 0008](adr/0008-project-workspace-and-approved-executions.md).
+The historical CLI compatibility rationale below remains applicable.
+
 D1 ships a typed scaffold with `--type {cpu,gpu,ml}`. That list mixes a
 **resource** (`cpu`, `gpu`) with an **orchestration** (`ml` = coordinated
 multi-node training). Arrays — the other orchestration — are not a type. They
@@ -219,11 +222,17 @@ or scratch setup writes that in the hook and still gets the lock.
 
 ### 3.9 Sequenced work is out of scope
 
+Superseded for declared workspace workflows by [ADR 0008](adr/0008-project-workspace-and-approved-executions.md).
+The controller now advances approved dependencies. Unrestricted graph composition remains outside scope.
+
 `--dependency=afterok:` is a different object from same-shape fan-out. The
 evidence base has no DAG workaround. A later map can name it. This one does
 not.
 
 ### 3.10 `--type` grows two names; the three old ones stay
+
+[ADR 0008](adr/0008-project-workspace-and-approved-executions.md) adds the workspace migration.
+Legacy CLI names remain valid. Setup preserves existing custom sync and fetch adapters.
 
 `--type cpu|gpu|ml` keep working: `ml` is still a primitive. `--type
 multi-cpu` and `--type multi-gpu` are added. No `.env` key is renamed.

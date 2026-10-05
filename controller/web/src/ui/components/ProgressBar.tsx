@@ -74,8 +74,9 @@ const MeterValue = styled.span`
   flex-shrink: 0;
   font-family: ${({ theme }) => theme.font.familyMono};
   font-size: ${({ theme }) => theme.font.size.xs};
+  min-width: 56px;
   text-align: right;
-  width: 56px;
+  white-space: nowrap;
 `;
 
 /** A labelled bar: name on the left, meter in the middle, value on the right. */

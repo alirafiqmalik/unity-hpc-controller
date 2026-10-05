@@ -26,6 +26,16 @@ const DonutBox = styled.div`
   width: 150px;
 `;
 
+const EmptyRing = styled.div`
+  border: 12px solid ${({ theme }) => theme.border.color.medium};
+  border-radius: 50%;
+  height: 144px;
+  left: 3px;
+  position: absolute;
+  top: 3px;
+  width: 144px;
+`;
+
 const Center = styled.div`
   align-items: center;
   display: flex;
@@ -100,8 +110,10 @@ const Share = styled.span`
 
 export const OutcomeDonut = ({
   counts,
+  placeholder = false,
 }: {
   counts: Record<string, number> | undefined;
+  placeholder?: boolean;
 }) => {
   const theme = useTheme();
   const slices = [
@@ -118,7 +130,7 @@ export const OutcomeDonut = ({
   }));
   const total = rows.reduce((sum, row) => sum + row.value, 0);
 
-  if (!total) {
+  if (!total && !placeholder) {
     return (
       <EmptyState title="No finished jobs in this window" compact>
         The outcome mix appears once the rollup holds terminal states for the
@@ -130,29 +142,31 @@ export const OutcomeDonut = ({
   return (
     <Row>
       <DonutBox>
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={rows.filter((row) => row.value > 0)}
-              dataKey="value"
-              nameKey="name"
-              innerRadius={48}
-              outerRadius={72}
-              paddingAngle={1.5}
-              stroke="none"
-              isAnimationActive={false}
-            >
-              {rows
-                .filter((row) => row.value > 0)
-                .map((row) => (
-                  <Cell key={row.key} fill={row.color} />
-                ))}
-            </Pie>
-            <Tooltip content={<ChartTooltip />} />
-          </PieChart>
-        </ResponsiveContainer>
+        {placeholder ? <EmptyRing aria-hidden="true" data-testid="empty-outcome-ring" /> : (
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={rows.filter((row) => row.value > 0)}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={48}
+                outerRadius={72}
+                paddingAngle={1.5}
+                stroke="none"
+                isAnimationActive={false}
+              >
+                {rows
+                  .filter((row) => row.value > 0)
+                  .map((row) => (
+                    <Cell key={row.key} fill={row.color} />
+                  ))}
+              </Pie>
+              <Tooltip content={<ChartTooltip />} />
+            </PieChart>
+          </ResponsiveContainer>
+        )}
         <Center>
-          <CenterValue>{fmtCount(total)}</CenterValue>
+          <CenterValue>{placeholder ? '—' : fmtCount(total)}</CenterValue>
           <CenterLabel>jobs</CenterLabel>
         </Center>
       </DonutBox>
@@ -164,8 +178,8 @@ export const OutcomeDonut = ({
               {row.label}
             </LegendName>
             <span>
-              <Value>{fmtCount(row.value)}</Value>
-              <Share>{Math.round((row.value / total) * 100)}%</Share>
+              <Value>{placeholder ? '—' : fmtCount(row.value)}</Value>
+              <Share>{placeholder ? '—' : `${Math.round((row.value / total) * 100)}%`}</Share>
             </span>
           </LegendRow>
         ))}

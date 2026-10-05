@@ -7,9 +7,9 @@ Usage:
   UNITY_HPC_NONINTERACTIVE=1 hpc-scaffold --type cpu --account ACCOUNT \
     --remote-dir /work/ACCOUNT/user/project --job-command 'python run.py'
 
-Invoked by /unity-hpc:setup. Existing files that differ from the canonical
+Invoked by /unity-hpc:connect. Existing generated files that differ from the canonical
 template are moved into unityHPC/.pre-redesign/ rather than being overwritten
-in place; an existing .env is always left alone.
+in place; existing .env and project-owned sync/fetch adapters are preserved.
 """
 
 import argparse

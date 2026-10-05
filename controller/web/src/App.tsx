@@ -21,6 +21,13 @@ import { SettingsConfigPage } from './pages/SettingsConfigPage';
 import { SettingsLogsPage } from './pages/SettingsLogsPage';
 import { SettingsScheduledPage } from './pages/SettingsScheduledPage';
 import { AppLayout } from './ui/layout/AppLayout';
+import { Workspace, ExperimentLibrary, ExperimentRevision } from './modules/workspace/Workspace';
+import { OverviewPage } from './modules/workspace/OverviewPage';
+import { SettingsPage } from './modules/workspace/SettingsPage';
+import { FilesPage, ResultsPage } from './modules/workspace/ArtifactPages';
+import { ExperimentEditor } from './modules/workspace/ExperimentEditor';
+import { PlanReview } from './modules/workspace/ExecutionPages';
+import { ProjectRuns } from './modules/workspace/RunsPage';
 import { DEFAULT_ROUTE } from './modules/navigation/routes';
 
 export const App = () => (
@@ -36,6 +43,19 @@ export const App = () => (
       <Route path="/jobs/monitor" element={<JobsMonitorPage />} />
       <Route path="/jobs/project" element={<JobsProjectPage />} />
       <Route path="/jobs/dispatch" element={<JobsDispatchPage />} />
+
+      <Route path="/projects/:slug" element={<Workspace />}>
+        <Route index element={<Navigate to="overview" replace />} />
+        <Route path="overview" element={<OverviewPage />} />
+        <Route path="experiments" element={<ExperimentLibrary />} />
+        <Route path="experiments/:experimentId" element={<ExperimentEditor />} />
+        <Route path="experiments/:experimentId/revisions/:revision" element={<ExperimentRevision />} />
+        <Route path="review/:planId" element={<PlanReview />} />
+        <Route path="runs" element={<ProjectRuns />} />
+        <Route path="results" element={<ResultsPage />} />
+        <Route path="files" element={<FilesPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+      </Route>
 
       {/* The three Settings pages share one telemetry reader. */}
       <Route path="/settings" element={<TelemetryProvider />}>

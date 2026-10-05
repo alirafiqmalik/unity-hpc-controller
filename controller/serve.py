@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from controller import telemetry
 from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, UI_DIR, WEB_DIR, handle
@@ -213,18 +213,27 @@ def _wait_healthy(host: str = "127.0.0.1", port: int = DEFAULT_PORT,
     return False
 
 
-def _tailscale_https_url() -> str | None:
+def _tailscale_https_url(port: int = DEFAULT_PORT) -> str | None:
     if shutil.which("tailscale") is None:
         return None
-    status = subprocess.run(
-        ["tailscale", "serve", "status"],
-        capture_output=True, text=True,
-    )
-    urls = [
-        tok for tok in (status.stdout or "").split()
-        if tok.startswith("https://")
-    ]
-    return urls[0] if urls else None
+    try:
+        status = subprocess.run(
+            ["tailscale", "serve", "status", "--json"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if status.returncode != 0:
+            return None
+        web = json.loads(status.stdout).get("Web", {})
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return None
+    for authority, site in web.items():
+        proxy = site.get("Handlers", {}).get("/", {}).get("Proxy", "")
+        target = urlsplit(proxy)
+        if target.hostname not in ("127.0.0.1", "localhost") or target.port != port:
+            continue
+        url = urlsplit("https://" + authority)
+        return f"https://{url.hostname}" + (f":{url.port}" if url.port != 443 else "")
+    return None
 
 
 def _tailscale_serve(port: int) -> str | None:
@@ -235,7 +244,7 @@ def _tailscale_serve(port: int) -> str | None:
         ["tailscale", "serve", "--bg", str(port)],
         capture_output=True, text=True,
     )
-    url = _tailscale_https_url()
+    url = _tailscale_https_url(port)
     if proc.returncode != 0 and not url:
         print("could not start `tailscale serve`; port is still reachable directly",
               file=sys.stderr)
@@ -366,7 +375,7 @@ def _status() -> int:
         except (TypeError, ValueError, KeyError):
             pid = None
     print("controller is running")
-    _print_urls(host, port, ts_url=_tailscale_https_url(), pid=pid)
+    _print_urls(host, port, ts_url=_tailscale_https_url(port), pid=pid)
     return 0
 
 
@@ -459,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
                 pid = int(runtime["pid"])
             except (TypeError, ValueError, KeyError):
                 pid = runtime.get("pid") if runtime else None
-        ts_url = _tailscale_https_url()
+        ts_url = _tailscale_https_url(rt_port)
         _print_urls(rt_host, rt_port, ts_url=ts_url, pid=pid)
         if args.open:
             _open_browser(ts_url or f"http://127.0.0.1:{rt_port}")
@@ -484,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        ts_url = _tailscale_https_url() if args.tailscale else None
+        ts_url = _tailscale_https_url(port) if args.tailscale else None
         _print_urls(host, port, ts_url=ts_url, pid=proc.pid)
         print("  stop  : hpc-controller --stop")
         if args.open:
@@ -507,6 +516,8 @@ def main(argv: list[str] | None = None) -> int:
     # The schedule sleeps in this process until a run is due. It does nothing
     # until an operator switches it on. ADR 0004.
     telemetry.start_scheduler()
+    from controller import workspace_worker
+    workspace_worker.start()
     ts_url = _tailscale_serve(port) if args.tailscale else None
     _print_urls(host, port, ts_url=ts_url, pid=os.getpid())
     print("  Ctrl-C to stop.")
@@ -519,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
+        workspace_worker.stop()
         telemetry.stop_scheduler()
         _clear_runtime()
     return 0

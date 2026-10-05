@@ -32,6 +32,10 @@ def summaries_db() -> Path:
     return data_dir() / "summaries.db"
 
 
+def historical_usage_db() -> Path:
+    return data_dir() / "historical_usage.db"
+
+
 def config_path() -> Path:
     return data_dir() / "cluster-config.json"
 

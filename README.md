@@ -44,6 +44,8 @@ claude --plugin-dir .
 
 **Prerequisites:** `uv` on PATH, SSH access to Unity under the `unity` host
 alias, the controller running, and a `.env` in your project.
+For a shared SSH agent and one-time keyring unlock on the controller machine,
+follow [SSH authentication](docs/ssh-authentication.md).
 `/unity-hpc:connect` generates that file at `unityHPC/.env` and registers the
 directory with the controller.
 
@@ -364,6 +366,18 @@ marks its project-specific lines, and a CPU project deletes them.
 
 An authoritative, cluster-wide usage history from `sacct`, plus queue and GPU
 telemetry, rolled up into `summaries.db`.
+
+To recover the last 30 days of GPU allocation history in one bounded query,
+run `bash scripts/hpc-backfill-usage --days 30` from a machine with SSH access
+to Unity. This writes `historical_usage.db` beside `summaries.db`; it does not
+leave a collector running. The analytics page uses this hourly allocation
+history for its 24h, 7d and 30d GPU charts and heatmap. Counts mean GPUs
+reserved by jobs, not measured GPU compute utilisation or reservations without
+jobs. Re-run the command
+when you want a newer window. `sreport -T gres/gpu -t Percent cluster
+Utilization Start=YYYY-MM-DD End=YYYY-MM-DD` gives a direct Slurm aggregate
+for checking a chosen period. Past queue depth and node snapshots still need
+the collector because Slurm job accounting does not contain those snapshots.
 
 | File | Runs on | Purpose |
 |---|---|---|

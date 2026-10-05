@@ -19,15 +19,17 @@ import {
 
 import { EventFeed } from '../modules/events/EventFeed';
 import { UsageChart } from '../modules/charts/UsageChart';
+import { inWindow, PageActions, TimeWindowPicker, windowPhrase } from '../modules/controller/TimeWindow';
 import {
   clusterState,
   eventsState,
   jobsState,
   latestSampleSelector,
   liveBlockSelector,
+  usageHoursState,
   usageState,
 } from '../modules/controller/state';
-import { dash, fmtAge, fmtCount, statusOf } from '../modules/controller/format';
+import { dash, fmtCount, statusOf } from '../modules/controller/format';
 import { Button, ButtonGroup } from '../ui/components/Button';
 import { Card, CardHeader, Grid, SplitGrid, Stack } from '../ui/components/Card';
 import { EmptyState } from '../ui/components/EmptyState';
@@ -37,6 +39,8 @@ import { Page } from '../ui/layout/AppLayout';
 
 export const ClusterOverviewPage = () => {
   const navigate = useNavigate();
+  const hours = useRecoilValue(usageHoursState);
+  const span = windowPhrase(hours);
   const cluster = useRecoilValue(clusterState);
   const live = useRecoilValue(liveBlockSelector);
   const latest = useRecoilValue(latestSampleSelector);
@@ -48,7 +52,6 @@ export const ClusterOverviewPage = () => {
   const fleet = cluster?.gpu_fleet ?? [];
   const partitions = cluster?.partitions ?? [];
   const people = cluster?.users?.rows ?? [];
-  const fairshare = cluster?.fairshare;
 
   const mineRunning = jobs.filter((job) => statusOf(job) === 'RUNNING').length;
   const minePending = jobs.filter((job) => statusOf(job) === 'PENDING').length;
@@ -72,18 +75,18 @@ export const ClusterOverviewPage = () => {
       };
 
   const peopleCard = people.length
-    ? { value: fmtCount(people.length), caption: 'people in the job history' }
-    : kpis.gpu_types_busy
-      ? {
-          value: String(kpis.gpu_types_busy),
-          caption: `${fleet.length} GPU types in the fleet`,
-        }
-      : fairshare?.available && fairshare.factor !== null && fairshare.factor !== undefined
-        ? {
-            value: `${Math.round(Number(fairshare.factor) * 100)}%`,
-            caption: 'your fairshare factor',
-          }
-        : { value: '—', caption: 'no user history in the archive' };
+    ? {
+        value: fmtCount(people.length),
+        caption: cluster?.users?.partial
+          ? `partial · ${windowPhrase(hours)}`
+          : `people ${inWindow(hours)}`,
+      }
+    : {
+        value: '—',
+        caption: cluster?.users?.partial
+          ? `no samples · ${windowPhrase(hours)}`
+          : `no live jobs ${inWindow(hours)}`,
+      };
 
   const loaded = partitions
     .filter((partition) => partition.util !== null && partition.util !== undefined)
@@ -92,19 +95,22 @@ export const ClusterOverviewPage = () => {
   return (
     <Page
       actions={
-        <ButtonGroup>
-          <Button
-            size="small"
-            variant="primary"
-            Icon={IconPlayerPlay}
-            onClick={() => navigate('/jobs/dispatch')}
-          >
-            Dispatch run
-          </Button>
-          <Button size="small" Icon={IconPlus} onClick={() => navigate('/jobs/project')}>
-            Attach project
-          </Button>
-        </ButtonGroup>
+        <PageActions>
+          <TimeWindowPicker />
+          <ButtonGroup>
+            <Button
+              size="small"
+              variant="primary"
+              Icon={IconPlayerPlay}
+              onClick={() => navigate('/jobs/dispatch')}
+            >
+              Dispatch run
+            </Button>
+            <Button size="small" Icon={IconPlus} onClick={() => navigate('/jobs/project')}>
+              Attach project
+            </Button>
+          </ButtonGroup>
+        </PageActions>
       }
     >
       <Grid $min="200px">
@@ -169,7 +175,7 @@ export const ClusterOverviewPage = () => {
             title="Partition load"
             note={
               loaded.length
-                ? `${loaded.length} partitions with a rollup`
+                ? `${loaded.length} partitions · ${span}`
                 : 'no partition rollup yet'
             }
           />
@@ -219,11 +225,11 @@ export const ClusterOverviewPage = () => {
           <CardHeader
             title="GPU utilisation"
             note={
-              usage?.usage?.window === 'latest-available'
-                ? `newest data ${fmtAge(usage.usage.stale_s)} old`
-                : `last ${usage?.usage?.hours ?? 24}h`
+              usage?.usage?.partial
+                ? `partial · ${windowPhrase(hours)}`
+                : windowPhrase(hours)
             }
-            warn={usage?.usage?.window === 'latest-available'}
+            warn={Boolean(usage?.usage?.partial)}
           />
           <UsageChart
             chartId="overview-usage"

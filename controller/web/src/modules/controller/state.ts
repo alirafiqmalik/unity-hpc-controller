@@ -67,10 +67,12 @@ export const lastSyncState = atom<number | null>({
   default: null,
 });
 
-/** The analytics window, in hours. It drives the usage request. */
-export const usageHoursState = atom<number>({
+/** A fixed span in hours. It drives every cluster request. */
+export type ClusterWindow = number;
+
+export const usageHoursState = atom<ClusterWindow>({
   key: 'controller/usageHours',
-  default: 24,
+  default: 168,
 });
 
 export type JobFilter = 'all' | 'running' | 'pending' | 'completed' | 'failed';

@@ -135,7 +135,11 @@ const readCollapsed = (): boolean => {
 export const Page = ({
   actions,
   children,
+  title,
+  subtitle,
 }: {
+  title?: string;
+  subtitle?: string;
   actions?: ReactNode;
   children: ReactNode;
 }) => {
@@ -152,15 +156,15 @@ export const Page = ({
   }, []);
 
   useEffect(() => {
-    document.title = item ? `${item.title} · Unity HPC` : 'Unity HPC Controller';
-  }, [item]);
+    document.title = title ? `${title} · Unity HPC` : item ? `${item.title} · Unity HPC` : 'Unity HPC Controller';
+  }, [item, title]);
 
   return (
     <>
       <Header>
         <div style={{ minWidth: 0 }}>
-          <Title>{item?.title ?? 'Unity HPC'}</Title>
-          {item?.subtitle ? <Subtitle>{item.subtitle}</Subtitle> : null}
+          <Title>{title ?? item?.title ?? 'Unity HPC'}</Title>
+          {(subtitle ?? item?.subtitle) ? <Subtitle>{subtitle ?? item?.subtitle}</Subtitle> : null}
         </div>
         <HeaderRight>
           {actions}

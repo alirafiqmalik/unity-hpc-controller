@@ -135,6 +135,8 @@ class Browser:
             [
                 binary, "--headless=new", "--no-sandbox", "--disable-gpu",
                 "--hide-scrollbars", "--disable-extensions",
+                # Keep an isolated headless profile independent of desktop keychain prompts.
+                "--password-store=basic", "--use-mock-keychain",
                 "--disable-background-networking", "--no-first-run",
                 "--no-default-browser-check",
                 f"--user-data-dir={self.profile}",

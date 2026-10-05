@@ -8,6 +8,7 @@ summarised check only. Stdlib only.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
@@ -81,6 +82,11 @@ def split_source(source: str) -> tuple[str | None, str]:
     return None, text
 
 
+def _remote_shell() -> list[str]:
+    """Use the same SSH transport as the rsync pull when one is configured."""
+    return shlex.split(os.environ.get("RSYNC_RSH") or "ssh")
+
+
 def local_day_present(day: str) -> bool:
     """True when the local archive holds at least one file for `day`."""
     if not _DAY_NAME.fullmatch(day):
@@ -142,7 +148,7 @@ def list_source_days(source: str, run=None) -> set[str]:
             return set()
     script = f"ls -1 {shlex.quote(path)}\n"
     runner = run or (lambda h, s: subprocess.run(
-        ["ssh", h, "bash", "-s"],
+        [*_remote_shell(), h, "bash", "-s"],
         input=s, capture_output=True, text=True,
     ))
     try:
@@ -177,7 +183,7 @@ def drop_source_days(source: str, days: list[str], run=None) -> dict:
     targets = " ".join(shlex.quote(f"{path}/{day}") for day in safe)
     script = f"rm -rf -- {targets}\n"
     runner = run or (lambda h, s: subprocess.run(
-        ["ssh", h, "bash", "-s"],
+        [*_remote_shell(), h, "bash", "-s"],
         input=s, capture_output=True, text=True,
     ))
     try:

@@ -81,3 +81,30 @@ def test_missing_runner(tmp_project, tmp_data_dir):
     status, body = _call("POST", "/api/v1/projects/lab/runs", {"exp": "x"})
     assert status == 400
     assert "run.sh" in body["error"]
+
+
+def test_fetch_runs_optional_project_artifact_hook(tmp_project, tmp_data_dir):
+    _install_stub_runner(tmp_project, STUB)
+    (tmp_project / "unityHPC" / "fetch.sh").write_text(
+        "#!/usr/bin/env bash\necho corpus pulled\n")
+    registry.attach("lab", tmp_project, primitive="gpu")
+    status, body = _call("GET", "/api/v1/projects/lab")
+    assert status == 200
+    assert body["project"]["artifact_fetch"] is True
+    status, body = _call("POST", "/api/v1/projects/lab/fetch", {})
+    assert status == 200, body
+    assert body["logs"]["ok"] is True
+    assert body["artifacts"]["ok"] is True
+    assert "corpus pulled" in body["output"]
+
+
+def test_fetch_reports_artifact_failure_separately(tmp_project, tmp_data_dir):
+    _install_stub_runner(tmp_project, STUB)
+    (tmp_project / "unityHPC" / "fetch.sh").write_text(
+        "#!/usr/bin/env bash\necho corpus unavailable >&2\nexit 3\n")
+    registry.attach("lab", tmp_project)
+    status, body = _call("POST", "/api/v1/projects/lab/fetch", {})
+    assert status == 502
+    assert body["logs"]["ok"] is True
+    assert body["artifacts"]["ok"] is False
+    assert body["artifacts"]["returncode"] == 3

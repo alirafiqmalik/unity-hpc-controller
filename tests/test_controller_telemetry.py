@@ -8,6 +8,7 @@ refuses, and what it does about the sync lock.
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sqlite3
 import time
@@ -26,6 +27,7 @@ from lib import paths
 STUB = """#!/usr/bin/env bash
 printf '%s\\n' "${STUB_SAY:-sync: done}"
 printf 'src=%s\\n' "$UNITY_TELEMETRY_SRC"
+printf 'rsh=%s\\n' "${RSYNC_RSH:-}"
 exit "${STUB_RC:-0}"
 """
 
@@ -220,6 +222,21 @@ def test_a_retrieval_passes_the_resolved_source_to_the_script(stub_script):
     answer = telemetry.start_sync(background=False)
     assert answer["run"]["status"] == "ok"
     assert "src=unity:/work/a/b/telemetry/" in answer["run"]["output"]
+
+
+def test_controller_pull_uses_the_sample_ssh_alias_and_identity(stub_script):
+    telemetry.save_settings(
+        source="source-host:/work/a/b/telemetry/",
+        ssh_host="unity-alias",
+        ssh_identity="/tmp/key with space",
+    )
+    run = telemetry.start_sync(background=False)["run"]
+    lines = dict(line.split("=", 1) for line in run["output"].splitlines()
+                 if line.startswith(("src=", "rsh=")))
+    assert lines["src"] == "unity-alias:/work/a/b/telemetry/"
+    assert shlex.split(lines["rsh"])[:4] == [
+        "ssh", "-i", "/tmp/key with space", "-o",
+    ]
 
 
 def test_a_failing_script_is_recorded_as_failed(stub_script, monkeypatch):

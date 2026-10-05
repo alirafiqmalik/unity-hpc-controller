@@ -8,19 +8,22 @@
 
 import styled from '@emotion/styled';
 import {
+  IconHome,
   IconChevronLeft,
   IconChevronRight,
   IconMoon,
   IconSun,
 } from '@tabler/icons-react';
-import { NavLink } from 'react-router-dom';
+import { useEffect } from 'react';
+import { NavLink, useLocation, useMatch } from 'react-router-dom';
 import { useRecoilValue } from 'recoil';
 
 import {
   connectionSelector,
   jobsState,
+  projectsState,
 } from '../../modules/controller/state';
-import { NAVIGATION } from '../../modules/navigation/routes';
+import { NAVIGATION, PROJECT_SECTIONS } from '../../modules/navigation/routes';
 import { useColorScheme } from '../theme/AppThemeProvider';
 
 const Drawer = styled.nav<{ $collapsed: boolean }>`
@@ -209,6 +212,20 @@ export const NavigationDrawer = ({
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }) => {
+  const match = useMatch('/projects/:slug/*');
+  const location = useLocation();
+  useEffect(() => {
+    if (location.pathname === '/jobs/project') {
+      try { sessionStorage.setItem('unity-hpc.projects-return', location.pathname + location.search + location.hash); } catch { /* Optional browser state. */ }
+    }
+  }, [location]);
+  let projectsReturn = '/jobs/project';
+  try {
+    const saved = sessionStorage.getItem('unity-hpc.projects-return');
+    if (saved && /^\/jobs\/project(?:[?#]|$)/.test(saved)) projectsReturn = saved;
+  } catch { /* The stable Projects route remains available. */ }
+  const projects = useRecoilValue(projectsState);
+  const project = projects.find((one) => one.slug === match?.params.slug);
   const connection = useRecoilValue(connectionSelector);
   const jobs = useRecoilValue(jobsState);
   const { resolved, toggleColorScheme } = useColorScheme();
@@ -216,6 +233,7 @@ export const NavigationDrawer = ({
   return (
     <Drawer $collapsed={collapsed} aria-label="Main navigation">
       <Brand $collapsed={collapsed}>
+        {match ? <NavLink to={projectsReturn} style={{ display: 'flex', alignItems: 'center', gap: 8 }} aria-label="Home — Projects"><Logo><IconHome size={16} /></Logo>{collapsed ? null : <BrandName>Home</BrandName>}</NavLink> : <>
         <Logo>U</Logo>
         {collapsed ? null : (
           <BrandText>
@@ -229,10 +247,11 @@ export const NavigationDrawer = ({
             </StatusLine>
           </BrandText>
         )}
+        </>}
       </Brand>
 
       <Sections>
-        {NAVIGATION.map((section) => (
+        {match ? <div><SectionLabel $collapsed={collapsed}>{project?.slug ?? match.params.slug}</SectionLabel>{PROJECT_SECTIONS.map((label) => <Item key={label} to={`/projects/${encodeURIComponent(match.params.slug!)}/${label.toLowerCase()}`} $collapsed={collapsed} title={label}><ItemLabel>{collapsed ? label[0] : label}</ItemLabel></Item>)}</div> : NAVIGATION.map((section) => (
           <div key={section.id}>
             <SectionLabel $collapsed={collapsed}>{section.label}</SectionLabel>
             {section.items.map((item) => (

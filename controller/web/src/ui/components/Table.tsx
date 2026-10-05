@@ -14,7 +14,7 @@ export const Table = styled.table`
   width: 100%;
 `;
 
-export const THead = styled.thead`
+export const THead = styled.thead<{ $fill?: boolean }>`
   th {
     background: ${({ theme }) => theme.background.secondary};
     border-bottom: 1px solid ${({ theme }) => theme.border.color.medium};
@@ -22,7 +22,7 @@ export const THead = styled.thead`
     font-size: ${({ theme }) => theme.font.size.xs};
     font-weight: ${({ theme }) => theme.font.weight.medium};
     letter-spacing: 0.04em;
-    padding: ${({ theme }) => theme.spacing(1.5, 2)};
+    padding: ${({ theme, $fill }) => ($fill ? '0' : theme.spacing(1.5, 2))};
     position: sticky;
     text-align: left;
     text-transform: uppercase;
@@ -89,6 +89,71 @@ const EmptyCell = styled.td`
   font-size: ${({ theme }) => theme.font.size.sm};
   padding: ${({ theme }) => theme.spacing(6, 0)} !important;
   text-align: center !important;
+`;
+
+/**
+ * A column heading that fills its cell.
+ *
+ * The first click sorts ascending, the next descending, the next drops the
+ * column. `$on` marks a column that is currently in the sort.
+ */
+export const HeadButton = styled.button<{ $align: 'left' | 'right'; $on: boolean }>`
+  align-items: center;
+  background: ${({ theme, $on }) => ($on ? theme.accent.quaternary : 'transparent')};
+  border: 0;
+  color: ${({ theme, $on }) => ($on ? theme.font.color.primary : 'inherit')};
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 4px;
+  justify-content: ${({ $align }) => ($align === 'right' ? 'flex-end' : 'flex-start')};
+  letter-spacing: inherit;
+  min-height: ${({ theme }) => theme.table.headerHeight};
+  padding: ${({ theme }) => theme.spacing(1.5, 1.5)};
+  text-transform: inherit;
+  user-select: none;
+  width: 100%;
+
+  &:hover {
+    background: ${({ theme, $on }) =>
+      $on ? theme.accent.tertiary : theme.background.transparent.secondary};
+    color: ${({ theme }) => theme.font.color.primary};
+  }
+
+  &:focus-visible {
+    outline: 2px solid ${({ theme }) => theme.border.color.accent};
+    outline-offset: -2px;
+  }
+`;
+
+/** The arrow, and the rank when more than one column is sorted. */
+export const SortCue = styled.span<{ $live: boolean }>`
+  align-items: center;
+  color: ${({ theme, $live }) => ($live ? theme.accent.primary : theme.font.color.light)};
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 2px;
+  opacity: ${({ $live }) => ($live ? 1 : 0)};
+
+  button:hover > &,
+  button:focus-visible > & {
+    opacity: 1;
+  }
+`;
+
+export const SortRank = styled.span`
+  align-items: center;
+  background: ${({ theme }) => theme.accent.secondary};
+  border-radius: ${({ theme }) => theme.border.radius.rounded};
+  color: ${({ theme }) => theme.accent.primary};
+  display: inline-flex;
+  font-size: 9px;
+  font-weight: ${({ theme }) => theme.font.weight.semiBold};
+  height: 14px;
+  justify-content: center;
+  letter-spacing: 0;
+  min-width: 14px;
+  padding: 0 3px;
 `;
 
 /** The one row a table shows when it has nothing to draw. */

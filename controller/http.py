@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from controller import dispatch, events, registry, snapshot, telemetry
-from controller.dispatch import DispatchError
+from controller import dispatch, events, experiments, registry, snapshot, telemetry
+from controller.dispatch import DispatchError, OperationBusy
 from controller.registry import RegistryError
+from controller.workspace_store import WorkspaceError
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8300
@@ -73,18 +74,45 @@ def _q(req: Request, key: str, default: str | None = None) -> str | None:
     return vals[0] if vals else default
 
 
+def _optional_hours(req: Request) -> int | str | None:
+    """The `hours` query: an hour count, `all`, or None when the parameter is absent."""
+    raw = _q(req, "hours")
+    if raw is None or raw == "":
+        return None
+    if raw.lower() == "all":
+        return "all"
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def handle(req: Request) -> Response:
     """Route one request. Never talks to a socket."""
     method = req.method.upper()
     path = req.path.rstrip("/") or "/"
     try:
         return _route(method, path, req)
+    except WorkspaceError as exc:
+        payload = {"ok": False, "error": str(exc), "errors": getattr(exc, "errors", [])}
+        if exc.status == 409:
+            payload['current_version'] = getattr(exc, 'current_version', None)
+            if getattr(exc, 'expected_version', None) is not None:
+                payload['expected_version'] = exc.expected_version
+        if '/workspace/' in req.path:
+            from controller.workspace_contracts import response_metadata
+            from controller.workspace_store import now
+            rest = req.path.partition('/workspace/')[2]
+            payload['response_metadata'] = response_metadata(payload, rest, now())
+        return _json(exc.status, payload)
     except RegistryError as exc:
         return _error(400, str(exc))
+    except OperationBusy as exc:
+        return _error(409, str(exc))
     except DispatchError as exc:
         return _error(400, str(exc))
     except ValueError as exc:
-        return _error(400, str(exc))
+        return _json(400, {"ok": False, "error": str(exc), "errors": getattr(exc, "errors", [])})
     except FileNotFoundError as exc:
         return _error(404, str(exc))
     except Exception as exc:  # I6: never crash the server on a bad panel
@@ -107,20 +135,25 @@ def _route(method: str, path: str, req: Request) -> Response:
         })
 
     if path == "/api/v1/cluster" and method == "GET":
-        return _json(200, snapshot.cluster())
+        return _json(200, snapshot.cluster(_optional_hours(req)))
 
     if path == "/api/v1/cluster/queue" and method == "GET":
+        hours = _optional_hours(req)
         live = snapshot.live_snapshot()
         return _json(200, {
-            "partitions": snapshot.partitions(),
+            "partitions": snapshot.partitions(hours),
             "live": live,
         })
 
     if path == "/api/v1/cluster/usage" and method == "GET":
-        try:
-            hours = int(_q(req, "hours", "24") or "24")
-        except ValueError:
-            hours = 24
+        raw_hours = _q(req, "hours", "24") or "24"
+        if raw_hours.lower() == "all":
+            hours = "all"
+        else:
+            try:
+                hours = int(raw_hours)
+            except ValueError:
+                hours = 24
         return _json(200, {
             "usage": snapshot.usage(hours),
             "outcomes": snapshot.outcomes(hours),
@@ -193,39 +226,22 @@ def _route(method: str, path: str, req: Request) -> Response:
             return _error(400, "path is required")
         slug = body.get("slug") or _slug_from_path(body["path"])
         existing = registry.get(slug)
-        if "primitive" in body and body.get("primitive"):
-            primitive = body["primitive"]
-        elif existing and existing.get("primitive"):
-            primitive = existing["primitive"]
-        elif body.get("application") == "llms-agents":
-            primitive = "gpu"
-        else:
-            primitive = "cpu"
         if "application" in body:
             application = body.get("application") or ""
-        elif existing:
-            application = existing.get("application") or ""
         else:
-            application = ""
-        if "remote_dir" in body:
-            remote_dir = body.get("remote_dir") or ""
-        elif existing:
-            remote_dir = existing.get("remote_dir") or ""
-        else:
-            remote_dir = ""
-        try:
-            rec = registry.attach(
-                slug=slug,
-                path=body["path"],
-                primitive=primitive,
-                remote_dir=remote_dir,
-                unity_host=body.get("unity_host") or (existing or {}).get("unity_host") or "unity",
-                campaign=body.get("campaign") or (existing or {}).get("campaign") or "",
-                overrides=body.get("overrides") if "overrides" in body else (existing or {}).get("overrides") or {},
-                application=application,
-            )
-        except registry.RegistryError as exc:
-            return _error(400, str(exc))
+            application = (existing or {}).get("application") or ""
+        rec = registry.attach(
+            slug=slug,
+            path=body["path"],
+            primitive=body.get("primitive") or (existing or {}).get("primitive") or "cpu",
+            remote_dir=body.get("remote_dir") or (existing or {}).get("remote_dir") or "",
+            unity_host=body.get("unity_host") or "unity",
+            campaign=body.get("campaign") or "",
+            overrides=body.get("overrides"),
+            resources=body.get("resources"),
+            sync_policy=body.get("sync_policy"),
+            application=application,
+        )
         events.record("attach", f"attached {rec['slug']}", slug=rec["slug"])
         _write_client_stub(rec)
         return _json(201, {"ok": True, "project": snapshot.project_detail(rec["slug"])})
@@ -245,6 +261,10 @@ def _route(method: str, path: str, req: Request) -> Response:
 
 
 def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
+    if rest.startswith("workspace/"):
+        from controller.workspace_http import route
+        return route(method, slug, rest[len("workspace/"):], req)
+
     if rest == "" and method == "GET":
         detail = snapshot.project_detail(slug)
         if detail is None:
@@ -253,15 +273,13 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
 
     if rest == "" and method == "PATCH":
         body = _read_json(req)
-        try:
-            rec = registry.update(slug, **{
-                k: body[k] for k in (
-                    "path", "primitive", "application", "remote_dir", "unity_host",
-                    "campaign", "overrides",
-                ) if k in body
-            })
-        except registry.RegistryError as exc:
-            return _error(400, str(exc))
+        rec = registry.update(slug, **{
+            k: body[k] for k in (
+                "path", "primitive", "remote_dir", "unity_host",
+                "campaign", "overrides", "application",
+                "resources", "sync_policy",
+            ) if k in body
+        })
         events.record("configure", f"updated {slug}", slug=slug)
         _write_client_stub(rec)
         return _json(200, {"ok": True, "project": snapshot.project_detail(slug)})
@@ -278,6 +296,22 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
         return _json(200, {
             "jobs": snapshot.project_jobs(slug, _q(req, "campaign")),
         })
+
+    if rest == "experiments" and method == "GET":
+        if registry.get(slug) is None:
+            return _error(404, f"unknown project {slug!r}")
+        return _json(200, experiments.read(slug))
+
+    experiment_run = re.fullmatch(r"experiments/([^/]+)/runs", rest)
+    if experiment_run and method == "POST":
+        body = _read_json(req)
+        if any(key != "dry_run" for key in body):
+            raise ValueError("catalog launch accepts only dry_run")
+        if "dry_run" in body and not isinstance(body["dry_run"], bool):
+            raise ValueError("dry_run must be a boolean")
+        result = experiments.launch(slug, experiment_run.group(1),
+                                    dry_run=body.get("dry_run", False))
+        return _json(200 if result["ok"] else 502, result)
 
     if rest == "runs" and method == "POST":
         body = _read_json(req)
@@ -322,7 +356,8 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
         return _json(200 if result["ok"] else 502, result)
 
     if rest == "status" and method == "POST":
-        result = dispatch.status(slug)
+        body = _read_json(req)
+        result = dispatch.status(slug, campaign=body.get("campaign"))
         return _json(200 if result["ok"] else 502, result)
 
     return _error(404, f"no route {method} /api/v1/projects/{slug}/{rest}")

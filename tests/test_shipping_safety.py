@@ -94,12 +94,16 @@ def test_noninteractive_ssh_paths_are_bounded():
     for path in candidates:
         if not path.is_file():
             continue
-        if path.name in {"hpc-ssh", "release-check"}:
+        # hpc-ssh is interactive; auth setup only runs local `ssh -G` under a
+        # subprocess timeout, and never opens a cluster connection.
+        if path.name in {"hpc-ssh", "release-check", "hpc-ssh-auth-setup"}:
             continue
         for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or "ssh" not in stripped:
                 continue
+            if "RSYNC_RSH" in stripped:
+                continue  # rsync transport setting, not an SSH invocation
             if path.name == "hpc-tmux" and "attach" in stripped:
                 continue
             if "timeout" not in stripped and "SSH=(" not in stripped:

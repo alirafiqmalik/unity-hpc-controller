@@ -1,112 +1,42 @@
-# HPC Project — Unity Cluster
+# Unity HPC project
 
 <!-- unity-hpc-guidance: @@UNITY_HPC_VERSION@@ -->
 
-> Template. Replace every `your...` placeholder, and delete the sections that do
-> not apply to this project. The lines marked **project-specific** are examples of
-> a machine-learning project. A CPU project must replace or delete them.
+## Controller connection
 
-## Cluster facts
+Use `unity-hpc:connect` to attach this directory, `unity-hpc:dispatch` to submit
+reviewed work, and `unity-hpc:doctor` to diagnose connection failures.
+`unityHPC/controller.json` identifies the controller and registered project.
+The controller calls `unityHPC/run.sh`; that script remains the ledger writer.
+Humans operate the project UI. Approved workflows continue through deterministic
+scripts when the browser closes.
 
-- Host: Unity (UMass) · you@umass.edu · SSH alias: `unity`
-- SLURM account: `pi_yourlab_umass_edu`
-- Storage: `/work/pi_yourlab_umass_edu/you/` — PI group allocation, `you/` is
-  reserved for the user
-- Home: `/home/you_umass_edu/` — personal quota, for configuration and dotfiles
-  only
-- REMOTE_DIR: `/work/pi_yourlab_umass_edu/you/<project>/`
-- HF_HOME: `/work/pi_yourlab_umass_edu/you/hf/`
-- Partitions: `gpu`, with `gpu-preempt` as the fallback on submit
-- Time budget **(project-specific)**: 5 minutes of wall-clock training, fixed
-- Metric **(project-specific)**: declared in `unityHPC/metrics.json`. Without that
-  file, the tools rank nothing.
+## Project ownership
 
-## ⚠ CAUTION: never run compute on the login node
+Scientific source, inputs, runners, tests, analysis, and plotting code belong to
+this project. `unityHPC/project.json` declares their versioned interfaces.
+Declare only implemented capabilities. Generated wrappers and review metadata
+live under `.unity-workspace/`; keep source changes in project-owned entrypoints.
 
-The login node is shared with every other cluster user.
+Keep `unityHPC/.env`, `sync.sh`, and `fetch.sh` as project-owned files. Repeated
+setup preserves them. Supply explicit configuration flags to change environment
+values. Preserve existing output corpora and historical ledger identities.
 
-- Allowed on the login node: `sbatch`, `squeue`, `sacct`, `rsync`, `git`, `tmux`,
-  `module avail`, and light file operations.
-- Not allowed on the login node: a training entrypoint, model loading, CUDA
-  operations, and heavy compilation.
+## Reviewing an experiment
 
-For an interactive GPU session, run `srun --pty --gres=gpu:1 -p gpu bash`. Run it
-inside tmux, so an SSH drop does not kill it.
+Review expanded variants, dependencies, per-stage resources, commands, outputs,
+and source/configuration references before dispatch. Repeat uses fresh output
+paths. Resume and retry require compatible inputs and a separate reviewed plan.
+Smoke test is a Purpose, distinct from scheduler State; exclude its records from
+research aggregates. Historical jobs without purpose remain Unclassified.
 
-## Run experiments through unityHPC/run.sh, never with raw sbatch
+Run bounded fixture and mock checks locally. Inference belongs on compute nodes.
+A live cluster smoke test needs a reviewed resource and output envelope.
+Connection checks and scaffold generation do not authorize a cluster workload.
 
-```bash
-set -a && . unityHPC/.env && set +a
-bash unityHPC/run.sh run <exp>          # submit one job and record it
-bash unityHPC/run.sh status             # live job counts from sacct
-bash unityHPC/run.sh fetch              # rsync _results/ back
-bash unityHPC/run.sh logs               # tail the newest job's output
-```
+## Transfer and telemetry
 
-`run.sh run` records every job in `.unity_state/<campaign>.db`. A job submitted
-with bare `sbatch` is invisible to every management tool.
-
-For a batch of related jobs, run `/unity-hpc:sweep`. It gives them one campaign.
-
-## Local checks, with no SSH
-
-```bash
-hpc-status       # reads .unity_state/*.db — exit 0=done 1=running 2=failed
-hpc-results      # print results.tsv with color
-hpc-usage --last 7d --plot util   # terminal plot of cluster GPU usage
-hpc-tmux ls      # list the tmux sessions on the cluster
-```
-
-## Pick a backend
-
-Run `/unity-hpc:recommend-hardware`. It ranks GPU types by your measured speed
-against current availability. For the raw numbers, call
-`mcp__unity-hpc__unity_usage` or `mcp__unity-hpc__unity_traffic`.
-
-## tmux sessions on the cluster
-
-A tmux session survives an SSH drop.
-
-- `unity-collector` — the cluster-intel telemetry collector, one 15-minute sample
-  loop
-- `interactive` — for `srun --pty` GPU sessions
-
-Manage them with `hpc-tmux ls | start <name> [cmd] | attach <name> | kill <name>`.
-
-## Multi-node experiments
-
-Set `SLURM_NODES=2` or more in `unityHPC/.env`. The `ml` job template then runs the
-job under `torchrun`.
-
-Before a sweep, read `MaxJobs` from the shared cluster configuration. Call
-`mcp__unity-hpc__unity_cluster_profile` to get it.
-
-## Constraints **(project-specific — replace these)**
-
-- Do NOT modify `prepare.py`. It is the read-only evaluation harness.
-- Do NOT install a package that `pyproject.toml` does not list.
-- Only `train.py` is open to edits. Everything inside it is fair game.
-- VRAM is a soft constraint. A meaningful gain justifies a modest increase.
-
-## Results
-
-- `_results/<campaign>/` — gitignored. It lives on `/work` on the cluster, and
-  rsyncs back to here.
-- `results.tsv` — tab-separated. Put no tab inside a field.
-- Campaign names: `auto_YYYY-MM-DD`, or a descriptive tag.
-- Log every experiment with `/unity-hpc:log-result`.
-
-## Resuming after a context reset
-
-Run `/unity-hpc:resume`. It reads `results.tsv`, the campaign ledger, the shared
-cluster configuration and the current queue state. Do not re-read every file by
-hand.
-
-## Fair use
-
-- Per-user SLURM limits apply under the account `pi_yourlab_umass_edu`. Read them
-  with `mcp__unity-hpc__unity_cluster_profile`.
-- Unity is shared with other users. Before a large sweep, check the queue depth
-  with `mcp__unity-hpc__unity_traffic`.
-- The cluster-intel collector is opt-in. If this project enabled it, it samples
-  the cluster every 15 minutes from a tmux session on the login node.
+Use the controller for project operations and cluster access. Declared artifact
+retrieval selects an execution's outputs; legacy fetch adapters retain their
+existing contract. Collector deployment is opt-in. The controller owns scheduled
+telemetry sessions and their lifecycle.

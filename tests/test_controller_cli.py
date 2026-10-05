@@ -12,6 +12,24 @@ from controller import serve
 from lib import paths
 
 
+def test_tailscale_url_matches_the_controller_proxy(monkeypatch):
+    status = {
+        "Web": {
+            "box.tailnet.ts.net:10000": {
+                "Handlers": {"/": {"Proxy": "http://127.0.0.1:6080"}},
+            },
+            "box.tailnet.ts.net:443": {
+                "Handlers": {"/": {"Proxy": "http://127.0.0.1:8300"}},
+            },
+        },
+    }
+    monkeypatch.setattr(serve.shutil, "which", lambda _name: "/usr/bin/tailscale")
+    monkeypatch.setattr(serve.subprocess, "run", lambda *_a, **_k: (
+        type("P", (), {"returncode": 0, "stdout": json.dumps(status)})()
+    ))
+    assert serve._tailscale_https_url(8300) == "https://box.tailnet.ts.net"
+
+
 def test_help_documents_background_tailscale_default():
     script = Path(__file__).resolve().parent.parent / "scripts" / "hpc-controller"
     result = subprocess.run(
@@ -73,7 +91,7 @@ def test_no_tailscale_skips_serve(tmp_data_dir, monkeypatch, capsys):
     monkeypatch.setattr(serve, "ThreadingHTTPServer", FakeSrv)
     monkeypatch.setattr(serve, "_tailscale_serve", lambda port: calls.append(port))
     monkeypatch.setattr(
-        serve, "_tailscale_https_url", lambda: "https://should-not-print.ts.net"
+        serve, "_tailscale_https_url", lambda *_a: "https://should-not-print.ts.net"
     )
     monkeypatch.setattr(serve, "_tailscale_ip", lambda: None)
     assert serve.main(["--fg", "--no-tailscale", "--port", "8300"]) == 0
@@ -103,7 +121,7 @@ def test_default_start_runs_in_background(tmp_data_dir, monkeypatch, capsys):
     monkeypatch.setattr(serve.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(serve, "_wait_healthy", lambda **_k: True)
     monkeypatch.setattr(
-        serve, "_tailscale_https_url", lambda: "https://box.tailnet.ts.net/"
+        serve, "_tailscale_https_url", lambda *_a: "https://box.tailnet.ts.net/"
     )
     monkeypatch.setattr(serve, "_tailscale_ip", lambda: None)
     assert serve.main(["--port", "8300"]) == 0
@@ -125,7 +143,7 @@ def test_already_running_is_idempotent(tmp_data_dir, monkeypatch, capsys):
     monkeypatch.setattr(serve, "_pid_alive", lambda pid: pid == 7)
     monkeypatch.setattr(serve, "_health_ok", lambda **_k: True)
     monkeypatch.setattr(
-        serve, "_tailscale_https_url", lambda: "https://box.tailnet.ts.net/"
+        serve, "_tailscale_https_url", lambda *_a: "https://box.tailnet.ts.net/"
     )
 
     def boom(*_a, **_k):

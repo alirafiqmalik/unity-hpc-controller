@@ -29,8 +29,8 @@ def test_a_remote_source_splits_into_host_and_cluster_dir():
 def test_ssh_argv_is_the_config_alias_with_no_extra_options():
     """The panel and the schedule run `ssh unity`, the same command a shell does.
 
-    BatchMode and ConnectTimeout overrode the user's ~/.ssh/config Host
-    entry and produced Permission denied against the resolved FQDN.
+    Per-call options may override individual settings, but retain the Host
+    entry's hostname, user, key, and agent selection.
     """
     assert cluster_session.ssh_argv("unity") == ["ssh", "unity"]
     assert "BatchMode" not in cluster_session.ssh_argv("unity")
@@ -238,6 +238,53 @@ def test_unlock_refuses_an_empty_passphrase(tmp_path):
         raise AssertionError("an empty passphrase was accepted")
 
 
+def test_existing_empty_agent_is_reused(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["ssh-add", "-l"]:
+            return type("P", (), {"returncode": 1})()
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(cluster_session.subprocess, "run", fake_run)
+    assert cluster_session._ensure_agent() is True
+    assert calls == [["ssh-add", "-l"]]
+
+
+def test_remembered_key_is_restored_into_the_agent(tmp_path, monkeypatch):
+    key = tmp_path / "cluster"
+    key.write_text("dummy-key\n")
+    calls = []
+
+    monkeypatch.setattr(cluster_session, "agent_status", lambda *_a, **_k: {
+        "unlocked": False, "needs_passphrase": True,
+    })
+    monkeypatch.setattr(cluster_session, "keyring_unlocked", lambda: True)
+    monkeypatch.setattr(cluster_session, "_identity_fingerprint", lambda _p: "SHA256:abc")
+    monkeypatch.setattr(cluster_session, "_keyring_lookup", lambda _fp: "secret-pass")
+    monkeypatch.setattr(cluster_session, "unlock_identity", lambda *a, **k: (
+        calls.append((a, k)) or {"ok": True, "unlocked": True}
+    ))
+
+    assert cluster_session.restore_identity("unity", str(key)) is True
+    assert calls == [((str(key), "secret-pass"), {"host": "unity", "remember": False})]
+
+
+def test_locked_keyring_does_not_try_to_lookup_a_secret(tmp_path, monkeypatch):
+    key = tmp_path / "cluster"
+    key.write_text("dummy-key\n")
+    monkeypatch.setattr(cluster_session, "agent_status", lambda *_a, **_k: {
+        "unlocked": False, "needs_passphrase": True,
+    })
+    monkeypatch.setattr(cluster_session, "_identity_fingerprint", lambda _p: "SHA256:abc")
+    monkeypatch.setattr(cluster_session, "keyring_unlocked", lambda: False)
+    monkeypatch.setattr(cluster_session, "_keyring_lookup", lambda _fp: (_ for _ in ()).throw(
+        AssertionError("lookup would prompt for the locked keyring")
+    ))
+    assert cluster_session.restore_identity("unity", str(key)) is False
+
+
 def test_close_session_wipes_the_remote_sample_files():
     seen = []
 
@@ -307,4 +354,5 @@ def test_probe_runs_echo_on_the_alias():
     assert seen[0][-2:] == ["unity", "echo"] or "unity-ok" in " ".join(seen[0])
     assert "ssh" in seen[0]
     assert "unity" in seen[0]
-    assert "BatchMode" not in seen[0]
+    assert "BatchMode=yes" in seen[0]
+    assert "ConnectTimeout=10" in seen[0]

@@ -21,7 +21,7 @@ import pytest
 from tests.cdp import Browser, find_chrome
 
 ROOT = Path(__file__).resolve().parent.parent
-DIST = ROOT / "controller" / "web" / "dist"
+DIST = Path(os.environ.get("UNITY_HPC_TEST_UI_DIR", ROOT / "controller" / "web" / "dist"))
 
 pytestmark = [
     pytest.mark.skipif(
@@ -69,6 +69,9 @@ def dashboard(tmp_path_factory):
     data = tmp_path_factory.mktemp("data")
     os.environ["UNITY_HPC_DATA"] = str(data)
     from controller.serve import Handler  # imported late, after UNITY_HPC_DATA
+    from controller import http
+    prior_ui = http.UI_DIR
+    http.UI_DIR = DIST
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -78,6 +81,7 @@ def dashboard(tmp_path_factory):
     finally:
         srv.shutdown()
         srv.server_close()
+        http.UI_DIR = prior_ui
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +146,123 @@ def test_the_dispatch_preview_follows_the_form(page):
     assert "smoke-test" in (page.eval("document.querySelector('pre').innerText") or "")
 
 
+def test_project_controls_remain_visible_and_catalog_confirmation_resets(dashboard, tmp_path):
+    """A long catalog must scroll, and arming one project must not arm another."""
+    from controller import registry
+
+    entries = [{
+        "id": f"entry-{i}", "title": f"Entry {i}", "status": "ready",
+        "launch": {"kind": "run", "exp": f"entry-{i}"},
+    } for i in range(49)]
+    for slug in ("ui-a", "ui-b"):
+        root = tmp_path / slug
+        unity = root / "unityHPC"
+        unity.mkdir(parents=True)
+        (unity / "run.sh").write_text("#!/bin/sh\nexit 0\n")
+        if slug == "ui-a":
+            (unity / "fetch.sh").write_text("#!/bin/sh\nexit 0\n")
+        (unity / "experiments.json").write_text(json.dumps({
+            "schema_version": 1, "experiments": entries,
+        }))
+        registry.attach(slug, root, sync_policy="disabled")
+    from lib import campaign
+    campaign.record(tmp_path / "ui-a", "older-campaign", "12345", "entry-0", "cpu")
+
+    def open_legacy_controls(browser):
+        assert browser.eval('location.pathname') == '/projects/ui-a/overview'
+        browser.eval("document.querySelector('nav a[href=\"/projects/ui-a/settings\"]').click()")
+        time.sleep(.2)
+        browser.eval("[...document.querySelectorAll('button')]"
+                     ".find(x => x.textContent === 'Legacy project controls').click()")
+        time.sleep(.3)
+
+    try:
+        with Browser(width=1400, height=900) as browser:
+            browser.goto(dashboard + "/jobs/project", settle=1)
+            browser.eval(
+                "[...document.querySelectorAll('button')]"
+                ".find(x => x.getAttribute('aria-label') === 'Open project ui-a').click()"
+            )
+            time.sleep(0.5)
+            open_legacy_controls(browser)
+            sizes = browser.eval("""(() => {
+              const run = [...document.querySelectorAll('h3')]
+                .find(x => x.textContent === 'Run').closest('section');
+              return [run.clientHeight, run.scrollHeight,
+                run.parentElement.clientHeight, run.parentElement.scrollHeight];
+            })()""")
+            assert sizes[0] == sizes[1], "the Run card was compressed and clipped"
+            assert sizes[3] > sizes[2], "the project panel should scroll"
+            browser.eval("[...document.querySelectorAll('button')]"
+                         ".find(x => x.textContent === 'Stop campaign').click()")
+            assert browser.eval("document.body.innerText.includes('older-campaign')")
+
+            browser.eval("[...document.querySelectorAll('button')]"
+                         ".find(x => x.getAttribute('aria-label') === 'Close panel').click()")
+            browser.eval("document.querySelector('[aria-label=\"Home — Projects\"]').click()")
+            time.sleep(.2)
+            browser.eval("""(() => {
+              const set = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype, 'value').set;
+              const inputs = [...document.querySelectorAll('input')];
+              for (const [placeholder, value] of [
+                ['/home/you/my-project', %s],
+                ['optional — derived from the path', 'ui-a'],
+              ]) {
+                const input = inputs.find(x => x.placeholder === placeholder);
+                set.call(input, value);
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+              }
+            })()""" % json.dumps(str(tmp_path / "ui-a")))
+            browser.eval("[...document.querySelectorAll('button')]"
+                         ".find(x => x.textContent === 'Open attached project').click()")
+            time.sleep(0.3)
+            assert registry.get("ui-a")["sync_policy"] == "disabled"
+
+            browser.goto(dashboard + "/jobs/dispatch", settle=1)
+            catalog_run = """[...document.querySelectorAll('h3')]
+              .find(x => x.textContent === 'Experiment catalog')
+              .closest('section').querySelector('button')"""
+            # The first catalog button is Preview; the second is Run.
+            browser.eval(catalog_run.replace("querySelector('button')", "querySelectorAll('button')[1]") + ".click()")
+            assert browser.eval("document.body.innerText.includes('Click again to run')")
+            browser.eval("""(() => {
+              const select = [...document.querySelectorAll('select')]
+                .find(x => [...x.options].some(o => o.value === 'ui-b'));
+              select.value = 'ui-b';
+              select.dispatchEvent(new Event('change', {bubbles: true}));
+            })()""")
+            time.sleep(0.3)
+            assert not browser.eval("document.body.innerText.includes('Click again to run')")
+
+            browser.goto(dashboard + "/jobs/project", settle=1)
+            browser.eval("""(() => {
+              const real = window.fetch;
+              window.fetch = (input, init) => {
+                if (String(input).endsWith('/ui-a/fetch')) {
+                  return Promise.resolve(new Response(JSON.stringify({
+                    ok: false, output: 'artifact pull failed',
+                    logs: {ok: true, output: 'logs retrieved'},
+                    artifacts: {ok: false, output: 'artifact pull failed'},
+                  }), {status: 502, headers: {'content-type': 'application/json'}}));
+                }
+                return real(input, init);
+              };
+            })()""")
+            browser.eval("[...document.querySelectorAll('button')]"
+                         ".find(x => x.getAttribute('aria-label') === 'Open project ui-a').click()")
+            time.sleep(0.3)
+            open_legacy_controls(browser)
+            browser.eval("[...document.querySelectorAll('button')]"
+                         ".find(x => x.textContent === 'Fetch logs + artifacts').click()")
+            time.sleep(0.3)
+            assert browser.eval("document.body.innerText.includes('Scheduler logs · ok')")
+            assert browser.eval("document.body.innerText.includes('Project artifacts · failed')")
+    finally:
+        registry.detach("ui-a")
+        registry.detach("ui-b")
+
+
 def test_the_job_filter_chips_switch(page):
     _go(page, "/jobs/monitor")
     labels = page.eval(
@@ -154,6 +275,34 @@ def test_the_job_filter_chips_switch(page):
     )
     time.sleep(0.4)
     assert page.eval("document.querySelector('tbody').innerHTML.length") > 0
+
+
+def test_cluster_window_buttons_refresh_each_endpoint(page):
+    _go(page, "/cluster/analytics")
+    labels = page.eval(
+        "[...document.querySelectorAll('[aria-label=\"Time window\"] button')]"
+        ".map(button => button.textContent.trim())"
+    )
+    assert labels == ["24h", "7d", "30d", "60d", "90d"]
+    page.eval("window.__windowRequests = []; const originalFetch = window.fetch; "
+              "window.fetch = (input, init) => { "
+              "window.__windowRequests.push(String(input)); "
+              "return originalFetch(input, init); };")
+
+    for label, hours in (("60d", 1440), ("90d", 2160)):
+        page.eval(
+            "[...document.querySelectorAll('[aria-label=\"Time window\"] button')]"
+            f".find(button => button.textContent.trim() === '{label}').click()"
+        )
+        time.sleep(0.7)
+        assert page.eval(
+            f"document.querySelector('[aria-label=\"Time window\"] "
+            f"[aria-checked=\"true\"]').textContent.trim()"
+        ) == label
+        requests = page.eval("window.__windowRequests")
+        for path in ("/api/v1/cluster", "/api/v1/cluster/queue",
+                     "/api/v1/cluster/usage"):
+            assert f"{path}?hours={hours}" in requests
 
 
 def test_the_theme_toggle_repaints(page):

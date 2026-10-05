@@ -172,3 +172,7 @@ export const jobHours = (jobs: Job[]): number =>
 /** The clock in the header: `14:07:32`. */
 export const clockText = (date = new Date()): string =>
   date.toTimeString().slice(0, 8);
+
+/** Purpose is declared metadata; historical names cannot supply it. */
+export const purposeLabel = (purpose?: string | null): string =>
+  purpose === 'smoke-test' ? 'Smoke test' : purpose === 'experiment' ? 'Experiment' : 'Unclassified';

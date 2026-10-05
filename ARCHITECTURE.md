@@ -49,6 +49,26 @@ HTTP (tests call `controller.http.handle`, no sockets):
 | POST | `/api/v1/projects/{slug}/fetch` | fetch |
 | POST | `/api/v1/projects/{slug}/sync` | sync |
 
+## Project workspace
+
+`controller/workspace*.py` adds a versioned connection reader, draft store, plan compiler, and durable execution worker.
+The UI uses `/projects/:slug/*` and the separate `/api/v1/projects/:slug/workspace/*` API namespace.
+The fixed catalog and generic dispatch endpoints retain their existing contracts.
+
+Project-owned `unityHPC/project.json` declares scientific operations and source boundaries.
+The compiler freezes source and literal argument wrappers under `.unity-workspace/plans/<id>`.
+The controller store retains approvals before dispatch and reconciles interrupted submissions with the existing ledger.
+The worker executes approved dependencies, scoped retrieval, checks, and analysis without a browser or orchestration LLM.
+The reviewed copy of `run.sh` still writes the original project's ledger through `UNITY_WORKSPACE_PROJECT_DIR`.
+
+Workspace primitives are `cpu`, `gpu`, `multi-cpu`, and `multi-gpu`.
+The last supports independent experiments and coordinated ranks. ML is an application category.
+Legacy `ml` remains a CLI compatibility spelling for coordinated GPU execution. Historical values remain unchanged.
+
+See [ADR 0008](docs/adr/0008-project-workspace-and-approved-executions.md),
+[contract v1](docs/design/workspace-contract-v1.md), and
+[implementation progress](docs/design/experiments-progress.md).
+
 ## 2. MCP tools
 
 `mcp/hpc_server.py` serves these over stdio, in the `mcp__unity-hpc__*`

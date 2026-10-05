@@ -70,8 +70,13 @@ const Body = styled.div`
   flex: 1;
   flex-direction: column;
   gap: ${({ theme }) => theme.spacing(3)};
+  min-height: 0;
   overflow-y: auto;
   padding: ${({ theme }) => theme.spacing(4)};
+
+  > * {
+    flex-shrink: 0;
+  }
 `;
 
 /** Close on Escape while `open`. */

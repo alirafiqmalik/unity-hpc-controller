@@ -23,8 +23,7 @@ import pytest
 FAKE_SSH = """#!/usr/bin/env bash
 # Fake `ssh <host> <command>`: run the command here, against the local
 # $REMOTE_DIR. stdin passes through so `cat > ...` uploads for real.
-shift
-exec bash -c "$*"
+exec bash -c "${!#}"
 """
 
 FAKE_SBATCH = """#!/usr/bin/env bash

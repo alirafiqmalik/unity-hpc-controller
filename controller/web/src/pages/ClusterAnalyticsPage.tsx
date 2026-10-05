@@ -2,24 +2,24 @@
  * Every visual the rollups can support, over one chosen window.
  *
  * The window chips drive the `hours` query the sync cycle sends, so every
- * panel on this page describes the same span. When the API had to slide the
- * window back to the newest rows it says so in the card note, because a chart
- * headed "last 24h" that holds month-old rows is a wrong reading.
+ * panel on this page describes the same span. A window that the samples do
+ * not cover completely says so, and the hour map underlines those cells.
  */
 
-import { useRecoilState, useRecoilValue } from 'recoil';
+import styled from '@emotion/styled';
+import { useRecoilValue } from 'recoil';
 
 import { BarList } from '../modules/charts/BarList';
 import { HourHeatmap } from '../modules/charts/HourHeatmap';
 import { OutcomeDonut } from '../modules/charts/OutcomeDonut';
 import { UsageChart } from '../modules/charts/UsageChart';
 import {
-  fmtAge,
   fmtCount,
   fmtHours,
   fmtWait,
   jobHours,
 } from '../modules/controller/format';
+import { TimeWindowPicker, windowPhrase } from '../modules/controller/TimeWindow';
 import {
   clusterState,
   jobsState,
@@ -27,19 +27,55 @@ import {
   usageHoursState,
   usageState,
 } from '../modules/controller/state';
-import { Card, CardHeader, Grid, SplitGrid } from '../ui/components/Card';
-import { Chip, ChipRow } from '../ui/components/Tag';
+import { Card, CardHeader, Grid } from '../ui/components/Card';
 import { StatCard } from '../ui/components/StatCard';
 import { Page } from '../ui/layout/AppLayout';
 
-const WINDOWS: { hours: number; label: string }[] = [
-  { hours: 24, label: '24h' },
-  { hours: 168, label: '7d' },
-  { hours: 720, label: '30d' },
-];
+const OutcomeSections = styled.div`
+  display: grid;
+  gap: ${({ theme }) => theme.spacing(4)};
+`;
+
+const OutcomeSection = styled.section`
+  min-width: 0;
+
+  & + & {
+    border-top: 1px solid ${({ theme }) => theme.border.color.light};
+    padding-top: ${({ theme }) => theme.spacing(4)};
+  }
+`;
+
+const OutcomeHeading = styled.h4`
+  color: ${({ theme }) => theme.font.color.primary};
+  font-size: ${({ theme }) => theme.font.size.sm};
+  font-weight: ${({ theme }) => theme.font.weight.semiBold};
+  margin-bottom: ${({ theme }) => theme.spacing(2)};
+`;
+
+const OutcomeNote = styled.p`
+  color: ${({ theme }) => theme.font.color.tertiary};
+  font-size: ${({ theme }) => theme.font.size.xs};
+  margin-bottom: ${({ theme }) => theme.spacing(3)};
+`;
+
+const OutcomeTypeGrid = styled.div`
+  display: grid;
+  gap: ${({ theme }) => theme.spacing(3)};
+  grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
+
+  @media (max-width: 1200px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+`;
+
+const TypeExplanation = styled.p`
+  color: ${({ theme }) => theme.font.color.tertiary};
+  font-size: ${({ theme }) => theme.font.size.xs};
+  margin-bottom: ${({ theme }) => theme.spacing(2)};
+`;
 
 export const ClusterAnalyticsPage = () => {
-  const [hours, setHours] = useRecoilState(usageHoursState);
+  const hours = useRecoilValue(usageHoursState);
   const usage = useRecoilValue(usageState);
   const cluster = useRecoilValue(clusterState);
   const projects = useRecoilValue(projectsState);
@@ -47,10 +83,14 @@ export const ClusterAnalyticsPage = () => {
 
   const block = usage?.usage;
   const stats = usage?.stats ?? cluster?.stats;
-  const slid = block?.window === 'latest-available';
-  const windowNote = slid
-    ? `newest data ${fmtAge(block?.stale_s)} old`
-    : `last ${block?.hours ?? hours}h`;
+  const partial = Boolean(block?.partial);
+  const historical = block?.source === 'sacct';
+  const windowNote =
+    historical
+      ? `sacct job allocations · ${Math.round(block.covered_hours ?? 0)} hours covered${partial ? ' · partial' : ''}`
+      : partial
+        ? `partial · ${windowPhrase(hours)}`
+        : windowPhrase(hours);
 
   const byType = block?.by_type ?? [];
   const byHardware = stats?.by_hardware ?? [];
@@ -70,20 +110,7 @@ export const ClusterAnalyticsPage = () => {
 
   return (
     <Page
-      actions={
-        <ChipRow>
-          {WINDOWS.map((option) => (
-            <Chip
-              key={option.hours}
-              type="button"
-              $active={hours === option.hours}
-              onClick={() => setHours(option.hours)}
-            >
-              {option.label}
-            </Chip>
-          ))}
-        </ChipRow>
-      }
+      actions={<TimeWindowPicker />}
     >
       <Grid $min="200px">
         <StatCard
@@ -93,9 +120,9 @@ export const ClusterAnalyticsPage = () => {
           accent="blue"
         />
         <StatCard
-          label="GPU hours"
-          value={stats?.available ? fmtHours(stats.gpu_hours) : '—'}
-          caption={stats?.available ? 'elapsed across those runs' : 'no rollup yet'}
+          label={historical ? 'GPU hours allocated' : 'GPU hours'}
+          value={historical ? fmtHours(block?.gpu_hours) : stats?.available ? fmtHours(stats.gpu_hours) : '—'}
+          caption={historical ? 'from sacct in this window' : stats?.available ? 'elapsed across those runs' : 'no rollup yet'}
           accent="green"
         />
         <StatCard
@@ -109,10 +136,12 @@ export const ClusterAnalyticsPage = () => {
           accent="yellow"
         />
         <StatCard
-          label="GPU types seen"
-          value={byType.length || '—'}
+          label={historical ? 'Average GPUs allocated' : 'GPU types seen'}
+          value={historical ? fmtCount(block?.avg_allocated) : byType.length || '—'}
           caption={
-            byType.length
+            historical
+              ? `peak ${fmtCount(block?.peak_allocated)} · ${byType.length} types`
+              : byType.length
               ? `peak ${Math.round(Math.max(...byType.map((one) => one.peak)))}%`
               : 'no per-type series in this window'
           }
@@ -122,9 +151,9 @@ export const ClusterAnalyticsPage = () => {
 
       <Card>
         <CardHeader
-          title="Cluster utilisation by GPU type"
+          title={historical ? 'GPUs allocated to jobs by type' : 'Cluster utilisation by GPU type'}
           note={windowNote}
-          warn={slid}
+          warn={partial}
         />
         <UsageChart
           chartId="analytics-usage"
@@ -134,27 +163,58 @@ export const ClusterAnalyticsPage = () => {
         />
       </Card>
 
-      <SplitGrid>
+      <Card>
+        <CardHeader
+          title="When is the cluster busy?"
+          note={`hour × day of week · UTC · average ${historical ? 'GPUs allocated to jobs' : 'GPU capacity allocated'}`}
+        />
+        <HourHeatmap
+          cells={block?.heatmap ?? []}
+          unit={block?.unit}
+          windowStartUtc={block?.window_start_utc}
+          windowEndUtc={block?.window_end_utc}
+          emptyMessage={block?.available && !historical
+            ? 'GPU fleet capacities are required to combine hourly samples into a cluster allocation percentage.'
+            : undefined}
+        />
+      </Card>
+
+      <OutcomeTypeGrid>
         <Card>
-          <CardHeader title="Job outcomes" note={windowNote} warn={slid} />
-          <OutcomeDonut counts={usage?.outcomes?.counts} />
+          <CardHeader title="Job outcomes" note={windowNote} warn={partial} />
+          <OutcomeSections>
+            <OutcomeSection aria-labelledby="all-job-outcomes">
+              <OutcomeHeading id="all-job-outcomes">All jobs</OutcomeHeading>
+              <OutcomeDonut counts={usage?.outcomes?.counts} />
+            </OutcomeSection>
+            <OutcomeSection aria-labelledby="my-job-outcomes">
+              <OutcomeHeading id="my-job-outcomes">My jobs</OutcomeHeading>
+              <OutcomeNote>Personal job outcomes are not available yet.</OutcomeNote>
+              <OutcomeDonut counts={undefined} placeholder />
+            </OutcomeSection>
+          </OutcomeSections>
         </Card>
         <Card>
           <CardHeader
-            title="Average utilisation per type"
+            title={historical ? 'Average allocated GPUs per type' : 'Average utilisation per type'}
             note={byType.length ? `${byType.length} types` : undefined}
           />
+          {historical ? (
+            <TypeExplanation>
+              Average GPUs reserved by jobs over the selected window. Decimals come from averaging over time.
+            </TypeExplanation>
+          ) : null}
           <BarList
             rows={byType.map((one) => ({
               label: one.gpu_type,
               value: one.avg,
-              text: `${one.avg}%`,
+              text: `${one.avg}${historical ? ' GPUs' : '%'}`,
             }))}
             emptyTitle="No per-type averages in this window"
             emptyBody="The rollup reports an average once it holds hourly samples."
           />
         </Card>
-      </SplitGrid>
+      </OutcomeTypeGrid>
 
       <Grid $columns={2} $min="360px">
         <Card>
@@ -189,18 +249,10 @@ export const ClusterAnalyticsPage = () => {
               text: fmtHours(one.gpu_hours),
             }))}
             emptyTitle="No per-partition rollup in this window"
-            emptyBody="Partition totals come from the archived job table."
+            emptyBody="Partition totals come from the live job rollup for this window."
           />
         </Card>
       </Grid>
-
-      <Card>
-        <CardHeader
-          title="When is the cluster busy?"
-          note="hour × day of week · UTC"
-        />
-        <HourHeatmap cells={block?.heatmap ?? []} />
-      </Card>
 
       <Card>
         <CardHeader
