@@ -31,12 +31,15 @@ import {
 import { Tag, TagRow } from '../../ui/components/Tag';
 import { useToast } from '../../ui/components/Toast';
 import { controllerApi, errorText } from '../controller/api';
-import { PRIMITIVES, stateTag } from '../controller/format';
+import { APPLICATIONS, PRIMITIVES, stateTag } from '../controller/format';
 import type { Project } from '../controller/types';
 import { useProjectCommands } from '../projects/useProjectCommands';
 import { usePanels } from './PanelProvider';
 
 const PRIMITIVE_OPTIONS = PRIMITIVES.map((one) => ({ value: one, label: one }));
+
+const applicationOf = (project: Project | null) =>
+  APPLICATIONS.find((one) => one.id === project?.application);
 
 type RunForm = {
   exp: string;
@@ -148,11 +151,18 @@ export const ProjectPanel = ({
   }
 
   const jobs = project?.jobs ?? [];
+  const application = applicationOf(project);
+  const workflow = Boolean(project?.application);
+  const runnable = !application || application.runnable;
+  const primitiveOptions =
+    project?.primitive && !PRIMITIVES.includes(project.primitive as (typeof PRIMITIVES)[number])
+      ? [...PRIMITIVE_OPTIONS, { value: project.primitive, label: project.primitive }]
+      : PRIMITIVE_OPTIONS;
 
   return (
     <SidePanel open onClose={onClose} title={slug} subtitle={project?.path ?? ''}>
       <TagRow>
-        <Tag color="purple" text={project?.primitive || '—'} />
+        <Tag color="purple" text={project?.application || project?.primitive || '—'} />
         <Tag
           color={project?.scaffold ? 'green' : 'gray'}
           text={project?.scaffold ? 'scaffold ready' : 'no scaffold'}
@@ -167,15 +177,21 @@ export const ProjectPanel = ({
       <Card>
         <CardHeader title="Configure" />
         <FieldRow>
-          <Field label="Primitive">
-            <Select
-              value={config.primitive}
-              options={PRIMITIVE_OPTIONS}
-              onChange={(event) =>
-                setConfig({ ...config, primitive: event.target.value })
-              }
-            />
-          </Field>
+          {workflow ? (
+            <Field label="Application">
+              <TextInput value={project?.application || ''} readOnly />
+            </Field>
+          ) : (
+            <Field label="Primitive">
+              <Select
+                value={config.primitive}
+                options={primitiveOptions}
+                onChange={(event) =>
+                  setConfig({ ...config, primitive: event.target.value })
+                }
+              />
+            </Field>
+          )}
           <Field label="Campaign">
             <TextInput
               value={config.campaign}
@@ -267,7 +283,7 @@ export const ProjectPanel = ({
             variant="primary"
             size="small"
             Icon={IconPlayerPlay}
-            disabled={busy}
+            disabled={busy || !runnable}
             onClick={() => void dispatchRun(false)}
           >
             Dispatch

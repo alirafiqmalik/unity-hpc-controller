@@ -108,7 +108,12 @@ export const useProjectCommands = () => {
   );
 
   const attachProject = useCallback(
-    async (body: { path: string; slug?: string; primitive?: string }) => {
+    async (body: {
+      path: string;
+      slug?: string;
+      primitive?: string;
+      application?: string;
+    }) => {
       setBusy(true);
       try {
         const answer = await controllerApi.attachProject(body);

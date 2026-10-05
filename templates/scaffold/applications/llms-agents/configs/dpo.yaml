@@ -1,0 +1,33 @@
+# Axolotl DPO config. train_job.sh replaces __CACHE__, __CHECKPOINT__, __PARALLEL__.
+base_model: meta-llama/Llama-3.2-1B
+rl: dpo
+datasets:
+  - path: __CACHE__/preference.jsonl
+    type:
+      field_prompt: prompt
+      field_chosen: chosen
+      field_rejected: rejected
+      prompt_format: "{prompt}"
+      chosen_format: "{chosen}"
+      rejected_format: "{rejected}"
+dataset_prepared_path: __CACHE__/dpo-prepared
+val_set_size: 0.0
+output_dir: __CHECKPOINT__
+sequence_len: 2048
+sample_packing: false
+adapter: lora
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+micro_batch_size: 1
+gradient_accumulation_steps: 4
+num_epochs: 1
+optimizer: adamw_torch
+lr_scheduler: cosine
+learning_rate: 0.000005
+bf16: true
+flash_attention: true
+warmup_ratio: 0.03
+logging_steps: 1
+saves_per_epoch: 1
+fsdp_config: __PARALLEL__

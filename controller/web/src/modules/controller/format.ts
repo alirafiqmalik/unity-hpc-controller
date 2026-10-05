@@ -21,8 +21,16 @@ export const FAIL_STATES = [
   'REVOKED',
 ] as const;
 
-/** The five primitives. See CONTEXT.md. */
-export const PRIMITIVES = ['cpu', 'gpu', 'ml', 'multi-cpu', 'multi-gpu'] as const;
+/** Resource primitives a non-workflow project picks on the Projects page.
+ *  `ml` stays a scaffold `--type` for an existing job. It is not an application.
+ */
+export const PRIMITIVES = ['cpu', 'gpu', 'multi-cpu', 'multi-gpu'] as const;
+
+/** Workflow applications. Machine Learning is visible and not runnable. */
+export const APPLICATIONS = [
+  { id: 'llms-agents', label: 'LLMs & Agents', runnable: true },
+  { id: 'machine-learning', label: 'Machine Learning', runnable: false },
+] as const;
 
 /** An em dash for a missing value, the value itself otherwise. */
 export const dash = (value: unknown): string =>

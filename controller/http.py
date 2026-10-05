@@ -192,15 +192,40 @@ def _route(method: str, path: str, req: Request) -> Response:
         if not body.get("path"):
             return _error(400, "path is required")
         slug = body.get("slug") or _slug_from_path(body["path"])
-        rec = registry.attach(
-            slug=slug,
-            path=body["path"],
-            primitive=body.get("primitive") or "cpu",
-            remote_dir=body.get("remote_dir") or "",
-            unity_host=body.get("unity_host") or "unity",
-            campaign=body.get("campaign") or "",
-            overrides=body.get("overrides") or {},
-        )
+        existing = registry.get(slug)
+        if "primitive" in body and body.get("primitive"):
+            primitive = body["primitive"]
+        elif existing and existing.get("primitive"):
+            primitive = existing["primitive"]
+        elif body.get("application") == "llms-agents":
+            primitive = "gpu"
+        else:
+            primitive = "cpu"
+        if "application" in body:
+            application = body.get("application") or ""
+        elif existing:
+            application = existing.get("application") or ""
+        else:
+            application = ""
+        if "remote_dir" in body:
+            remote_dir = body.get("remote_dir") or ""
+        elif existing:
+            remote_dir = existing.get("remote_dir") or ""
+        else:
+            remote_dir = ""
+        try:
+            rec = registry.attach(
+                slug=slug,
+                path=body["path"],
+                primitive=primitive,
+                remote_dir=remote_dir,
+                unity_host=body.get("unity_host") or (existing or {}).get("unity_host") or "unity",
+                campaign=body.get("campaign") or (existing or {}).get("campaign") or "",
+                overrides=body.get("overrides") if "overrides" in body else (existing or {}).get("overrides") or {},
+                application=application,
+            )
+        except registry.RegistryError as exc:
+            return _error(400, str(exc))
         events.record("attach", f"attached {rec['slug']}", slug=rec["slug"])
         _write_client_stub(rec)
         return _json(201, {"ok": True, "project": snapshot.project_detail(rec["slug"])})
@@ -228,12 +253,15 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
 
     if rest == "" and method == "PATCH":
         body = _read_json(req)
-        rec = registry.update(slug, **{
-            k: body[k] for k in (
-                "path", "primitive", "remote_dir", "unity_host",
-                "campaign", "overrides",
-            ) if k in body
-        })
+        try:
+            rec = registry.update(slug, **{
+                k: body[k] for k in (
+                    "path", "primitive", "application", "remote_dir", "unity_host",
+                    "campaign", "overrides",
+                ) if k in body
+            })
+        except registry.RegistryError as exc:
+            return _error(400, str(exc))
         events.record("configure", f"updated {slug}", slug=slug)
         _write_client_stub(rec)
         return _json(200, {"ok": True, "project": snapshot.project_detail(slug)})
@@ -310,6 +338,8 @@ def _write_client_stub(rec: dict) -> None:
         "slug": rec["slug"],
         "primitive": rec["primitive"],
     }
+    if rec.get("application"):
+        stub["application"] = rec["application"]
     try:
         (unity / "controller.json").write_text(json.dumps(stub, indent=2) + "\n")
     except OSError:

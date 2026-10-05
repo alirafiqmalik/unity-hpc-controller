@@ -17,6 +17,10 @@ VERSION_PLACEHOLDER = "@@UNITY_HPC_VERSION@@"
 TYPES: tuple[str, ...] = ("cpu", "gpu", "ml", "multi-cpu", "multi-gpu")
 SCAFFOLD_FILES: tuple[str, ...] = ("run.sh", "job_template.sh", "sync.sh", ".env")
 
+#: Workflow applications. `machine-learning` is reserved and has no runner.
+APPLICATIONS: tuple[str, ...] = ("llms-agents", "machine-learning")
+RUNNABLE_APPLICATIONS: frozenset[str] = frozenset({"llms-agents"})
+
 #: files taken from templates/scaffold/common/ rather than the per-type dir
 _COMMON_FILES = frozenset({"run.sh", "sync.sh"})
 
@@ -82,6 +86,68 @@ def _template_path(ptype: str, target_name: str) -> Path:
     source_name = _TEMPLATE_NAME.get(target_name, target_name)
     subdir = "common" if target_name in _COMMON_FILES else _RESOURCE_DIR[ptype]
     return template_root() / subdir / source_name
+
+
+def application_dir(application: str) -> Path:
+    """The template directory for one application id."""
+    if application not in APPLICATIONS:
+        raise ValueError(
+            f"unknown application {application!r}; expected one of {', '.join(APPLICATIONS)}"
+        )
+    return template_root() / "applications" / application
+
+
+def _plan_pairs(project_dir: Path, pairs: list[tuple[Path, Path]]) -> list[Action]:
+    """Turn (source, dest) pairs into create/skip/replace actions."""
+    dest_dir = project_dir / "unityHPC"
+    actions: list[Action] = []
+    for source, dest in pairs:
+        content = render(source.read_text(encoding="utf-8"))
+        if not dest.exists():
+            actions.append(Action(kind="create", path=dest, content=content))
+            continue
+        if dest.name in _USER_OWNED or dest.read_bytes() == content.encode():
+            actions.append(Action(kind="skip", path=dest, content=content))
+            continue
+        rel = dest.relative_to(dest_dir)
+        actions.append(Action(
+            kind="replace",
+            path=dest,
+            content=content,
+            displaced_to=dest_dir / BACKUP_DIRNAME / rel,
+        ))
+    return actions
+
+
+def plan_application(project_dir: Path, application: str) -> list[Action]:
+    """Install one application plus the common submitter and sync script.
+
+    ``machine-learning`` is reserved. It has a README and no runner, so this
+    raises instead of writing a job script.
+    """
+    if application not in APPLICATIONS:
+        raise ValueError(
+            f"unknown application {application!r}; expected one of {', '.join(APPLICATIONS)}"
+        )
+    if application not in RUNNABLE_APPLICATIONS:
+        raise ValueError(
+            f"application {application!r} is reserved and has no runner"
+        )
+    root = application_dir(application)
+    dest_dir = project_dir / "unityHPC"
+    pairs: list[tuple[Path, Path]] = []
+    for name in ("run.sh", "sync.sh"):
+        pairs.append((template_root() / "common" / name, dest_dir / name))
+    for source in sorted(p for p in root.rglob("*") if p.is_file()):
+        if "__pycache__" in source.parts or source.suffix == ".pyc":
+            continue
+        rel = source.relative_to(root)
+        if source.name == "env.example" and source.parent == root:
+            dest = dest_dir / ".env"
+        else:
+            dest = dest_dir / rel
+        pairs.append((source, dest))
+    return _plan_pairs(project_dir, pairs)
 
 
 def plan(project_dir: Path, ptype: str) -> list[Action]:

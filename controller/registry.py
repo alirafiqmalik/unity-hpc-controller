@@ -15,12 +15,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lib import paths
-from lib.scaffold import TYPES
+from lib.scaffold import APPLICATIONS, RUNNABLE_APPLICATIONS, TYPES
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 _FIELDS = (
-    "slug", "path", "primitive", "remote_dir", "unity_host",
+    "slug", "path", "primitive", "application", "remote_dir", "unity_host",
     "campaign", "attached_utc", "overrides",
 )
 
@@ -112,6 +112,21 @@ def get(slug: str) -> dict | None:
     return None
 
 
+def _check_application(application: str) -> str:
+    application = application or ""
+    if not application:
+        return ""
+    if application not in APPLICATIONS:
+        raise RegistryError(
+            f"unknown application {application!r}; expected one of {', '.join(APPLICATIONS)}"
+        )
+    if application not in RUNNABLE_APPLICATIONS:
+        raise RegistryError(
+            f"application {application!r} is reserved and cannot be submitted"
+        )
+    return application
+
+
 def attach(
     slug: str,
     path: str | Path,
@@ -120,8 +135,13 @@ def attach(
     unity_host: str = "unity",
     campaign: str = "",
     overrides: dict | None = None,
+    application: str = "",
 ) -> dict:
-    """Register or update an attached project. Returns the stored record."""
+    """Register or update an attached project. Returns the stored record.
+
+    An empty ``remote_dir`` on a re-attach keeps the stored directory. The
+    ledger in the project tree is not read or written here.
+    """
     slug = _validate_slug(slug)
     project_dir = Path(path).expanduser().resolve()
     if not project_dir.is_dir():
@@ -130,10 +150,12 @@ def attach(
         raise RegistryError(
             f"unknown primitive {primitive!r}; expected one of {', '.join(TYPES)}"
         )
+    application = _check_application(application)
     record = {
         "slug": slug,
         "path": str(project_dir),
         "primitive": primitive,
+        "application": application,
         "remote_dir": remote_dir or "",
         "unity_host": unity_host or "unity",
         "campaign": campaign or "",
@@ -148,6 +170,8 @@ def attach(
         existing = next((p for p in data["projects"] if p.get("slug") == slug), None)
         if existing and existing.get("attached_utc"):
             record["attached_utc"] = existing["attached_utc"]
+        if existing and not remote_dir:
+            record["remote_dir"] = existing.get("remote_dir") or ""
         projects.append(record)
         projects.sort(key=lambda p: p.get("slug", ""))
         _write_unlocked(store, {"projects": projects})
@@ -162,7 +186,8 @@ def update(slug: str, **fields) -> dict:
     if current is None:
         raise RegistryError(f"unknown project {slug!r}")
     allowed = {
-        "path", "primitive", "remote_dir", "unity_host", "campaign", "overrides",
+        "path", "primitive", "application", "remote_dir", "unity_host",
+        "campaign", "overrides",
     }
     unknown = sorted(k for k in fields if k not in allowed)
     if unknown:
@@ -177,6 +202,7 @@ def update(slug: str, **fields) -> dict:
         unity_host=merged["unity_host"],
         campaign=merged["campaign"],
         overrides=merged.get("overrides") or {},
+        application=merged.get("application") or "",
     )
 
 

@@ -71,6 +71,7 @@ export const controllerApi = {
     path: string;
     slug?: string;
     primitive?: string;
+    application?: string;
   }) => post<{ ok: boolean; project: Project }>('/api/v1/projects', body),
   patchProject: (slug: string, body: Partial<Project>) =>
     request<{ ok: boolean; project: Project }>(

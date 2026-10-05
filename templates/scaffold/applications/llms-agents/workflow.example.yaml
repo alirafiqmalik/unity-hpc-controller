@@ -1,0 +1,188 @@
+# llms-agents workflow. One stage is one run.sh run and one ledger row.
+# A second project copies this file, sets the adapter name, and sets the eval argv.
+
+application: llms-agents
+
+dataset:
+  path: datasets/corpus.jsonl
+  adapter: qa-object
+  schema:
+    context_field: theory
+    questions_field: questions
+    question_key: question
+    answer_key: answer
+
+stages:
+  - id: prep
+    lane: train
+    format: native
+    depends_on: []
+    purpose: prepare
+    command:
+      - python3
+      - unityHPC/prep.py
+      - convert
+      - --input
+      - datasets/corpus.jsonl
+      - --format
+      - native
+      - --adapter
+      - qa-object
+      - --remote-dir
+      - "{remote_dir}"
+    resources:
+      primitive: cpu
+      cpus: 4
+      memory: 16G
+      walltime: "01:00:00"
+    outputs:
+      - path: manifest.json
+
+  - id: train
+    lane: train
+    launcher: axolotl
+    parallel: fsdp
+    depends_on:
+      - prep
+    purpose: train
+    resources:
+      primitive: gpu
+      gpus: 4
+      cpus: 16
+      memory: 64G
+      nodes: 2
+      walltime: "08:00:00"
+    outputs:
+      - path: checkpoint-shards/READY
+
+  - id: consolidate
+    lane: train
+    mode: consolidate
+    depends_on:
+      - train
+    purpose: consolidate
+    resources:
+      primitive: gpu
+      gpus: 1
+      cpus: 8
+      memory: 64G
+      walltime: "01:00:00"
+    outputs:
+      - path: READY
+
+  - id: eval
+    lane: train
+    engine: openai
+    depends_on:
+      - consolidate
+    purpose: evaluate
+    eval:
+      kind: lm-eval
+      tasks:
+        - gsm8k
+    metrics:
+      - accuracy
+    resources:
+      primitive: gpu
+      gpus: 1
+      cpus: 8
+      memory: 64G
+      walltime: "02:00:00"
+    outputs:
+      - path: metrics.json
+      - path: harness.json
+
+# Agent lane. Copy a stage into `stages` to run it. The same runner plans it.
+# Multi-turn work is the project command. It is not an SFT job.
+agent_stages:
+  - id: mock-smoke
+    lane: agent
+    engine: project
+    location: controller
+    depends_on: []
+    purpose: smoke-test
+    command:
+      - python3
+      - unityHPC/workspace_adapter.py
+      - collect
+      - --mock
+      - "true"
+      - --n-items
+      - "1"
+      - --out
+      - "{output_dir}"
+    resources:
+      primitive: cpu
+      cpus: 1
+      memory: 2G
+      walltime: "00:01:00"
+    outputs:
+      - path: corpus/manifest.json
+    resume:
+      - python3
+      - unityHPC/workspace_adapter.py
+      - resume
+      - --resume-from
+      - "{checkpoint_dir}"
+
+  - id: t1
+    lane: agent
+    engine: project
+    eval:
+      kind: project
+    depends_on: []
+    purpose: experiment
+    command:
+      - python3
+      - unityHPC/workspace_adapter.py
+      - collect
+      - --stage
+      - t1
+      - --out
+      - "{output_dir}"
+    resources:
+      primitive: gpu
+      gpus: 1
+      cpus: 8
+      memory: 64G
+      walltime: "01:00:00"
+      constraint: sm_80&vram48
+    outputs:
+      - path: corpus/manifest.json
+    metrics:
+      - accuracy
+    resume:
+      - python3
+      - unityHPC/workspace_adapter.py
+      - resume
+      - --resume-from
+      - "{checkpoint_dir}"
+
+  - id: t2
+    lane: agent
+    engine: project
+    depends_on:
+      - t1
+    purpose: experiment
+    inputs:
+      - from_stage: t1
+        output: corpus
+    command:
+      - python3
+      - unityHPC/workspace_adapter.py
+      - collect
+      - --stage
+      - t2
+      - --parent
+      - "{parent_dir}"
+      - --out
+      - "{output_dir}"
+    resources:
+      primitive: gpu
+      gpus: 1
+      cpus: 8
+      memory: 64G
+      walltime: "01:00:00"
+      constraint: sm_80&vram48
+    outputs:
+      - path: corpus/manifest.json

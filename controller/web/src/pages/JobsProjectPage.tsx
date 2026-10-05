@@ -5,7 +5,7 @@ import { IconFolderPlus } from '@tabler/icons-react';
 import { useState } from 'react';
 import { useRecoilValue } from 'recoil';
 
-import { countStates, FAIL_STATES, PRIMITIVES } from '../modules/controller/format';
+import { APPLICATIONS, countStates, FAIL_STATES, PRIMITIVES } from '../modules/controller/format';
 import { jobsState, projectsState } from '../modules/controller/state';
 import { usePanels } from '../modules/panels/PanelProvider';
 import { useProjectCommands } from '../modules/projects/useProjectCommands';
@@ -63,6 +63,13 @@ const PathLine = styled.div`
 `;
 
 const PRIMITIVE_OPTIONS = PRIMITIVES.map((one) => ({ value: one, label: one }));
+const APPLICATION_OPTIONS = [
+  { value: '', label: 'Resource project' },
+  ...APPLICATIONS.map((one) => ({
+    value: one.id,
+    label: one.runnable ? one.label : `${one.label} (reserved)`,
+  })),
+];
 
 export const JobsProjectPage = () => {
   const projects = useRecoilValue(projectsState);
@@ -71,19 +78,38 @@ export const JobsProjectPage = () => {
   const { attachProject, busy } = useProjectCommands();
   const toast = useToast();
 
-  const [form, setForm] = useState({ path: '', slug: '', primitive: 'cpu' });
+  const [form, setForm] = useState({
+    path: '',
+    slug: '',
+    primitive: 'cpu',
+    application: '',
+  });
+  const selectedApp = APPLICATIONS.find((one) => one.id === form.application);
+  const workflow = Boolean(form.application);
 
   const submit = async () => {
     if (!form.path.trim()) {
       toast('path is required', 'error');
       return;
     }
+    if (selectedApp && !selectedApp.runnable) {
+      toast('Machine Learning is reserved and cannot be submitted', 'error');
+      return;
+    }
     const ok = await attachProject({
       path: form.path.trim(),
       ...(form.slug.trim() ? { slug: form.slug.trim() } : {}),
-      primitive: form.primitive,
+      application: form.application,
+      ...(workflow ? {} : { primitive: form.primitive }),
     });
-    if (ok) setForm({ path: '', slug: '', primitive: form.primitive });
+    if (ok) {
+      setForm({
+        path: '',
+        slug: '',
+        primitive: form.primitive,
+        application: form.application,
+      });
+    }
   };
 
   return (
@@ -105,7 +131,10 @@ export const JobsProjectPage = () => {
               >
                 <CardTop>
                   <div style={{ minWidth: 0 }}>
-                    <Tag color="purple" text={project.primitive || 'project'} />
+                    <Tag
+                      color="purple"
+                      text={project.application || project.primitive || 'project'}
+                    />
                     <Slug style={{ marginTop: 6 }}>{project.slug}</Slug>
                   </div>
                   <Tag
@@ -159,27 +188,43 @@ export const JobsProjectPage = () => {
               onChange={(event) => setForm({ ...form, slug: event.target.value })}
             />
           </Field>
-          <Field label="Primitive">
+          <Field label="Application">
             <Select
-              value={form.primitive}
-              options={PRIMITIVE_OPTIONS}
-              onChange={(event) => setForm({ ...form, primitive: event.target.value })}
+              value={form.application}
+              options={APPLICATION_OPTIONS}
+              onChange={(event) =>
+                setForm({ ...form, application: event.target.value })
+              }
             />
           </Field>
         </FieldRow>
+        {workflow ? null : (
+          <FieldRow $columns={3}>
+            <Field label="Primitive">
+              <Select
+                value={form.primitive}
+                options={PRIMITIVE_OPTIONS}
+                onChange={(event) =>
+                  setForm({ ...form, primitive: event.target.value })
+                }
+              />
+            </Field>
+          </FieldRow>
+        )}
         <ButtonGroup align="right" style={{ marginTop: 16 }}>
           <Button
             variant="primary"
             Icon={IconFolderPlus}
-            disabled={busy}
+            disabled={busy || Boolean(selectedApp && !selectedApp.runnable)}
             onClick={() => void submit()}
           >
             Register project
           </Button>
         </ButtonGroup>
         <Hint>
-          Click a card to configure the project, dispatch a run, stop it, fetch
-          results, or detach it.
+          {selectedApp && !selectedApp.runnable
+            ? 'Machine Learning is reserved. It has no runner, so you cannot submit it.'
+            : 'Click a card to configure the project, dispatch a run, stop it, fetch results, or detach it.'}
         </Hint>
       </Card>
     </Page>
