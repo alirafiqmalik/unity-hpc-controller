@@ -1,3 +1,5 @@
+import type { Plan } from '../runner/api';
+import type { SchedulerJob, SchedulerObservation } from '../runner/SchedulerStatus';
 /**
  * The JSON client of the LLMs & Agents evaluation workspace.
  *
@@ -101,6 +103,26 @@ export type DatasetProfile = {
   tag_keys: string[];
 };
 
+export type DatasetViewer = {
+  subsets: { name: string; rows: number; splits: { name: string; rows: number }[] }[];
+  splits: { name: string; rows: number }[];
+  selected_subset: string;
+  selected_split: string;
+  rows: number;
+  total_rows: number;
+  kind: string;
+  note: string;
+  columns: DatasetColumn[];
+};
+
+export type DatasetColumn = {
+  key: string;
+  label: string;
+  group: string;
+  type: string;
+  stats: { count: number; missing: number; min?: number; max?: number; histogram: number[]; categories: { label: string; count: number }[] };
+};
+
 export type DatasetSummary = {
   id: string;
   path: string;
@@ -129,6 +151,7 @@ export type DatasetRecord = {
 };
 
 export type DatasetDetail = Omit<DatasetSummary, 'raw_files' | 'evaluations' | 'last_evaluation_utc' | 'modified_utc'> & {
+  viewer?: DatasetViewer;
   records_file: string;
   records: DatasetRecord[];
   total: number;
@@ -181,12 +204,16 @@ export type EvaluationDetail = Evaluation & {
 
 export type Execution = {
   id: string;
+  name?: string;
+  dataset?: string;
+  models?: string[];
   state: string;
   experiment_id: string | null;
   approved_at: string;
   updated_at: string;
   kind: string;
-  stages: { id: string; state: string; location: string; job_ids: string[]; completeness: string }[];
+  scheduler_observation?: SchedulerObservation | null;
+  stages: { id: string; state: string; location: string; job_ids: string[]; completeness: string; jobs?: SchedulerJob[] }[];
 };
 
 export type EvaluationsAnswer = { evaluations: Evaluation[]; collections: Collection[]; executions: Execution[] };
@@ -240,6 +267,7 @@ export type LaunchParameter = {
   max: number | null;
   unit: string | null;
   allowed_purposes: string[] | null;
+  variant_eligible?: boolean;
 };
 
 export type LaunchWorkflow = {
@@ -254,6 +282,8 @@ export type LaunchWorkflow = {
   dataset: string | null;
   /** The parameter that picks the dataset, when one of them does. */
   dataset_parameter: string | null;
+  model_parameter: string | null;
+  supported_datasets: string[];
 };
 
 export type LaunchOptions = {
@@ -261,6 +291,8 @@ export type LaunchOptions = {
   errors: unknown[];
   workflows: LaunchWorkflow[];
   datasets: string[];
+  dataset_options: Record<string, DatasetViewer>;
+  model_aliases: Record<string, string>;
   dataset_parameter: string | null;
   scorers: Record<string, { label?: string; definition?: string; unit?: string }>;
 };
@@ -275,6 +307,10 @@ export type LaunchAnswer = {
   execution?: Execution;
   note?: string;
 };
+
+export type EvaluationSelection = { dataset: string; workflow: string; subset: string; split: string; parameters?: Record<string, unknown> };
+export type PreparedEvaluation = EvaluationSelection & { models: string[]; plan_id: string; experiment_id: string; rows: number | null; plan: Plan; checks?: unknown; stages: { id: string; purpose: string; location: string; resources: Record<string, unknown> }[] };
+export type MatrixAnswer = LaunchAnswer & { prepared?: PreparedEvaluation[]; evaluations?: number; dataset?: string; launched?: { plan_id: string; execution: Execution }[]; pending_plan_ids?: string[] };
 
 export type Summary = {
   slug: string;
@@ -332,7 +368,7 @@ export type TraceFilters = {
 export const genaiApi = {
   summary: (slug: string) => genaiRequest<Summary>(slug, 'summary'),
   datasets: (slug: string) => genaiRequest<{ datasets: DatasetSummary[]; datasets_dir: string }>(slug, 'datasets'),
-  dataset: (slug: string, id: string, params: { offset?: number; limit?: number; search?: string } = {}) =>
+  dataset: (slug: string, id: string, params: { offset?: number; limit?: number; search?: string; subset?: string; split?: string } = {}) =>
     genaiRequest<DatasetDetail>(slug, `datasets/${encodeURIComponent(id)}${query(params)}`),
   createDataset: (slug: string, body: { name: string; description?: string; tags?: Record<string, string> }) =>
     genaiRequest<DatasetDetail>(slug, 'datasets', 'POST', body),
@@ -346,6 +382,11 @@ export const genaiApi = {
   evaluations: (slug: string, collection = 'all') =>
     genaiRequest<EvaluationsAnswer>(slug, `evaluations${query({ collection })}`),
   evaluation: (slug: string, id: string) => genaiRequest<EvaluationDetail>(slug, `evaluations/${encodeURIComponent(id)}`),
+  deleteEvaluations: (slug: string, ids: string[], execution_ids: string[] = []) =>
+    genaiRequest<{ ok: boolean; deleted: number; deleted_executions: number; deleted_artifacts: number }>(slug, 'evaluations', 'DELETE', { ids, execution_ids }),
+  prepareMatrix: (slug: string, body: { name?: string; models: string[]; datasets: EvaluationSelection[]; parameters: Record<string, unknown> }) =>
+    genaiRequest<MatrixAnswer>(slug, 'evaluations/prepare-matrix', 'POST', body),
+  launchMatrix: (slug: string, plan_ids: string[]) => genaiRequest<MatrixAnswer>(slug, 'evaluations/launch-matrix', 'POST', { plan_ids }),
   launchOptions: (slug: string) => genaiRequest<LaunchOptions>(slug, 'launch'),
   launch: (slug: string, body: { workflow: string; name?: string; parameters?: Record<string, unknown>; dataset?: string; dataset_parameter?: string }) =>
     genaiRequest<LaunchAnswer>(slug, 'evaluations', 'POST', body),

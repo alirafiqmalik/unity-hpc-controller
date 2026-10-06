@@ -40,3 +40,11 @@ The ledger retains scheduler receipts for execution recovery and job management.
 
 A live scheduler job stays until a separate cancel. Remote files stay.
 Execution history and its scheduler references remain available.
+
+## Evaluation list removal
+
+Evaluation lists use the same selection and confirmation controls.
+Remove from list hides selected rows from GenAI views.
+Source, results, indexes, frozen plans, artifacts, approvals, execution history, and scheduler receipts remain available.
+Active executions must stop before removal.
+Research tools retain access to the evidence.

@@ -1,4 +1,5 @@
 import { ApiError } from '../controller/api';
+import type { SchedulerJob, SchedulerObservation } from './SchedulerStatus';
 
 export type Parameter = {
   name: string; label: string; type: 'string' | 'integer' | 'number' | 'boolean';
@@ -10,7 +11,7 @@ export type Stage = {
   depends_on?: string[]; resources?: Record<string, unknown>; argv?: unknown[];
   script?: string; output_dir?: string; completeness?: string; retrieval?: string;
   outputs?: unknown[];
-  error?: string; waiting_reason?: string; job_ids?: string[];
+  error?: string; waiting_reason?: string; job_ids?: string[]; jobs?: SchedulerJob[];
   attempts?: { id: string; state: string; job_ids?: string[] }[];
 };
 export type Workflow = { id: string; title: string; parameters: Parameter[]; stages: Stage[]; purpose: string; metrics: string[] };
@@ -22,11 +23,11 @@ export type Plan = {
 };
 export type Prepared = { ok: boolean; valid: boolean; plan_id?: string; plan?: Plan; error?: string; checks?: unknown };
 export type Artifact = { id: string; path: string; complete?: boolean; files?: { path: string }[]; purpose?: string };
-export type Execution = { id: string; plan_id: string; state: string; summary: string; experiment_name?: string; updated_at?: string; stages: Stage[]; artifacts?: Artifact[] };
-export type Log = { text: string | null; reason?: string; cursor?: string; next_offset?: number | null; availability: string; boundary?: string };
+export type Execution = { id: string; plan_id: string; state: string; summary: string; experiment_name?: string; updated_at?: string; stages: Stage[]; artifacts?: Artifact[]; scheduler_observation?: SchedulerObservation | null };
+export type Log = { text: string | null; reason?: string; cursor?: string; next_offset?: number | null; availability: string; boundary?: string; legacy_tail?: boolean };
 
-export const runnerRequest = async <T>(slug: string, path: string, method = 'GET', body?: unknown): Promise<T> => {
-  const response = await fetch(`/api/v1/projects/${encodeURIComponent(slug)}/runner/${path}`, {
+const projectRequest = async <T>(slug: string, namespace: 'runner' | 'workspace', path: string, method = 'GET', body?: unknown): Promise<T> => {
+  const response = await fetch(`/api/v1/projects/${encodeURIComponent(slug)}/${namespace}/${path}`, {
     method, headers: { 'content-type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -34,3 +35,10 @@ export const runnerRequest = async <T>(slug: string, path: string, method = 'GET
   if (!response.ok) throw new ApiError(payload.error ?? response.statusText, response.status, payload);
   return payload as T;
 };
+
+export const runnerRequest = <T>(slug: string, path: string, method = 'GET', body?: unknown) =>
+  projectRequest<T>(slug, 'runner', path, method, body);
+
+export const executionLogTail = (slug: string, executionId: string, stageId: string) =>
+  projectRequest<{ stages: { id: string; job_ids: string[]; output: string }[] }>(slug, 'workspace',
+    `executions/${encodeURIComponent(executionId)}/logs?${new URLSearchParams({ stage_id: stageId })}`);

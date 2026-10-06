@@ -12,6 +12,10 @@ The final tree combines the evaluation interface with the existing execution eng
 | Branch | Generic runner API and bounded execution views | Reuses checked plans and the durable execution engine |
 | Branch | Dataset, predict function, and scorer scaffold | Implements the latest evaluation design with portable fixtures |
 | Branch | Job Monitor selection, confirmation, and keyboard controls | Supports removal of unwanted monitor rows |
+| Later branch work | Typed dataset columns, distributions, conversations, and split selectors | Shows the stored corpus without invented partitions |
+| Later branch work | Evaluation matrices across models and datasets | Creates checked variants before explicit batch approval |
+| Later branch work | Scheduler observations, bounded legacy log tails, and elapsed duration | Distinguishes saved scheduler state from scientific execution state |
+| Later branch work | Accessible modal focus, bound field labels, contrast, and narrow headers | Keeps controls usable across keyboard and window sizes |
 | Main | One prefilled setup screen | Follows the latest interface research and editor simplification |
 | Main | Setup first, execution history afterward | Opens the useful project page for its current state |
 | Main | Experiment drafts, composition, recovery, schedules, analysis, files, and settings | Preserves implemented execution and maintenance tools |
@@ -44,7 +48,25 @@ Delete removes rows from Job Monitor and retains their ledger receipts.
 Workers and management tools can still reconcile and manage those jobs.
 The connect instructions expose the application scaffold and preserve existing attachment metadata.
 
-## Validation
+## Later iteration
+
+The completed later iteration is now included.
+Matrix review exposes each frozen plan, its effective parameters, scripts, source, inputs, outputs, and checks.
+Open string model declarations permit manually entered model names.
+Dataset selectors use directory identities rather than editable display names.
+Repeated matrix approval returns existing executions, even when live declarations change.
+
+The proposed permanent deletion erased plans, approval bindings, files, and scheduler ledgers.
+It also missed dependencies from prepared and scheduled work.
+The integration keeps the selection and confirmation controls but removes rows only from evaluation lists.
+Source, results, indexes, frozen plans, artifacts, execution records, and scheduler receipts remain intact.
+Research tools retain access to that evidence.
+Active executions must stop before list removal.
+
+Stale telemetry cannot replace a known running job with an older pending observation.
+Live scheduler checks can still record a real requeue.
+
+## Initial validation
 
 The production build, TypeScript check, and ESLint pass.
 The focused API and scaffold suite passes all 84 tests.
@@ -52,6 +74,9 @@ The backend suite passes all 1,066 tests across the full run and corrected fixtu
 All 39 browser checks pass across the suite runs and updated layout checks.
 The production browser checks use isolated projects and prohibit cluster access.
 
-A later dataset viewer and evaluation matrix iteration appeared during review.
-It remains in the original worktree for continued development.
-The reviewed integration uses the initial snapshot saved on October 5, 2026.
+## Later validation
+
+The completed integration passes the production build, TypeScript compilation, ESLint, and Python syntax checks.
+The earlier test counts describe the initial integration.
+The integration retains later test additions.
+Test suites did not run during resumed integration.

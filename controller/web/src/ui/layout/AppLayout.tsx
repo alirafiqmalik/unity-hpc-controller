@@ -53,6 +53,17 @@ const Header = styled.header`
   position: sticky;
   top: 0;
   z-index: ${({ theme }) => theme.zIndex.header};
+
+  @media (max-width: 720px) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: ${({ theme }) => theme.spacing(2)};
+    padding: ${({ theme }) => theme.spacing(2, 3)};
+
+    > div:first-of-type > div > div {
+      flex-wrap: wrap;
+    }
+  }
 `;
 
 const Title = styled.h1`
@@ -61,6 +72,11 @@ const Title = styled.h1`
   font-weight: ${({ theme }) => theme.font.weight.semiBold};
   letter-spacing: -0.015em;
   line-height: 1.25;
+
+  @media (max-width: 720px) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 `;
 
 const Subtitle = styled.div`
@@ -77,6 +93,11 @@ const HeaderRight = styled.div`
   display: flex;
   flex-shrink: 0;
   gap: ${({ theme }) => theme.spacing(2)};
+
+  @media (max-width: 720px) {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
 `;
 
 const SyncNote = styled.span`

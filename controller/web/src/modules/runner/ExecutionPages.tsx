@@ -6,8 +6,9 @@ import { Field, Select, TextInput } from '../../ui/components/Field';
 import { Table, TableScroller, THead } from '../../ui/components/Table';
 import { Tag } from '../../ui/components/Tag';
 import { errorText } from '../controller/api';
-import { runnerRequest, type Execution, type Log } from './api';
+import { executionLogTail, runnerRequest, type Execution, type Log } from './api';
 import { ProjectPage } from './ProjectPage';
+import { SchedulerStatus } from './SchedulerStatus';
 
 export const ExecutionsPage = () => {
   const { slug = '' } = useParams();
@@ -57,6 +58,12 @@ export const ExecutionPage = () => {
   const logGeneration = useRef(0);
   const attempts = execution?.stages.flatMap((stage) => (stage.attempts ?? []).map((one) => ({ ...one, stage: stage.id }))) ?? [];
   const selected = attempts.find((one) => one.id === attempt);
+  const selectedStage = execution?.stages.find((one) => one.id === selected?.stage);
+  // Legacy tails are stage-wide. Only a single attempt with one exact job is safe.
+  const tailStageId = selectedStage?.attempts?.length === 1 && selectedStage.job_ids?.length === 1 &&
+    selected?.job_ids?.length === 1 && selectedStage.job_ids[0] === job && selected.job_ids[0] === job
+    ? selectedStage.id : '';
+
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -74,12 +81,27 @@ export const ExecutionPage = () => {
   const loadLogs = useCallback(async (cursor?: string) => {
     if (!attempt) return;
     const generation = ++logGeneration.current;
+    setLog(null);
     try {
       const params = new URLSearchParams({ attempt, stream, ...(job ? { job_id: job } : {}), ...(cursor ? { cursor } : {}) });
-      const result = await runnerRequest<Log>(slug, `executions/${encodeURIComponent(executionId)}/logs?${params}`);
+      let result = await runnerRequest<Log>(slug, `executions/${encodeURIComponent(executionId)}/logs?${params}`);
+      if (generation !== logGeneration.current) return;
+      if (!cursor && tailStageId && ['stdout', 'stderr'].includes(stream) && result.availability === 'remote-unavailable' &&
+          result.reason?.startsWith('Reviewed dispatcher lacks exact bounded log transport.')) {
+        const tail = await executionLogTail(slug, executionId, tailStageId);
+        const one = tail.stages[0];
+        if (tail.stages.length !== 1 || one.id !== tailStageId || one.job_ids.length !== 1 || one.job_ids[0] !== job) {
+          throw new Error('Legacy log identity changed. Refresh the execution before reading logs.');
+        }
+        const bytes = new TextEncoder().encode(one.output);
+        const clipped = bytes.length > 65536;
+        result = { availability: 'available', legacy_tail: true, cursor: undefined,
+          reason: `Latest tail · stdout + stderr · last 100 lines per stream${clipped ? ' · display truncated to the latest 64 KiB' : ''}`,
+          text: new TextDecoder().decode(clipped ? bytes.slice(-65536) : bytes) };
+      }
       if (generation === logGeneration.current) { setLog(result); setError(''); }
     } catch (reason) { if (generation === logGeneration.current) setError(errorText(reason)); }
-  }, [slug, executionId, attempt, stream, job]);
+  }, [slug, executionId, attempt, stream, job, tailStageId]);
   useEffect(() => { setLog(null); void loadLogs(); return () => { logGeneration.current += 1; }; }, [loadLogs]);
   return <ProjectPage title={execution?.experiment_name || 'Workflow execution'}>
     {error ? <Card role="alert">{error}</Card> : null}
@@ -93,6 +115,7 @@ export const ExecutionPage = () => {
         <Hint>{stage.operation} · {stage.location} · {stage.purpose}</Hint><KeyValue label="Depends on">{stage.depends_on?.join(', ') || 'None'}</KeyValue>
         <KeyValue label="Output checks">{stage.completeness || 'Unknown'}</KeyValue><KeyValue label="Retrieval">{stage.retrieval || 'Not requested'}</KeyValue>
         <KeyValue label="Jobs">{stage.job_ids?.join(', ') || 'No scheduler jobs'}</KeyValue>
+        <SchedulerStatus jobIds={stage.job_ids ?? []} jobs={stage.jobs} observation={execution.scheduler_observation} />
         {stage.error || stage.waiting_reason ? <p>{stage.error || stage.waiting_reason}</p> : null}
         <ButtonGroup>{stage.attempts?.map((one) => <Button key={one.id} onClick={() => setAttempt(one.id)}>Logs: {one.id} · {one.state}</Button>)}</ButtonGroup>
       </Card>)}
@@ -100,7 +123,7 @@ export const ExecutionPage = () => {
         <Select aria-label="Log stream" value={stream} options={['stdout', 'stderr', 'controller', 'wrapper'].map((one) => ({ value: one, label: one }))} onChange={(event) => setStream(event.target.value)} />
         {selected?.job_ids?.length ? <Select aria-label="Log job" value={job} options={selected.job_ids.map((one) => ({ value: one, label: one }))} onChange={(event) => setJob(event.target.value)} /> : null}
         <Button onClick={() => void loadLogs()}>Refresh logs</Button><Button disabled={!log?.cursor} onClick={() => void loadLogs(log?.cursor)}>Next bounded page</Button></ButtonGroup>
-        <Hint>{log?.availability} {log?.reason} {log?.boundary}</Hint><pre tabIndex={0} style={{ maxHeight: 450, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{log?.text ?? 'Loading logs…'}</pre>
+        <Hint>{log?.legacy_tail ? log.reason : <>{log?.availability} {log?.reason} {log?.boundary}</>}</Hint><pre tabIndex={0} style={{ maxHeight: 450, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{log?.text ?? 'Loading logs…'}</pre>
       </Card> : null}
       <Card><CardHeader title="Artifacts" />{execution.artifacts?.length ? <Stack>{execution.artifacts.map((artifact) => <div key={artifact.id}><strong>{artifact.id}</strong><Hint>{artifact.complete ? 'Complete' : 'Incomplete'} · {artifact.purpose}</Hint>
         {(artifact.files ?? [{ path: artifact.path }]).map((file) => <p key={file.path}><a download href={`/api/v1/projects/${encodeURIComponent(slug)}/runner/artifacts/${encodeURIComponent(artifact.id)}?path=${encodeURIComponent(file.path)}`}>{file.path}</a></p>)}

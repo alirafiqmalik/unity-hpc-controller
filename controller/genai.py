@@ -337,23 +337,30 @@ def datasets(slug: str) -> dict:
             })
     evals = evaluations(slug)["evaluations"]
     for item in items:
-        linked = [e for e in evals if e.get("dataset") == item["name"]]
+        linked = [e for e in evals if e.get("dataset") in (item["id"], item["name"])]
         item["evaluations"] = len(linked)
         item["last_evaluation_utc"] = max((e.get("started") or "" for e in linked), default="")
     return {"datasets": items, "datasets_dir": str(folder.relative_to(root_of(rec))), "writable": True}
 
 
-def dataset(slug: str, dataset_id: str, offset: int = 0, limit: int = 50, search: str = "") -> dict:
+def dataset(slug: str, dataset_id: str, offset: int = 0, limit: int = 50, search: str = "", subset: str = "", split: str = "") -> dict:
     rec = project(slug)
     conn = connector(rec)
     folder = _dataset_folder(rec, conn, dataset_id)
     meta = _dataset_meta(folder)
     records = list(_iter_records(folder / meta["records_file"]))
+    from controller.genai_datasets import select_records, viewer_metadata
+    try:
+        viewer = viewer_metadata(records, meta, subset, split)
+        records = select_records(records, meta, subset, split)
+    except ValueError as exc:
+        raise GenAIError(str(exc)) from exc
+    profile = _profile(records)
     needle = search.strip().lower()
     if needle:
         records = [r for r in records if needle in json.dumps(r, default=str).lower()]
     page = records[offset: offset + max(1, min(limit, 500))]
-    evals = [e for e in evaluations(slug)["evaluations"] if e.get("dataset") == meta["name"]]
+    evals = [e for e in evaluations(slug)["evaluations"] if e.get("dataset") in (dataset_id, meta["name"])]
     files = []
     for path in sorted(folder.rglob("*")):
         if path.is_file():
@@ -362,7 +369,8 @@ def dataset(slug: str, dataset_id: str, offset: int = 0, limit: int = 50, search
         "id": dataset_id,
         "path": str(folder.relative_to(root_of(rec))),
         **{k: meta[k] for k in ("name", "description", "tags", "created_utc", "updated_utc", "source", "declared", "license", "records_file")},
-        "profile": _profile(records),
+        "profile": profile,
+        "viewer": viewer,
         "records": [{**r, "fingerprint": _record_fingerprint(r)} for r in page],
         "total": len(records),
         "offset": offset,
@@ -570,10 +578,18 @@ def _record_from_trace(full: dict, response_as_expectation: bool) -> dict:
 # Evaluation runs
 # --------------------------------------------------------------------------- #
 
+def hidden_evaluations(rec: dict) -> dict[str, list[str]]:
+    root = root_of(rec)
+    data = _read_json(root / ".unity-workspace/deleted-evaluations.json", root=root)
+    return {key: [value for value in data.get(key, []) if isinstance(value, str)]
+            if isinstance(data.get(key), list) else [] for key in ("paths", "execution_ids")}
+
+
 def _scan_roots(rec: dict, conn: dict) -> list[dict]:
     """Every directory under an evaluation root that holds a manifest."""
     root = root_of(rec)
     found: list[dict] = []
+    deleted = hidden_evaluations(rec)["paths"]
     for spec in conn.get("evaluation_roots") or []:
         if isinstance(spec, str):
             spec = {"path": spec}
@@ -590,6 +606,9 @@ def _scan_roots(rec: dict, conn: dict) -> list[dict]:
         stack = [(base, 0)]
         while stack:
             folder, level = stack.pop()
+            relative = str(folder.relative_to(root))
+            if any(relative == path or relative.startswith(path + "/") for path in deleted):
+                continue
             if not folder.resolve().is_relative_to(base):
                 continue
             try:
@@ -674,7 +693,10 @@ def _evaluation_record(rec: dict, conn: dict, hit: dict, *, index: bool = False,
     workspace_entry = (names or {}).get(str(provenance.get("execution_id") or ""), {}) if provenance else {}
     if workspace_entry.get("name"):
         name = f"{workspace_entry['name']} · {provenance.get('stage_id') or folder.name}"
-    dataset_name = _dataset_name(_get(manifest, fields.get("dataset"))) or _dataset_name(_get(provenance, "parameters.dataset")) or ""
+    # Workspace selections name the dataset viewer; manifest dataset fields may name a source file.
+    dataset_name = (_dataset_name(_get(provenance, "dataset_selection.dataset"))
+                    or _dataset_name(_get(manifest, fields.get("dataset")))
+                    or _dataset_name(_get(provenance, "parameters.dataset")) or "")
     metrics = {}
     for key, path in (fields.get("metrics") or {}).items():
         value = _get(manifest, path)
@@ -781,7 +803,7 @@ def _find_evaluation(slug: str, evaluation_id: str) -> tuple[dict, dict, dict, d
 def evaluation(slug: str, evaluation_id: str) -> dict:
     rec, conn, hit, record = _find_evaluation(slug, evaluation_id)
     manifest = _read_json(hit["manifest_path"])
-    provenance = _read_json(hit["folder"] / str(hit["spec"].get("provenance"))) if hit["spec"].get("provenance") else {}
+    provenance = _read_json(hit["folder"] / str(hit["spec"].get("provenance")), root=hit["folder"]) if hit["spec"].get("provenance") else {}
     rows = [row for path in _trace_files(hit["folder"], hit["spec"]) for row in _rows_for(path, conn)["rows"]]
     record["manifest"] = manifest
     record["provenance"] = provenance

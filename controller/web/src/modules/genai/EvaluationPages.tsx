@@ -4,22 +4,24 @@
  * The list reads runs the project has on disk plus the executions the
  * workspace worker is still running. `New evaluation` is the MLflow
  * `evaluate(data, predict_fn, scorers)` step: pick a workflow, a dataset and
- * parameters, and the controller prepares a frozen plan for review and approval.
+ * parameters, then review the frozen plans before explicit approval.
  */
 
 import styled from '@emotion/styled';
-import { IconFlask, IconPlayerPlay, IconRefresh } from '@tabler/icons-react';
+import { IconFlask, IconPlayerPlay, IconRefresh, IconTrash, IconX } from '@tabler/icons-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
-import { ApiError, errorText } from '../controller/api';
+import { errorText } from '../controller/api';
+import { SchedulerStatus } from '../runner/SchedulerStatus';
+import { ActionBar, ActionBarCount, ActionBarDivider } from '../../ui/components/ActionBar';
 import { Button, IconButton } from '../../ui/components/Button';
 import { Card, CardHeader, Grid, Hint, KeyValue } from '../../ui/components/Card';
 import { EmptyState } from '../../ui/components/EmptyState';
-import { Checkbox, Field, FieldRow, Select, TextInput } from '../../ui/components/Field';
+import { Checkbox, Field, FieldRow, Select, SelectionCheckbox, TextInput } from '../../ui/components/Field';
 import { Modal } from '../../ui/components/SidePanel';
 import { StatCard } from '../../ui/components/StatCard';
-import { MonoCell, Table, TableEmptyRow, TableScroller, THead, TRow } from '../../ui/components/Table';
+import { MonoCell, SelectCell, SelectHead, Table, TableEmptyRow, TableScroller, THead, TRow } from '../../ui/components/Table';
 import { Tag, TagRow } from '../../ui/components/Tag';
 import { useToast } from '../../ui/components/Toast';
 import {
@@ -27,13 +29,17 @@ import {
   type Evaluation,
   type EvaluationDetail,
   type EvaluationsAnswer,
-  type LaunchAnswer,
+  type MatrixAnswer,
+  type EvaluationSelection,
+  type PreparedEvaluation,
   type LaunchOptions,
   type LaunchWorkflow,
+  type DatasetViewer,
 } from './api';
 import {
   AssessmentSummaryBlock,
   BackLink,
+  elapsedSeconds,
   formatDuration,
   formatNumber,
   formatTime,
@@ -73,140 +79,181 @@ const coerce = (type: string, raw: string | boolean): unknown => {
   return raw;
 };
 
-export const NewEvaluationDialog = ({ onClose, onPrepared, initialDataset }: { onClose: () => void; onPrepared: (answer: LaunchAnswer) => void; initialDataset?: string }) => {
+const datasetControl = (name: string) => ['dataset_subset', 'subset', 'config', 'dataset_split', 'split', 'dataset_revision', 'revision', 'n_items', 'limit', 'sample_limit', 'dataset_offset', 'dataset_sampling'].includes(name);
+
+const selectionSplits = (viewer: DatasetViewer | undefined, subset: string) => {
+  const rows = new Map<string, number>();
+  for (const partition of viewer?.subsets ?? []) {
+    if (subset && partition.name !== subset) continue;
+    for (const split of partition.splits) rows.set(split.name, (rows.get(split.name) ?? 0) + split.rows);
+  }
+  return [...rows].map(([name, count]) => ({ name, rows: count }));
+};
+
+const defaultSplit = (splits: { name: string }[]) => splits.length === 1 ? splits[0].name : '';
+
+export const NewEvaluationDialog = ({ onClose, onLaunched, initialDataset, initialSubset, initialSplit }: { onClose: () => void; onLaunched: (answer: MatrixAnswer) => void; initialDataset?: string; initialSubset?: string; initialSplit?: string }) => {
   const { slug } = useGenAI();
-  const navigate = useNavigate();
   const [options, setOptions] = useState<LaunchOptions | null>(null);
   const [workflowId, setWorkflowId] = useState('');
-  const [dataset, setDataset] = useState(initialDataset || '');
+  const [models, setModels] = useState<string[]>([]);
+  const [customModels, setCustomModels] = useState<string[]>([]);
+  const [modelInput, setModelInput] = useState('');
+  const [selections, setSelections] = useState<Record<string, EvaluationSelection>>({});
   const [name, setName] = useState('');
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [answer, setAnswer] = useState<LaunchAnswer | null>(null);
+  const [answer, setAnswer] = useState<MatrixAnswer | null>(null);
+  const [prepared, setPrepared] = useState<PreparedEvaluation[] | null>(null);
+  const workflow = options?.workflows.find((w) => w.id === workflowId);
+  const eligible = useMemo(() => options?.workflows.filter((w) => w.purpose === workflow?.purpose) ?? [], [options, workflow]);
+  const canonical = useCallback((model: string) => options?.model_aliases[model] || model, [options]);
+  const modelChoices = useMemo(() => [...new Set([...customModels, ...eligible.flatMap((w) => {
+    const parameter = w.parameters.find((p) => p.name === w.model_parameter);
+    return (parameter?.choices ?? [parameter?.default]).filter(Boolean).map((x) => canonical(String(x)));
+  })])], [eligible, canonical, customModels]);
+
+  const acceptsModelInput = eligible.some((candidate) => {
+    const parameter = candidate.parameters.find((p) => p.name === candidate.model_parameter);
+    return parameter?.type === 'string' && !parameter.choices?.length;
+  });
+  const addModel = () => {
+    const value = modelInput.trim();
+    if (!value || modelChoices.includes(value)) return;
+    setCustomModels((old) => [...old, value]);
+    setModels((old) => [...old, value]);
+    setModelInput('');
+  };
 
   useEffect(() => {
+    let live = true;
     genaiApi.launchOptions(slug).then((value) => {
+      if (!live) return;
       setOptions(value);
-      const first = value.workflows.find((w) => !initialDataset || w.dataset === initialDataset || w.dataset_parameter) ?? value.workflows[0];
+      const first = value.workflows.find((w) => (!initialDataset || w.supported_datasets.includes(initialDataset)) && w.purpose === 'experiment') ?? value.workflows[0];
       if (first) setWorkflowId(first.id);
-    }).catch((reason) => setError(errorText(reason)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
+    }).catch((reason) => { if (live) setError(errorText(reason)); });
+    return () => { live = false; };
+  }, [slug, initialDataset]);
 
-  const workflow: LaunchWorkflow | undefined = options?.workflows.find((w) => w.id === workflowId);
+  const defaultSelection = useCallback((dataset: string, candidate: LaunchWorkflow): EvaluationSelection => {
+    const viewer = options?.dataset_options[dataset];
+    const parameters: Record<string, unknown> = {};
+    for (const parameter of candidate.parameters.filter((p) => datasetControl(p.name))) {
+      if (!['dataset_subset', 'subset', 'config', 'dataset_split', 'split'].includes(parameter.name)) parameters[parameter.name] = parameter.default;
+    }
+    const requestedSubset = dataset === initialDataset ? initialSubset : undefined;
+    const requestedSplit = dataset === initialDataset ? initialSplit : undefined;
+    const subset = requestedSubset ?? '';
+    const splits = selectionSplits(viewer, subset);
+    return { dataset, workflow: candidate.id, subset, split: requestedSplit ?? defaultSplit(splits), parameters };
+  }, [options, initialDataset, initialSubset, initialSplit]);
+
   useEffect(() => {
     if (!workflow) return;
     const next: Record<string, string | boolean> = {};
-    for (const parameter of workflow.parameters) {
-      next[parameter.name] = parameter.type === 'boolean' ? Boolean(parameter.default) : parameter.default === null || parameter.default === undefined ? '' : String(parameter.default);
-    }
+    for (const parameter of workflow.parameters) next[parameter.name] = parameter.type === 'boolean' ? Boolean(parameter.default) : parameter.default == null ? '' : String(parameter.default);
     setValues(next);
-    // The dataset follows the workflow: bound by name, or chosen through its parameter.
-    if (workflow.dataset) setDataset(workflow.dataset);
-    else if (workflow.dataset_parameter) {
-      const current = next[workflow.dataset_parameter];
-      setDataset(initialDataset && options?.datasets.includes(initialDataset) ? initialDataset : typeof current === 'string' ? current : '');
-    } else setDataset('');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflow]);
+    const model = workflow.parameters.find((p) => p.name === workflow.model_parameter);
+    setModels(model?.default ? [canonical(String(model.default))] : []);
+    setCustomModels([]); setModelInput('');
+    const dataset = initialDataset && workflow.supported_datasets.includes(initialDataset) ? initialDataset : workflow.supported_datasets[0];
+    setSelections(dataset ? { [dataset]: defaultSelection(dataset, workflow) } : {});
+    setPrepared(null);
+  }, [workflow, initialDataset, canonical, defaultSelection]);
 
-  const launch = async () => {
+  const setSelection = (dataset: string, patch: Partial<EvaluationSelection>) => {
+    setSelections((old) => ({ ...old, [dataset]: { ...old[dataset], ...patch } }));
+    setPrepared(null);
+  };
+  const updateParameter = (dataset: string, parameter: string, value: unknown) => setSelection(dataset, { parameters: { ...selections[dataset].parameters, [parameter]: value } });
+  const compatibleModel = (model: string, candidate: LaunchWorkflow) => {
+    const spec = candidate.parameters.find((p) => p.name === candidate.model_parameter);
+    return !spec?.choices?.length || spec.choices.some((x) => canonical(String(x)) === model);
+  };
+  const incompatible = Object.values(selections).some((s) => models.some((m) => !compatibleModel(m, options!.workflows.find((w) => w.id === s.workflow)!)));
+
+  const prepare = async () => {
     if (!workflow) return;
-    setBusy(true);
-    setError('');
+    setBusy(true); setError(''); setAnswer(null);
     try {
       const parameters: Record<string, unknown> = {};
       for (const parameter of workflow.parameters) {
+        if (parameter.name === workflow.model_parameter || parameter.name === workflow.dataset_parameter || datasetControl(parameter.name)) continue;
         const raw = values[parameter.name];
-        if (raw === '' || raw === undefined) continue;
-        parameters[parameter.name] = coerce(parameter.type, raw);
+        if (raw !== '' && raw !== undefined) parameters[parameter.name] = coerce(parameter.type, raw);
       }
-      const result = await genaiApi.launch(slug, {
-        workflow: workflow.id,
-        name: name.trim() || undefined,
-        parameters,
-        dataset: dataset || undefined,
-        dataset_parameter: workflow.dataset_parameter ?? undefined,
-      });
+      const result = await genaiApi.prepareMatrix(slug, { name: name.trim() || undefined, models, datasets: Object.values(selections), parameters });
       setAnswer(result);
-      if (result.ok && result.plan_id) {
-        onPrepared(result);
-        navigate(`/projects/${encodeURIComponent(slug)}/runner?plan=${encodeURIComponent(result.plan_id)}&workflow=${encodeURIComponent(workflow.id)}`);
-      }
-    } catch (reason) {
-      setError(errorText(reason));
-      if (reason instanceof ApiError) setAnswer(reason.payload as LaunchAnswer);
-    } finally {
-      setBusy(false);
-    }
+      if (result.ok) setPrepared(result.prepared ?? []);
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setBusy(false); }
+  };
+  const launch = async () => {
+    if (!prepared?.length) return;
+    setBusy(true); setError('');
+    try {
+      const result = await genaiApi.launchMatrix(slug, prepared.map((p) => p.plan_id));
+      setAnswer(result);
+      if (result.ok) onLaunched(result);
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setBusy(false); }
   };
 
-  const cluster = workflow?.stages.some((s) => s.location === 'cluster');
-
   return (
-    <Modal open onClose={onClose} title="New evaluation" width={760}>
+    <Modal open onClose={busy ? () => {} : onClose} title={prepared ? 'Review evaluation matrix' : 'New evaluation'} width={1040} footer={<Toolbar style={{ justifyContent: 'flex-end' }}>
+          <Button size="small" disabled={busy} onClick={onClose}>Cancel</Button>
+          {prepared ? <><Button size="small" disabled={busy || Boolean(answer?.launched?.length)} onClick={() => { setPrepared(null); setAnswer(null); }}>Edit setup</Button><Button size="small" variant="primary" Icon={IconPlayerPlay} disabled={busy} onClick={() => void launch()}>{busy ? 'Launching…' : prepared.some((p) => p.stages.some((s) => s.location === 'cluster')) ? 'Launch on Unity' : 'Launch evaluations'}</Button></> : <Button size="small" variant="primary" disabled={busy || !workflow || !options?.valid || !models.length || !Object.keys(selections).length || incompatible} onClick={() => void prepare()}>{busy ? 'Checking plans…' : 'Review evaluation matrix'}</Button>}
+        </Toolbar>}>
       <Wide>
         {error ? <Card role="alert">{error}</Card> : null}
-        {options && !options.valid ? (
-          <Card role="alert">The project connection is invalid, so no evaluation can be planned. {JSON.stringify(options.errors).slice(0, 300)}</Card>
-        ) : null}
-        {!options ? <Muted>Loading workflows…</Muted> : !options.workflows.length ? (
-          <Muted>This project declares no evaluation workflow. Add one to <Mono>unityHPC/project.json</Mono> and list it under <Mono>genai.launch.workflows</Mono>.</Muted>
+        {!options ? <Muted>Loading evaluation options…</Muted> : !options.valid ? <Card role="alert">The project connection is invalid. {JSON.stringify(options.errors).slice(0, 300)}</Card> : !workflow ? <Muted>No evaluation workflow is available.</Muted> : prepared ? (
+          <>
+            <Hint>{models.length} models × {prepared.length} datasets = {models.length * prepared.length} evaluations. Each dataset has one checked execution, with a separate variant for every model.</Hint>
+            <TableScroller><Table><THead><tr><th>Dataset</th><th>Subset / split</th><th>Models</th><th>Items per model</th><th>Execution stages</th></tr></THead><tbody>
+              {prepared.map((p) => <TRow key={p.plan_id}><td>{p.dataset}</td><td>{p.subset || 'All subsets'} / {p.split || 'All splits'}</td><td>{p.models.join(', ')}</td><td>{String(p.parameters?.n_items ?? p.parameters?.limit ?? p.rows ?? 'all')}</td><td>{p.stages.filter((s) => s.location === 'cluster').length} Unity · {p.stages.filter((s) => s.location === 'controller').length} controller</td></TRow>)}
+            </tbody></Table></TableScroller>
+            {prepared.map((p) => <details key={p.plan_id}><summary>{p.dataset} · resources and checked plan</summary><Mono>{p.plan_id}</Mono>{p.stages.map((s) => <div key={s.id}><Mono>{s.id}</Mono> · {s.purpose} · {s.location} · {JSON.stringify(s.resources)}</div>)}<details><summary>Exact frozen plan and checks</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 11 }}>{JSON.stringify({ plan: p.plan, checks: p.checks }, null, 2)}</pre></details></details>)}
+          </>
         ) : (
           <>
             <FieldRow $columns={2}>
-              <Field label="Workflow — the predict function and scorers">
-                <Select aria-label="Evaluation workflow" value={workflowId} options={options.workflows.map((w) => ({ value: w.id, label: `${w.title}${w.purpose === 'smoke-test' ? ' (smoke test)' : ''}` }))} onChange={(e) => setWorkflowId(e.target.value)} />
-              </Field>
-              <Field label={workflow?.dataset ? 'Dataset — bound by the workflow' : workflow?.dataset_parameter ? `Dataset — sets ${workflow.dataset_parameter}` : 'Dataset'}>
-                <Select
-                  aria-label="Evaluation dataset"
-                  value={dataset}
-                  options={[{ value: '', label: workflow?.dataset_parameter ? 'Choose a dataset' : 'Declared by the workflow' }, ...options.datasets.map((d) => ({ value: d, label: d }))]}
-                  onChange={(e) => { setDataset(e.target.value); if (workflow?.dataset_parameter) setValues({ ...values, [workflow.dataset_parameter]: e.target.value }); }}
-                  disabled={!workflow?.dataset_parameter}
-                />
-              </Field>
+              <Field label="Evaluation workflow"><Select aria-label="Evaluation workflow" value={workflowId} options={options.workflows.map((w) => ({ value: w.id, label: `${w.title}${w.purpose === 'smoke-test' ? ' (smoke test)' : ''}` }))} onChange={(e) => setWorkflowId(e.target.value)} /></Field>
+              <Field label="Comparison name"><TextInput value={name} placeholder="Model comparison" onChange={(e) => setName(e.target.value)} /></Field>
             </FieldRow>
-            <Field label="Run name">
-              <TextInput value={name} placeholder={workflow ? `${workflow.title} · ${values.model ?? ''}` : 'optional'} onChange={(e) => setName(e.target.value)} />
-            </Field>
-            {workflow ? (
-              <>
-                <Hint style={{ marginTop: 6 }}>
-                  Stages: {workflow.stages.map((s) => `${s.id} (${s.location}${s.purpose === 'smoke-test' ? ', smoke' : ''})`).join(' → ')}.
-                  {cluster ? ' Cluster stages use the frozen source bundle on Unity through run.sh.' : ' Every stage runs on the controller.'}
-                  {workflow.metrics.length ? ` Scorers: ${workflow.metrics.join(', ')}.` : ''}
-                </Hint>
-                <FieldRow $columns={3} style={{ marginTop: 8 }}>
-                  {workflow.parameters.filter((parameter) => parameter.name !== workflow.dataset_parameter).map((parameter) => (
-                    <Field key={parameter.name} label={`${parameter.label}${parameter.unit ? ` (${parameter.unit})` : ''}`}>
-                      {parameter.type === 'boolean' ? (
-                        <Checkbox label={parameter.name} checked={Boolean(values[parameter.name])} onChange={(e) => setValues({ ...values, [parameter.name]: e.target.checked })} />
-                      ) : parameter.choices?.length ? (
-                        <Select value={String(values[parameter.name] ?? '')} options={parameter.choices.map((c) => ({ value: String(c), label: String(c) }))} onChange={(e) => setValues({ ...values, [parameter.name]: e.target.value })} />
-                      ) : (
-                        <TextInput type={parameter.type === 'string' ? 'text' : 'number'} min={parameter.min ?? undefined} max={parameter.max ?? undefined} value={String(values[parameter.name] ?? '')} onChange={(e) => setValues({ ...values, [parameter.name]: e.target.value })} />
-                      )}
-                    </Field>
-                  ))}
-                </FieldRow>
-              </>
-            ) : null}
+            <Card><CardHeader title="Models" note="Select the same models for every dataset" /><Grid $min="250px" style={{ maxHeight: 220, overflow: 'auto' }}>
+              {modelChoices.map((model) => <Checkbox key={model} label={model} checked={models.includes(model)} onChange={(e) => setModels((old) => e.target.checked ? [...old, model] : old.filter((m) => m !== model))} />)}
+            </Grid>{acceptsModelInput ? <FieldRow $columns={2}><Field label="Model name"><TextInput value={modelInput} onChange={(e) => setModelInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel(); } }} /></Field><Button size="small" disabled={!modelInput.trim() || modelChoices.includes(modelInput.trim())} onClick={addModel}>Add model</Button></FieldRow> : null}</Card>
+            <Card><CardHeader title="Datasets" note="Select one or more datasets, then choose their available subset and split" />
+              {options.datasets.map((dataset) => {
+                const candidates = eligible.filter((w) => w.supported_datasets.includes(dataset));
+                const selection = selections[dataset];
+                const candidate = candidates.find((w) => w.id === selection?.workflow) ?? candidates[0];
+                const viewer = options.dataset_options[dataset];
+                const splits = selectionSplits(viewer, selection?.subset ?? '');
+                const selectedRows = splits.filter((s) => !selection?.split || s.name === selection.split).reduce((sum, s) => sum + s.rows, 0);
+                const availableRows = Math.max(0, selectedRows - Number(selection?.parameters?.dataset_offset ?? 0));
+                return <div key={dataset} style={{ marginBottom: 16 }}>
+                  <Checkbox label={`${dataset}${candidates.length ? '' : ' (no evaluation workflow)'}`} checked={Boolean(selection)} disabled={!candidates.length} onChange={(e) => setSelections((old) => { if (e.target.checked) return { ...old, [dataset]: defaultSelection(dataset, candidate) }; const next = { ...old }; delete next[dataset]; return next; })} />
+                  {selection ? <FieldRow $columns={3} style={{ marginTop: 8 }}>
+                    <Field label={`${dataset} workflow`}><Select value={selection.workflow} options={candidates.map((w) => ({ value: w.id, label: w.title }))} onChange={(e) => setSelection(dataset, defaultSelection(dataset, candidates.find((w) => w.id === e.target.value)!))} /></Field>
+                    <Field label={`${dataset} subset`}><Select value={selection.subset} options={[{ value: '', label: `All subsets · ${formatNumber(viewer?.total_rows ?? 0)} rows` }, ...(viewer?.subsets ?? []).map((s) => ({ value: s.name, label: `${s.name} · ${formatNumber(s.rows)} rows` }))]} onChange={(e) => setSelection(dataset, { subset: e.target.value, split: defaultSplit(selectionSplits(viewer, e.target.value)) })} /></Field>
+                    <Field label={`${dataset} split`}><Select value={selection.split} options={[...(splits.length > 1 ? [{ value: '', label: `All splits · ${formatNumber(splits.reduce((sum, s) => sum + s.rows, 0))} rows` }] : []), ...splits.map((s) => ({ value: s.name, label: `${s.name} · ${formatNumber(s.rows)} rows` }))]} onChange={(e) => setSelection(dataset, { split: e.target.value })} /></Field>
+                    {candidate?.parameters.filter((p) => datasetControl(p.name) && !['dataset_subset', 'subset', 'config', 'dataset_split', 'split'].includes(p.name)).map((p) => <Field key={p.name} label={`${dataset} ${p.label}`}>{p.choices?.length ? <Select value={String(selection.parameters?.[p.name] ?? '')} options={p.choices.map((v) => ({ value: String(v), label: String(v) }))} onChange={(e) => updateParameter(dataset, p.name, coerce(p.type, e.target.value))} /> : <TextInput type={p.type === 'string' ? 'text' : 'number'} min={p.min ?? undefined} max={p.name === 'n_items' ? Math.min(p.max ?? Infinity, availableRows) : p.max ?? undefined} value={String(selection.parameters?.[p.name] ?? '')} onChange={(e) => updateParameter(dataset, p.name, e.target.value === '' ? undefined : coerce(p.type, e.target.value))} />}</Field>)}
+                  </FieldRow> : null}
+                </div>;
+              })}
+            </Card>
+            <FieldRow $columns={3}>{workflow.parameters.filter((p) => p.name !== workflow.model_parameter && p.name !== workflow.dataset_parameter && !datasetControl(p.name)).map((p) => <Field key={p.name} label={`${p.label}${p.unit ? ` (${p.unit})` : ''}`}>
+              {p.type === 'boolean' ? <Checkbox label={p.name} checked={Boolean(values[p.name])} disabled={p.allowed_purposes?.length ? !p.allowed_purposes.includes(workflow.purpose) : false} onChange={(e) => setValues({ ...values, [p.name]: e.target.checked })} /> : p.choices?.length ? <Select value={String(values[p.name] ?? '')} options={p.choices.map((c) => ({ value: String(c), label: String(c) }))} onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} /> : <TextInput type={p.type === 'string' ? 'text' : 'number'} min={p.min ?? undefined} max={p.max ?? undefined} value={String(values[p.name] ?? '')} onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />}
+            </Field>)}</FieldRow>
+            <Hint>{models.length} models × {Object.keys(selections).length} datasets = {models.length * Object.keys(selections).length} evaluations. Only real dataset partitions are available. Shared generation settings apply wherever declared by the dataset workflow.</Hint>
+            {incompatible ? <Card role="alert">Some selected models are unavailable for a dataset workflow. Choose compatible models before reviewing.</Card> : null}
           </>
         )}
-        {answer && !answer.ok ? (
-          <Card role="alert" style={{ marginTop: 12 }}>
-            <strong>{answer.error}</strong>
-            {answer.checks?.errors?.map((e) => <div key={e.field}><Mono>{e.field}</Mono> — {e.message}</div>)}
-            {answer.checks?.checks?.filter((c) => !c.passed).map((c) => <details key={c.id}><summary>{c.id} output</summary><pre style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>{c.output}</pre></details>)}
-          </Card>
-        ) : null}
-        <Toolbar style={{ justifyContent: 'flex-end', marginTop: 12 }}>
-          <Button size="small" onClick={onClose}>Cancel</Button>
-          <Button size="small" variant="primary" Icon={IconPlayerPlay} disabled={busy || !workflow || !options?.valid} onClick={() => void launch()}>{busy ? 'Checking setup…' : 'Check setup and review'}</Button>
-        </Toolbar>
+        {answer && !answer.ok ? <Card role="alert"><strong>{answer.error}{answer.dataset ? ` (${answer.dataset})` : ''}</strong>{answer.checks?.errors?.map((e) => <div key={e.field}><Mono>{e.field}</Mono> — {e.message}</div>)}{answer.checks?.checks?.filter((c) => !c.passed).map((c) => <details key={c.id}><summary>{c.id} output</summary><pre style={{ whiteSpace: 'pre-wrap', fontSize: 11 }}>{c.output}</pre></details>)}{answer.launched?.length ? <div>{answer.launched.length} dataset executions have already launched. Retry launches only the remaining plans.</div> : null}</Card> : null}
+
       </Wide>
     </Modal>
   );
@@ -227,6 +274,9 @@ export const EvaluationsPage = () => {
   const [hideSuperseded, setHideSuperseded] = useState(true);
   const [purpose, setPurpose] = useState('');
   const [creating, setCreating] = useState(params.get('new') === '1');
+  const [selected, setSelected] = useState<string[]>([]);
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -245,8 +295,37 @@ export const EvaluationsPage = () => {
   }, [data, load, refresh]);
 
   const runs = useMemo(() => (data?.evaluations ?? []).filter((e) => (!hideSuperseded || e.state !== 'superseded') && (!purpose || e.purpose === purpose)), [data, hideSuperseded, purpose]);
-  const pending = (data?.executions ?? []).filter((e) => !['completed'].includes(e.state) || !(data?.evaluations ?? []).some((run) => run.execution_id === e.id));
+  const pending = useMemo(() => data?.executions ?? [], [data]);
   const complete = runs.filter((r) => r.state === 'complete').length;
+  const keys = useMemo(() => [...runs.map((r) => `run:${r.id}`), ...pending.map((e) => `execution:${e.id}`)], [runs, pending]);
+  const selectedKeys = selected.filter((key) => keys.includes(key));
+  const allRunsSelected = runs.length > 0 && runs.every((r) => selectedKeys.includes(`run:${r.id}`));
+  const allExecutionsSelected = pending.length > 0 && pending.every((e) => selectedKeys.includes(`execution:${e.id}`));
+  const toggle = (key: string) => setSelected((old) => old.includes(key) ? old.filter((x) => x !== key) : [...old, key]);
+  const toggleGroup = (group: string[]) => setSelected((old) => group.every((x) => old.includes(x)) ? old.filter((x) => !group.includes(x)) : [...new Set([...old, ...group])]);
+  useEffect(() => { setSelected((old) => { const next = old.filter((key) => keys.includes(key)); return next.length === old.length ? old : next; }); }, [keys]);
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (confirming || deleting || !selectedKeys.length) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return;
+      if (event.key === 'Escape') setSelected([]);
+      if (['Delete', 'Backspace'].includes(event.key)) { event.preventDefault(); setConfirming(true); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [confirming, deleting, selectedKeys.length]);
+  const remove = async () => {
+    setDeleting(true);
+    try {
+      const result = await genaiApi.deleteEvaluations(slug, selectedKeys.filter((x) => x.startsWith('run:')).map((x) => x.slice(4)), selectedKeys.filter((x) => x.startsWith('execution:')).map((x) => x.slice(10)));
+      setSelected([]); setConfirming(false);
+      toast(`Removed ${result.deleted} evaluations and ${result.deleted_executions} finished executions from this list.`, 'success');
+      await load(); await refresh();
+    } catch (reason) { toast(errorText(reason), 'error'); }
+    finally { setDeleting(false); }
+  };
+
 
 
 
@@ -276,16 +355,22 @@ export const EvaluationsPage = () => {
       {error ? <Card role="alert">{error}</Card> : null}
       {pending.length ? (
         <Card>
-          <CardHeader title="Workspace executions" note="approved plans the controller worker is running or has finished" />
+          <CardHeader title="Dataset comparisons" note="One checked execution per dataset; open individual model results below" />
           <TableScroller>
             <Table>
-              <THead><tr><th>Execution</th><th>State</th><th>Stages</th><th>Approved</th><th>Updated</th></tr></THead>
+              <THead><tr><SelectHead><SelectionCheckbox aria-label="Select all executions" checked={allExecutionsSelected} indeterminate={!allExecutionsSelected && pending.some((e) => selectedKeys.includes(`execution:${e.id}`))} onChange={() => toggleGroup(pending.map((e) => `execution:${e.id}`))} /></SelectHead><th>Comparison</th><th>State</th><th>Model results</th><th>Stages</th><th>Approved</th><th>Updated</th></tr></THead>
               <tbody>
                 {pending.map((execution) => (
-                  <TRow key={execution.id}>
-                    <td><Link to={`../executions/${encodeURIComponent(execution.id)}`}><Mono>{execution.id}</Mono></Link>{execution.kind !== 'experiment' ? <> <Tag color="gray" text={execution.kind} /></> : null}</td>
+                  <TRow key={execution.id} $selected={selectedKeys.includes(`execution:${execution.id}`)}>
+                    <SelectCell><SelectionCheckbox aria-label={`Select execution ${execution.id}`} checked={selectedKeys.includes(`execution:${execution.id}`)} onChange={() => toggle(`execution:${execution.id}`)} /></SelectCell>
+                    <td><Link to={`../executions/${encodeURIComponent(execution.id)}`}>{execution.name || execution.id}</Link>{execution.kind !== 'experiment' ? <> <Tag color="gray" text={execution.kind} /></> : null}</td>
                     <td><StateTag state={execution.state} /></td>
-                    <td><TagRow>{execution.stages.map((s) => <Tag key={s.id} color={s.state === 'completed' ? 'green' : s.state === 'failed' ? 'red' : s.state === 'running' || s.state === 'submitted' ? 'yellow' : 'gray'} text={`${s.id.split('--').pop()} · ${s.state}${s.job_ids.length ? ` · ${s.job_ids.join(',')}` : ''}`} dot={s.state === 'running' ? 'pulsing' : false} />)}</TagRow></td>
+                    <td><TagRow>{(execution.models ?? []).map((model) => {
+                      const results = (data?.evaluations ?? []).filter((r) => r.execution_id === execution.id && r.model === model && r.purpose !== 'smoke-test');
+                      const result = results.find((r) => r.state === 'complete') ?? results[0];
+                      return result ? <Link key={model} to={encodeURIComponent(result.id)} title={`${model} · ${result.dataset} · ${result.traces ?? result.n_items ?? 0} traces`}><Tag color={result.state === 'complete' ? 'green' : result.state === 'failed' ? 'red' : 'yellow'} text={`${model.split('/').pop()} · ${result.metrics.accuracy !== undefined ? percent(result.metrics.accuracy) : result.state} · ${result.traces ?? '…'} traces`} /></Link> : <Tag key={model} color="gray" text={`${model.split('/').pop()} · pending`} />;
+                    })}</TagRow></td>
+                    <td>{execution.stages.map((s) => <div key={s.id}><Tag color={s.state === 'completed' ? 'green' : s.state === 'failed' ? 'red' : s.state === 'running' || s.state === 'submitted' ? 'yellow' : 'gray'} text={`${s.id.split('--').pop()} · ${s.state}`} /><SchedulerStatus jobIds={s.job_ids} jobs={s.jobs} observation={execution.scheduler_observation} /></div>)}</td>
                     <MonoCell>{formatTime(execution.approved_at)}</MonoCell>
                     <MonoCell>{formatTime(execution.updated_at)}</MonoCell>
                   </TRow>
@@ -307,6 +392,7 @@ export const EvaluationsPage = () => {
             <Table>
               <THead>
                 <tr>
+                  <SelectHead><SelectionCheckbox aria-label="Select all evaluation runs" checked={allRunsSelected} indeterminate={!allRunsSelected && runs.some((r) => selectedKeys.includes(`run:${r.id}`))} onChange={() => toggleGroup(runs.map((r) => `run:${r.id}`))} /></SelectHead>
                   <th>Run</th>
                   <th>Dataset</th>
                   <th>Model</th>
@@ -319,10 +405,11 @@ export const EvaluationsPage = () => {
                 </tr>
               </THead>
               <tbody>
-                {!data ? <TableEmptyRow colSpan={9}>Loading runs…</TableEmptyRow> : runs.map((run) => (
-                  <TRow key={run.id} $clickable onClick={() => navigate(encodeURIComponent(run.id))}>
+                {!data ? <TableEmptyRow colSpan={10}>Loading runs…</TableEmptyRow> : runs.map((run) => (
+                  <TRow key={run.id} $selected={selectedKeys.includes(`run:${run.id}`)} $clickable onClick={() => navigate(encodeURIComponent(run.id))}>
+                    <SelectCell onClick={(e) => e.stopPropagation()}><SelectionCheckbox aria-label={`Select evaluation ${run.name}`} checked={selectedKeys.includes(`run:${run.id}`)} onChange={() => toggle(`run:${run.id}`)} /></SelectCell>
                     <td>
-                      <div style={{ fontWeight: 500, maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={run.name}>{run.name}</div>
+                      <div style={{ fontWeight: 500, maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={run.name}><Link to={encodeURIComponent(run.id)} onClick={(event) => event.stopPropagation()}>{run.name}</Link></div>
                       <TagRow>{run.purpose === 'smoke-test' ? <Tag color="yellow" text="smoke test" /> : null}{run.source === 'workspace' ? <Tag color="gray" text="workspace" /> : null}<Muted>{run.path}</Muted></TagRow>
                     </td>
                     <td>{run.dataset ? <Link to={`../datasets/${encodeURIComponent(run.dataset)}`} onClick={(e) => e.stopPropagation()}>{run.dataset}</Link> : <Muted>—</Muted>}</td>
@@ -345,13 +432,17 @@ export const EvaluationsPage = () => {
           </TableScroller>
         </Card>
       )}
+      {selectedKeys.length ? <ActionBar label="Evaluation selection actions"><ActionBarCount>{selectedKeys.length} selected</ActionBarCount><ActionBarDivider /><Button size="small" Icon={IconTrash} onClick={() => setConfirming(true)}>Remove from list</Button><IconButton Icon={IconX} aria-label="Clear evaluation selection" onClick={() => setSelected([])} /></ActionBar> : null}
+      {confirming ? <Modal open title="Remove selected evaluations?" width={600} onClose={deleting ? () => {} : () => setConfirming(false)}><Wide><p>Remove {selectedKeys.length} selected items from evaluation lists. Imported runs stay excluded if fetched again.</p><p>Active executions must be cancelled and stopped before removal. Source files, results, frozen plans, scheduler receipts and execution history remain available through Research tools.</p><Toolbar style={{ justifyContent: 'flex-end' }}><Button size="small" disabled={deleting} onClick={() => setConfirming(false)}>Cancel</Button><Button size="small" variant="primary" Icon={IconTrash} disabled={deleting} onClick={() => void remove()}>{deleting ? 'Removing…' : 'Remove from list'}</Button></Toolbar></Wide></Modal> : null}
       {creating ? (
         <NewEvaluationDialog
           initialDataset={params.get('dataset') || undefined}
-          onClose={() => { setCreating(false); const next = new URLSearchParams(params); next.delete('new'); next.delete('dataset'); setParams(next, { replace: true }); }}
-          onPrepared={(answer) => {
+          initialSubset={params.get('subset') ?? undefined}
+          initialSplit={params.get('split') ?? undefined}
+          onClose={() => { setCreating(false); const next = new URLSearchParams(params); next.delete('new'); next.delete('dataset'); next.delete('subset'); next.delete('split'); setParams(next, { replace: true }); }}
+          onLaunched={(answer) => {
             setCreating(false);
-            toast(`Setup checked for ${answer.plan_id}. Review the plan before approval.`, 'success');
+            toast(`Launched ${answer.launched?.length ?? 1} dataset comparisons. Monitor their executions below.`, 'success');
             void load();
             void refresh();
           }}
@@ -392,6 +483,7 @@ export const EvaluationDetailPage = () => {
   }, [slug, evaluationId]);
 
   const run: Evaluation | null = data;
+  const elapsed = elapsedSeconds(data?.started, data?.finished);
   const assessments = Object.entries(data?.assessments ?? {});
 
   return (
@@ -411,7 +503,7 @@ export const EvaluationDetailPage = () => {
             <StatCard label="Traces" value={formatNumber(data.traces)} caption={data.n_items ? `${data.n_items} requested` : undefined} />
             {Object.entries(data.metrics).slice(0, 2).map(([k, v]) => <StatCard key={k} label={k} value={k === 'accuracy' || k.endsWith('_rate') ? percent(v) : v.toLocaleString()} accent={k === 'accuracy' ? (v > 0 ? 'green' : 'red') : undefined} />)}
             <StatCard label="Tokens" value={formatNumber(data.token_total)} caption="completion tokens, all traces" />
-            <StatCard label="Compute time" value={formatDuration(data.duration_total_s)} caption={data.started && data.finished ? `${formatTime(data.started)} → ${formatTime(data.finished)}` : formatTime(data.started)} />
+            <StatCard label={elapsed === null ? 'Summed trace time' : 'Elapsed time'} value={formatDuration(elapsed ?? data.duration_total_s)} caption={elapsed === null ? 'Sum across traces; parallel durations overlap.' : `${formatTime(data.started)} → ${formatTime(data.finished)}`} />
             <StatCard label="Sessions" value={formatNumber(data.sessions.length)} caption={Object.entries(data.states).map(([s, n]) => `${n} ${s.toLowerCase()}`).join(' · ')} />
           </Grid>
           {assessments.length ? (

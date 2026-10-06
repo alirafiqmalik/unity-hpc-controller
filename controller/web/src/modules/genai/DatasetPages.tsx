@@ -9,20 +9,20 @@
 
 import styled from '@emotion/styled';
 import { IconDatabase, IconDatabasePlus, IconPlayerPlay, IconPlus, IconRefresh, IconTag } from '@tabler/icons-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { errorText } from '../controller/api';
 import { Button, IconButton } from '../../ui/components/Button';
 import { Card, CardHeader, Grid, Hint, KeyValue } from '../../ui/components/Card';
 import { EmptyState } from '../../ui/components/EmptyState';
-import { Field, SearchField, TextArea, TextInput } from '../../ui/components/Field';
+import { Field, SearchField, Select, TextArea, TextInput } from '../../ui/components/Field';
 import { Modal } from '../../ui/components/SidePanel';
 import { StatCard } from '../../ui/components/StatCard';
 import { MonoCell, Table, TableEmptyRow, TableScroller, THead, TRow } from '../../ui/components/Table';
 import { Tag, TagRow } from '../../ui/components/Tag';
 import { useToast } from '../../ui/components/Toast';
-import { genaiApi, type DatasetDetail, type DatasetRecord, type DatasetSummary } from './api';
+import { genaiApi, type DatasetColumn, type DatasetDetail, type DatasetRecord, type DatasetSummary } from './api';
 import { BackLink, formatNumber, formatTime, GenAIPage, Mono, Muted, percent, SectionHead, SectionTitle, StateTag, Toolbar, useGenAI } from './GenAIWorkspace';
 
 const Cell = styled.td`
@@ -57,10 +57,71 @@ const Pre = styled.pre`
   overflow-wrap: anywhere;
 `;
 
-const preview = (value: Record<string, unknown>, keys?: string[]): string => {
-  const entries = Object.entries(value).filter(([k]) => !keys || keys.includes(k));
-  return entries.map(([k, v]) => `${k}: ${typeof v === 'string' ? v.replace(/\s+/g, ' ') : JSON.stringify(v)}`).join(' · ');
+const ViewerCell = styled.td`
+  min-width: 260px;
+  max-width: 460px;
+  width: 360px;
+  vertical-align: top;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  border-right: 1px solid ${({ theme }) => theme.border.color.light};
+  details > summary { cursor: pointer; }
+  details[open] > summary { margin-bottom: 8px; }
+  pre { margin: 0; max-height: 440px; }
+`;
+
+const Histogram = styled.div`
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 34px;
+  margin-top: 10px;
+  border-bottom: 1px solid ${({ theme }) => theme.border.color.light};
+  span { flex: 1; background: ${({ theme }) => theme.accent.primary}; opacity: 0.75; min-height: 2px; border-radius: 2px 2px 0 0; }
+`;
+
+const ColumnHead = ({ column }: { column: DatasetColumn }) => {
+  const { stats } = column;
+  const peak = Math.max(...stats.histogram, 1);
+  const category = stats.categories[0];
+  return <th style={{ minWidth: 260, verticalAlign: 'top', textTransform: 'none' }}>
+    <Mono>{column.label}</Mono>
+    <div style={{ fontWeight: 400, marginTop: 4 }}><Muted>{column.type} · {column.group === 'expectations' ? 'expected' : column.group}</Muted></div>
+    {stats.histogram.length ? <Histogram aria-label={`${column.type === 'string' ? 'Text length' : 'Value'} distribution: ${stats.min} to ${stats.max}`}>
+      {stats.histogram.map((count, index) => <span key={index} title={`${formatNumber(count)} rows`} style={{ height: `${Math.max(4, count / peak * 100)}%` }} />)}
+    </Histogram> : null}
+    <div style={{ fontWeight: 400, marginTop: 6 }}><Muted>
+      {category ? `${category.label.slice(0, 26)} · ${percent(category.count / Math.max(stats.count, 1))}` : stats.min !== undefined ? `${formatNumber(stats.min)}–${formatNumber(stats.max ?? stats.min)}${column.type === 'string' ? ' characters' : ''}` : `${formatNumber(stats.count)} values`}
+      {stats.missing ? ` · ${formatNumber(stats.missing)} missing` : ''}
+    </Muted></div>
+  </th>;
 };
+
+const ValuePreview = ({ value, type }: { value: unknown; type: string }) => {
+  if (value === null || value === undefined) return <Muted>—</Muted>;
+  if (typeof value === 'boolean') return <Tag color={value ? 'green' : 'gray'} text={String(value)} mono />;
+  if (typeof value === 'number') return <Mono>{formatNumber(value)}</Mono>;
+  if (typeof value === 'string') {
+    if (value.length <= 260) return <div style={{ whiteSpace: 'pre-wrap' }}>{value}</div>;
+    return <details><summary>{value.slice(0, 230)}… <Muted>Show full text</Muted></summary><Pre>{value}</Pre></details>;
+  }
+  if (type === 'messages' && Array.isArray(value)) {
+    return <details><summary>{value.length} messages · <Muted>Expand conversation</Muted></summary>
+      {value.map((message: Record<string, unknown>, index) => <div key={index} style={{ marginBottom: 12 }}><Tag color={message.role === 'assistant' ? 'purple' : 'blue'} text={String(message.role ?? message.from ?? 'message')} /><Pre>{typeof (message.content ?? message.value) === 'string' ? String(message.content ?? message.value) : JSON.stringify(message.content ?? message.value, null, 2)}</Pre></div>)}
+    </details>;
+  }
+  const object = value as Record<string, unknown>;
+  const src = String(object.src ?? object.url ?? object.path ?? '');
+  const safeMedia = /^https:\/\//.test(src);
+  if (type === 'image' && safeMedia) return <a href={src} target="_blank" rel="noreferrer"><img src={src} alt="Dataset image" loading="lazy" style={{ maxWidth: 220, maxHeight: 160 }} /></a>;
+  if (type === 'audio' && safeMedia) return <audio controls preload="none" src={src} style={{ maxWidth: 250 }} />;
+  if (type === 'video' && safeMedia) return <video controls preload="none" src={src} style={{ maxWidth: 250 }} />;
+  return <details><summary>{Array.isArray(value) ? `${value.length} items` : Object.keys(object).join(', ').slice(0, 90)} · <Muted>Expand {type}</Muted></summary><Pre>{JSON.stringify(value, null, 2)}</Pre></details>;
+};
+
+const recordValue = (record: DatasetRecord, column: DatasetColumn): unknown =>
+  record[column.group as 'inputs' | 'expectations' | 'tags'][column.key.slice(column.group.length + 1)];
 
 const sourceColor = (type: unknown): 'blue' | 'green' | 'purple' | 'gray' => (type === 'TRACE' ? 'blue' : type === 'HUMAN' ? 'green' : type === 'DOCUMENT' ? 'purple' : 'gray');
 
@@ -176,7 +237,7 @@ export const DatasetsPage = () => {
                 {!datasets ? <TableEmptyRow colSpan={10}>Loading datasets…</TableEmptyRow> : shown.map((dataset) => (
                   <TRow key={dataset.id} $clickable onClick={() => navigate(encodeURIComponent(dataset.id))}>
                     <NameCell>
-                      <div style={{ fontWeight: 500 }}>{dataset.name}</div>
+                      <div style={{ fontWeight: 500 }}><Link to={encodeURIComponent(dataset.id)} onClick={(event) => event.stopPropagation()}>{dataset.name}</Link></div>
                       <div><Muted title={dataset.description}>{dataset.description || dataset.path}</Muted></div>
                     </NameCell>
                     <MonoCell>{formatNumber(dataset.profile.records)}</MonoCell>
@@ -264,25 +325,38 @@ export const DatasetDetailPage = () => {
   const [editing, setEditing] = useState(false);
   const [description, setDescription] = useState('');
   const [tags, setTags] = useState('');
+  const [subset, setSubset] = useState(params.get('subset') || '');
+  const [split, setSplit] = useState(params.get('split') || '');
+  const [busy, setBusy] = useState(false);
+  const requestId = useRef(0);
   const pageSize = 25;
 
   const load = useCallback(async () => {
+    const current = ++requestId.current;
+    setBusy(true);
     try {
-      const answer = await genaiApi.dataset(slug, datasetId, { offset, limit: pageSize, search: search || undefined });
+      const answer = await genaiApi.dataset(slug, datasetId, { offset, limit: pageSize, search: search || undefined, subset: subset || undefined, split: split || undefined });
+      if (current !== requestId.current) return;
       setData(answer);
       setError('');
     } catch (reason) {
-      setError(errorText(reason));
+      if (current === requestId.current) setError(errorText(reason));
+    } finally {
+      if (current === requestId.current) setBusy(false);
     }
-  }, [slug, datasetId, offset, search]);
+  }, [slug, datasetId, offset, search, subset, split]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     const next = new URLSearchParams(params);
-    if ((next.get('search') || '') !== search) {
-      if (search) next.set('search', search); else next.delete('search');
-      setParams(next, { replace: true });
+    let changed = false;
+    for (const [key, value] of [['search', search], ['subset', subset], ['split', split]]) {
+      if ((next.get(key) || '') !== value) {
+        if (value) next.set(key, value); else next.delete(key);
+        changed = true;
+      }
     }
-  }, [search, params, setParams]);
+    if (changed) setParams(next, { replace: true });
+  }, [search, subset, split, params, setParams]);
 
   const save = async () => {
     try {
@@ -302,6 +376,11 @@ export const DatasetDetailPage = () => {
   const to = Math.min(offset + pageSize, total);
   const inputKeys = data?.profile.inputs_schema ?? [];
   const expectationKeys = data?.profile.expectations_schema ?? [];
+  const viewer = data?.viewer;
+  const columns: DatasetColumn[] = viewer?.columns ?? [
+    ...inputKeys.map((key) => ({ key: `inputs.${key}`, label: key, group: 'inputs', type: 'mixed', stats: { count: total, missing: 0, histogram: [], categories: [] } })),
+    ...expectationKeys.map((key) => ({ key: `expectations.${key}`, label: key, group: 'expectations', type: 'mixed', stats: { count: total, missing: 0, histogram: [], categories: [] } })),
+  ];
 
   return (
     <GenAIPage
@@ -310,7 +389,7 @@ export const DatasetDetailPage = () => {
       actions={
         <>
           <Button size="small" Icon={IconPlus} onClick={() => setAdding(true)}>Add record</Button>
-          <Link to={`../evaluations?new=1&dataset=${encodeURIComponent(data?.name ?? datasetId)}`}><Button size="small" variant="primary" Icon={IconPlayerPlay}>Run evaluation</Button></Link>
+          <Link to={`../evaluations?new=1&dataset=${encodeURIComponent(datasetId)}${subset ? `&subset=${encodeURIComponent(subset)}` : ''}${split ? `&split=${encodeURIComponent(split)}` : ''}`}><Button size="small" variant="primary" Icon={IconPlayerPlay}>Run evaluation</Button></Link>
         </>
       }
     >
@@ -358,45 +437,45 @@ export const DatasetDetailPage = () => {
               <Hint>Files: {data.files.slice(0, 6).map((f) => f.path).join(', ')}{data.files.length > 6 ? ` … +${data.files.length - 6}` : ''}</Hint>
             </Card>
           </Grid>
-          <SectionHead>
-            <SectionTitle>Records</SectionTitle>
-            <Toolbar>
-              <div style={{ width: 320 }}>
-                <SearchField placeholder="Search records" value={search} onChange={(e) => { setSearch(e.target.value); setOffset(0); }} onClear={() => { setSearch(''); setOffset(0); }} />
-              </div>
-              <Muted>{from}–{to} of {formatNumber(total)}</Muted>
-              <Button size="small" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Prev</Button>
-              <Button size="small" disabled={to >= total} onClick={() => setOffset(offset + pageSize)}>Next</Button>
-            </Toolbar>
-          </SectionHead>
-          <Card $padded={false}>
+          <Card $padded={false} aria-busy={busy}>
+            <div style={{ padding: '16px 18px' }}>
+              <Toolbar style={{ justifyContent: 'space-between', marginBottom: 14 }}>
+                <SectionTitle>Dataset Viewer</SectionTitle>
+                <TagRow><Tag color="purple" text={viewer?.kind ?? 'Dataset'} /><Muted>{formatNumber(viewer?.total_rows ?? data.profile.records)} rows available</Muted></TagRow>
+              </Toolbar>
+              <Grid $min="220px">
+                <Field label={`Subset (${viewer?.subsets.length ?? 1})`}>
+                  <Select aria-label="Dataset subset" value={subset} options={[{ value: '', label: 'All subsets' }, ...(viewer?.subsets ?? []).map((item) => ({ value: item.name, label: `${item.name} · ${formatNumber(item.rows)} rows` }))]} onChange={(e) => { setSubset(e.target.value); setSplit(''); setOffset(0); }} />
+                </Field>
+                <Field label={`Split (${viewer?.splits.length ?? 1})`}>
+                  <Select aria-label="Dataset split" value={split} options={[{ value: '', label: 'All available rows' }, ...(viewer?.splits ?? []).map((item) => ({ value: item.name, label: `${item.name === 'local' ? 'Local corpus' : item.name} · ${formatNumber(item.rows)} rows` }))]} onChange={(e) => { setSplit(e.target.value); setOffset(0); }} />
+                </Field>
+              </Grid>
+              <Toolbar style={{ marginTop: 14 }}>
+                <div style={{ flex: '1 1 260px' }}><SearchField aria-label="Search this dataset" placeholder="Search this dataset" value={search} onChange={(e) => { setSearch(e.target.value); setOffset(0); }} onClear={() => { setSearch(''); setOffset(0); }} /></div>
+                <IconButton Icon={IconRefresh} aria-label="Refresh dataset viewer" onClick={() => void load()} />
+              </Toolbar>
+            </div>
             <TableScroller>
               <Table>
-                <THead>
-                  <tr>
-                    <th>Record</th>
-                    <th>Inputs</th>
-                    <th>Expectations</th>
-                    <th>Source</th>
-                    <th>Tags</th>
-                  </tr>
-                </THead>
+                <THead><tr><th style={{ minWidth: 110 }}>Row</th>{columns.map((column) => <ColumnHead key={column.key} column={column} />)}</tr></THead>
                 <tbody>
-                  {!data.records.length ? (
-                    <TableEmptyRow colSpan={5}>{search ? 'No record matches the search.' : 'No records yet. Add one by hand, or export traces from the Traces page.'}</TableEmptyRow>
-                  ) : data.records.map((record) => (
-                    <TRow key={record.record_id} $clickable onClick={() => setOpen(record)}>
-                      <MonoCell>{record.record_id}</MonoCell>
-                      <Cell title={preview(record.inputs)}>{preview(record.inputs)}</Cell>
-                      <Cell title={preview(record.expectations)}>{Object.keys(record.expectations).length ? preview(record.expectations) : <Muted>unlabeled</Muted>}</Cell>
-                      <td><Tag color={sourceColor(record.source.type)} text={String(record.source.type ?? 'UNKNOWN')} /></td>
-                      <Cell><TagRow>{Object.entries(record.tags).slice(0, 3).map(([k, v]) => <Tag key={k} color="blue" text={`${k}=${String(v)}`} />)}</TagRow></Cell>
+                  {!data.records.length ? <TableEmptyRow colSpan={columns.length + 1}>{search ? 'No rows match your search.' : 'No rows in this selection.'}</TableEmptyRow> : data.records.map((record, index) => (
+                    <TRow key={record.record_id}>
+                      <td style={{ verticalAlign: 'top' }}><Button size="small" variant="tertiary" onClick={() => setOpen(record)} aria-label={`Open row ${offset + index + 1}`} title={record.record_id}>{offset + index + 1}</Button></td>
+                      {columns.map((column) => <ViewerCell key={column.key}><ValuePreview value={recordValue(record, column)} type={column.type} /></ViewerCell>)}
                     </TRow>
                   ))}
                 </tbody>
               </Table>
             </TableScroller>
+            <Toolbar style={{ justifyContent: 'center', padding: '14px 18px' }}>
+              <Button size="small" disabled={offset === 0 || busy} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</Button>
+              <Muted aria-live="polite">{busy ? 'Loading…' : `${formatNumber(from)}–${formatNumber(to)} of ${formatNumber(total)} rows`}</Muted>
+              <Button size="small" disabled={to >= total || busy} onClick={() => setOffset(offset + pageSize)}>Next</Button>
+            </Toolbar>
           </Card>
+          {viewer ? <Hint>{viewer.note} Column statistics describe this selection before search. Select a row number for provenance and expectations.</Hint> : null}
           <SectionHead><SectionTitle>Evaluation runs on this dataset</SectionTitle><Muted>{data.evaluations.length} runs</Muted></SectionHead>
           <Card $padded={false}>
             <TableScroller>

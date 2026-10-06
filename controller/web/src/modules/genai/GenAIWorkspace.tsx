@@ -261,6 +261,13 @@ export const formatDuration = (seconds: number | null | undefined): string => {
   return `${(seconds / 3600).toFixed(1)}h`;
 };
 
+export const elapsedSeconds = (started: string | null | undefined, finished: string | null | undefined): number | null => {
+  if (!started || !finished) return null;
+  const start = Date.parse(started);
+  const end = Date.parse(finished);
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start ? (end - start) / 1000 : null;
+};
+
 export const formatTime = (value: string | null | undefined): string => {
   if (!value) return '—';
   const date = new Date(value);

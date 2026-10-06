@@ -501,3 +501,270 @@ def test_evaluation_purpose_comes_from_metadata_not_the_folder_name(native_proje
     manifest.write_text('{"name":"historical","purpose":"experiment"}')
     items = genai.evaluations("native")["evaluations"]
     assert next(item for item in items if item["name"] == "historical")["purpose"] == "experiment"
+
+
+def test_matrix_checks_two_models_on_two_datasets_before_approval(native_project):
+    from controller import workspace_store as store
+    genai.create_dataset('native', {'name': 'second'})
+    options = _call('GET', '/api/v1/projects/native/genai/launch')[1]
+    assert options['dataset_options']['example']['subsets'][0]['splits']
+    selections = [{'dataset': name, 'workflow': 'evaluate-smoke', 'subset': 'default', 'split': 'local', 'parameters': {'n_items': 1}} for name in ('example', 'second')]
+    # Add a real labeled record to the second dataset.
+    genai.merge_records('native', 'second', {'records': [{'record_id': 'second-1', 'inputs': {'question': 'hello'}, 'expectations': {}}]})
+    status, prepared = _call('POST', '/api/v1/projects/native/genai/evaluations/prepare-matrix', {'models': ['model-a', 'model-b'], 'datasets': selections, 'parameters': {}})
+    assert status == 200 and prepared['ok'], prepared
+    assert prepared['evaluations'] == 4
+    assert len(prepared['prepared']) == 2
+    assert store.listing('native', 'execution') == []
+    for summary in prepared['prepared']:
+        plan = store.read('native', 'plan', summary['plan_id'])
+        assert {v['parameters']['model'] for v in plan['variants']} == {'model-a', 'model-b'}
+        assert all(v['parameters']['dataset'] == summary['dataset'] for v in plan['variants'])
+    status, launched = _call('POST', '/api/v1/projects/native/genai/evaluations/launch-matrix', {'plan_ids': [x['plan_id'] for x in prepared['prepared']]})
+    assert status == 202 and launched['ok'], launched
+    assert len(launched['launched']) == 2
+    # Approval retries return the existing execution rather than dispatch twice.
+    status, repeated = _call('POST', '/api/v1/projects/native/genai/evaluations/launch-matrix', {'plan_ids': [x['plan_id'] for x in prepared['prepared']]})
+    assert status == 202 and repeated['ok'], repeated
+    assert len(store.listing('native', 'execution')) == 2
+
+
+def test_matrix_refuses_invalid_dataset_partition_without_creating_plans(native_project):
+    from controller import workspace_store as store
+    status, answer = _call('POST', '/api/v1/projects/native/genai/evaluations/prepare-matrix', {'models': ['m'], 'datasets': [{'dataset': 'example', 'workflow': 'evaluate-smoke', 'subset': 'default', 'split': 'invented-test'}]})
+    assert status == 400 and 'Unknown subset or split' in answer['error']
+    assert store.listing('native', 'plan') == []
+    assert store.listing('native', 'execution') == []
+
+
+def test_evaluation_removal_retains_files_indexes_and_excludes_reimport(mapped_project):
+    import shutil
+    from controller import genai_evaluations
+    runs = genai.evaluations('mapped', index=True)['evaluations']
+    chosen = next(x for x in runs if x['name'] == 'run-a')
+    original = mapped_project / chosen['path']
+    restore = mapped_project / 'copy-of-run-a'
+    shutil.copytree(original, restore)
+    trace = original / 'org_model-7b__bench_t1.jsonl'
+    index = genai._cache_file(str(trace))
+    assert index.exists()
+    status, result = _call('DELETE', '/api/v1/projects/mapped/genai/evaluations', {'ids': [chosen['id']]})
+    assert status == 200 and result['deleted'] == 1, result
+    assert original.exists() and index.exists()
+    assert str(trace) in genai._CACHE
+    assert (mapped_project / 'dataset/bench/records.jsonl').exists()
+    shutil.copytree(restore, original, dirs_exist_ok=True)
+    assert chosen['id'] not in {x['id'] for x in genai.evaluations('mapped')['evaluations']}
+    assert genai.traces('mapped')['total'] == 0
+    status, result = _call('GET', f'/api/v1/projects/mapped/genai/evaluations/{chosen["id"]}')
+    assert status == 404
+
+
+def test_evaluation_removal_refuses_live_execution_and_retains_terminal_history(native_project):
+    from controller import workspace_store as store
+    execution = {'id': 'plan-delete', 'plan_id': 'plan-delete', 'experiment_id': 'exp-delete', 'campaign': 'plan-delete', 'state': 'active', 'stages': [{'id': 'eval', 'state': 'running'}]}
+    with store.transaction('native') as db:
+        store.put(db, 'execution', execution)
+        store.put(db, 'plan', {'id': 'plan-delete'})
+        store.put(db, 'experiment', {'id': 'exp-delete', 'executions': ['plan-delete']})
+        store.put(db, 'artifact', {'id': 'art-delete', 'execution_id': 'plan-delete'})
+        store.put(db, 'revision', {'id': 'exp-delete-r1', 'experiment_id': 'exp-delete'})
+        db.execute('INSERT INTO dispatch_keys VALUES(?,?,?)', ('delete-key', 'plan-delete', 'plan-delete'))
+    folder = native_project / '.unity-workspace/outputs/plan-delete'
+    folder.mkdir(parents=True)
+    (folder / 'evidence.json').write_text('{}')
+    status, answer = _call('DELETE', '/api/v1/projects/native/genai/evaluations', {'execution_ids': ['plan-delete']})
+    assert status == 409 and 'active' in answer['error']
+    assert folder.exists() and store.read('native', 'execution', 'plan-delete')
+    execution.update(state='completed', stages=[{'id': 'eval', 'state': 'completed'}])
+    with store.transaction('native') as db:
+        store.put(db, 'execution', execution)
+    status, answer = _call('DELETE', '/api/v1/projects/native/genai/evaluations', {'execution_ids': ['plan-delete']})
+    assert status == 200 and answer['deleted_executions'] == 1, answer
+    assert folder.exists()
+    for kind in ('execution', 'plan', 'artifact', 'experiment', 'revision'):
+        assert store.listing('native', kind)
+    assert _call('GET', '/api/v1/projects/native/genai/evaluations')[1]['executions'] == []
+    assert (native_project / 'dataset/example/records.jsonl').exists()
+
+
+def test_real_http_delete_reads_json_selection_body(mapped_project):
+    from http.server import ThreadingHTTPServer
+    import threading
+    from urllib.request import Request as URLRequest, urlopen
+    from controller.serve import Handler
+    selected = genai.evaluations('mapped')['evaluations'][0]
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        request = URLRequest(f'http://127.0.0.1:{server.server_port}/api/v1/projects/mapped/genai/evaluations',
+                             data=json.dumps({'ids': [selected['id']]}).encode(),
+                             headers={'Content-Type': 'application/json'}, method='DELETE')
+        with urlopen(request, timeout=5) as response:
+            answer = json.load(response)
+            assert response.status == 200 and answer['deleted'] == 1, answer
+        assert (mapped_project / selected['path']).exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_matrix_sample_limit_reflects_actual_partition_size(native_project):
+    from controller import workspace_store as store
+    status, answer = _call('POST', '/api/v1/projects/native/genai/evaluations/prepare-matrix', {'models': ['m'], 'datasets': [{'dataset': 'example', 'workflow': 'evaluate-smoke', 'subset': 'default', 'split': 'local', 'parameters': {'n_items': 100}}]})
+    assert status == 200 and answer['ok'], answer
+    plan = store.read('native', 'plan', answer['prepared'][0]['plan_id'])
+    assert answer['prepared'][0]['parameters']['n_items'] == 3
+    assert all(variant['parameters']['n_items'] == 3 for variant in plan['variants'])
+
+
+@pytest.fixture
+def partitioned_launch_project(native_project):
+    """A ten-row sample must span a corpus with small named partitions."""
+    declaration = native_project / 'unityHPC/project.json'
+    connection = json.loads(declaration.read_text())
+    extra = {
+        'dataset_subset': {'type': 'string', 'default': ''},
+        'dataset_split': {'type': 'string', 'default': ''},
+        'dataset_sampling': {'type': 'string', 'default': 'first', 'choices': ['first', 'random']},
+        'dataset_offset': {'type': 'integer', 'default': 0, 'min': 0},
+    }
+    connection['parameters'].update(extra)
+    connection['workflows']['evaluate-smoke']['parameters'].extend([*extra, 'seed'])
+    declaration.write_text(json.dumps(connection))
+    records = [{'record_id': f'row-{index}', 'inputs': {'question': f'Question {index}'},
+                'expectations': {}, 'source': {'type': 'DOCUMENT'},
+                'tags': {'subset': 'small' if index < 3 else 'other', 'split': 'test'}}
+               for index in range(20)]
+    (native_project / 'dataset/example/records.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in records))
+    return native_project
+
+
+@pytest.mark.parametrize('subset,expected_rows,expected_items', [('', 20, 10), ('small', 3, 3)])
+def test_matrix_preserves_aggregate_or_named_subset_in_frozen_variants(partitioned_launch_project, subset, expected_rows, expected_items):
+    from controller import workspace_store as store
+    status, answer = _call('POST', '/api/v1/projects/native/genai/evaluations/prepare-matrix', {
+        'models': ['model-a', 'model-b'],
+        'datasets': [{'dataset': 'example', 'workflow': 'evaluate-smoke', 'subset': subset, 'split': 'test',
+                      'parameters': {'n_items': 10, 'dataset_sampling': 'random', 'dataset_offset': 0}}],
+        'parameters': {'seed': 42},
+    })
+    assert status == 200 and answer['ok'], answer
+    summary = answer['prepared'][0]
+    assert summary['subset'] == subset and summary['split'] == 'test'
+    assert summary['rows'] == expected_rows
+    plan = store.read('native', 'plan', summary['plan_id'])
+    assert len(plan['variants']) == 2
+    for variant in plan['variants']:
+        parameters = variant['parameters']
+        assert parameters['dataset_subset'] == subset
+        assert parameters['dataset_split'] == 'test'
+        assert parameters['n_items'] == expected_items
+        assert parameters['dataset_sampling'] == 'random' and parameters['seed'] == 42
+    assert store.listing('native', 'execution') == []
+
+
+def test_matrix_aggregate_subset_still_rejects_invented_split(partitioned_launch_project):
+    from controller import workspace_store as store
+    status, answer = _call('POST', '/api/v1/projects/native/genai/evaluations/prepare-matrix', {
+        'models': ['model-a'],
+        'datasets': [{'dataset': 'example', 'workflow': 'evaluate-smoke', 'subset': '', 'split': 'invented'}],
+    })
+    assert status == 400 and 'Unknown subset or split' in answer['error']
+    assert store.listing('native', 'plan') == []
+    assert store.listing('native', 'execution') == []
+
+
+def test_execution_listing_exposes_saved_scheduler_observations_without_refresh(native_project, monkeypatch):
+    from controller import workspace_store as store
+    from lib import campaign
+    observation = {'checked_at': '2026-10-05T21:15:00Z', 'error': None}
+    execution = {'id': 'plan-queued', 'plan_id': 'plan-queued', 'state': 'active',
+                 'scheduler_observation': observation,
+                 'stages': [{'id': 'evaluate', 'state': 'accepted', 'location': 'cluster',
+                             'job_ids': ['123'], 'jobs': [{'job_id': '123', 'status': 'PENDING'},
+                                                        {'job_id': '999', 'status': 'RUNNING'}]}]}
+    with store.transaction('native') as db:
+        store.put(db, 'execution', execution)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Listing must use saved observations without a scheduler refresh')
+    monkeypatch.setattr(campaign, 'jobs', forbidden)
+    status, answer = _call('GET', '/api/v1/projects/native/genai/evaluations')
+    assert status == 200, answer
+    row = answer['executions'][0]
+    assert row['scheduler_observation'] == observation
+    assert row['stages'][0]['state'] == 'accepted'
+    assert row['stages'][0]['jobs'] == [{'job_id': '123', 'status': 'PENDING'}]
+    assert store.read('native', 'execution', execution['id']) == execution
+
+
+@pytest.fixture
+def canonical_dataset_result(native_project):
+    """Reuse the isolated native run as a workspace result with source-path metadata."""
+    import shutil
+    root = native_project
+    dataset_manifest = root / 'dataset/example/dataset.json'
+    meta = json.loads(dataset_manifest.read_text())
+    meta['name'] = 'Example display name'
+    dataset_manifest.write_text(json.dumps(meta))
+    legacy = root / 'evaluations/smoke-1/manifest.json'
+    original = json.loads(legacy.read_text())
+    original['dataset'] = meta['name']
+    legacy.write_text(json.dumps(original))
+    folder = root / '.unity-workspace/outputs/plan-canonical/model/evaluate'
+    folder.mkdir(parents=True)
+    shutil.copy(root / 'evaluations/smoke-1/traces.jsonl', folder / 'traces.jsonl')
+    manifest = {**original, 'dataset': '/remote/dataset/example/meta-test.jsonl',
+                'execution_id': 'plan-canonical', 'purpose': 'experiment',
+                'dataset_selection': {'dataset': 'example', 'split': 'meta-test',
+                                      'source_files': {'dataset/example/meta-test.jsonl': 'source-digest'}}}
+    (folder / 'manifest.json').write_text(json.dumps(manifest))
+    return root, folder, manifest
+
+
+def test_saved_dataset_identity_links_results_and_traces_to_viewer(canonical_dataset_result):
+    root, folder, manifest = canonical_dataset_result
+    before = (folder / 'manifest.json').read_bytes()
+    status, listing = _call('GET', '/api/v1/projects/native/genai/evaluations?index=true')
+    assert status == 200
+    workspace_run = next(e for e in listing['evaluations'] if e['source'] == 'workspace')
+    legacy_run = next(e for e in listing['evaluations'] if e['source'] == 'project')
+    assert workspace_run['dataset'] == 'example'
+    assert legacy_run['dataset'] == 'Example display name'
+    status, detail = _call('GET', '/api/v1/projects/native/genai/evaluations/' + workspace_run['id'])
+    assert status == 200 and detail['dataset'] == 'example'
+    assert detail['manifest']['dataset'] == manifest['dataset']
+    assert detail['provenance']['dataset_selection'] == manifest['dataset_selection']
+    status, datasets = _call('GET', '/api/v1/projects/native/genai/datasets')
+    assert status == 200 and datasets['datasets'][0]['id'] == 'example'
+    assert datasets['datasets'][0]['evaluations'] == 2
+    status, viewer = _call('GET', '/api/v1/projects/native/genai/datasets/' + detail['dataset'])
+    assert status == 200 and {e['id'] for e in viewer['evaluations']} == {workspace_run['id'], legacy_run['id']}
+    traces = genai.traces('native', dataset_name='example')
+    assert traces['total'] == 3 and all(row['dataset'] == 'example' for row in traces['traces'])
+    row = traces['traces'][0]
+    assert genai.trace('native', row['evaluation_id'], row['trace_id'])['dataset'] == 'example'
+    assert (folder / 'manifest.json').read_bytes() == before
+
+
+def test_dataset_identity_updates_with_existing_unchanged_trace_index(canonical_dataset_result, monkeypatch):
+    root, folder, _ = canonical_dataset_result
+    files = [folder / 'manifest.json', folder / 'traces.jsonl']
+    before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in files]
+    original_get = genai._get
+    # Simulate the older reader while populating the real trace index.
+    with monkeypatch.context() as old_reader:
+        old_reader.setattr(genai, '_get', lambda value, path: None if path == 'dataset_selection.dataset' else original_get(value, path))
+        indexed = genai.traces('native', dataset_name='meta-test.jsonl')
+        assert indexed['total'] == 3
+    def no_reindex(*args, **kwargs):
+        raise AssertionError('Unchanged trace files must reuse their existing index')
+    monkeypatch.setattr(genai, '_light_row', no_reindex)
+    normalized = genai.traces('native', dataset_name='example')
+    assert normalized['total'] == 3
+    assert all(row['dataset'] == 'example' for row in normalized['traces'])
+    assert genai.traces('native', dataset_name='meta-test.jsonl')['total'] == 0
+    assert next(e for e in genai.evaluations('native', index=True)['evaluations'] if e['source'] == 'workspace')['dataset'] == 'example'
+    assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in files] == before

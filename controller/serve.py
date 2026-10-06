@@ -51,7 +51,7 @@ class Handler(BaseHTTPRequestHandler):
             method=method,
             path=self.path.split("?", 1)[0],
             query=parse_qs(self.path.split("?", 1)[1] if "?" in self.path else ""),
-            body=self._read_body() if method in ("POST", "PATCH", "PUT") else b"",
+            body=self._read_body() if method in ("POST", "PATCH", "PUT", "DELETE") else b"",
         )
         resp = handle(req)
         self.send_response(resp.status)

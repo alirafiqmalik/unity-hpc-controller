@@ -112,19 +112,81 @@ def test_genai_setup_preserves_dataset_binding_and_requires_visible_approval(gen
         browser.goto(genai_server + '/projects/native/evaluations?new=1', settle=.5)
         wait_for(browser, "!!document.querySelector('[aria-label=\"Evaluation workflow\"]')")
         browser.eval("const select = document.querySelector('[aria-label=\"Evaluation workflow\"]'); select.value='evaluate-smoke'; select.dispatchEvent(new Event('change',{bubbles:true}));")
-        wait_for(browser, "document.querySelector('[aria-label=\"Evaluation dataset\"]').value === 'example'")
-        click(browser, 'Check setup and review')
-        wait_for(browser, "location.pathname === '/projects/native/runner' && [...document.querySelectorAll('button')].some(b => b.textContent === 'Approve run' && !b.disabled)")
+        wait_for(browser, "[...document.querySelectorAll('dialog label')].some(label => label.textContent === 'example' && label.querySelector('input').checked)")
+        click(browser, 'Review evaluation matrix')
+        wait_for(browser, "document.querySelector('dialog').textContent.includes('Exact frozen plan and checks')")
         assert store.listing('native', 'execution') == []
-        assert 'Source digest' in browser.eval('document.body.innerText')
         plan = store.listing('native', 'plan')[0]
         assert plan['config']['parameters']['dataset'] == 'example'
-        click(browser, 'Back to setup')
-        wait_for(browser, "document.querySelector('[aria-label=\"Workflow\"]').value === 'evaluate-smoke'")
-        assert browser.eval("document.querySelector('[aria-label=\"Dataset\"]').value") == 'example'
-        click(browser, 'Check setup and review')
-        wait_for(browser, "[...document.querySelectorAll('button')].some(b => b.textContent === 'Approve run' && !b.disabled)")
+        click(browser, 'Edit setup')
+        wait_for(browser, "document.querySelector('[aria-label=\"Evaluation workflow\"]').value === 'evaluate-smoke'")
+        click(browser, 'Review evaluation matrix')
+        wait_for(browser, "document.querySelector('dialog').textContent.includes('Exact frozen plan and checks')")
         assert store.listing('native', 'execution') == []
-        click(browser, 'Approve run')
-        wait_for(browser, "location.pathname.includes('/executions/')")
+        click(browser, 'Launch evaluations')
+        wait_for(browser, "!document.querySelector('dialog')")
         assert len(store.listing('native', 'execution')) == 1
+
+
+def test_legacy_log_tail_fallback_is_explicit_scoped_and_not_paginated(runner_server, monkeypatch):
+    from controller import dispatch, workspace, workspace_runs as runs
+    url, root = runner_server
+    stage = {'id': 'legacy', 'operation': 'evaluate', 'location': 'cluster', 'state': 'accepted',
+             'purpose': 'research', 'job_ids': ['123'],
+             'attempts': [{'id': 'attempt-legacy', 'exp': 'legacy', 'state': 'accepted', 'job_ids': ['123']}]}
+    execution = {'id': 'plan-legacy', 'plan_id': 'plan-legacy', 'campaign': 'plan-legacy',
+                 'state': 'active', 'stages': [stage]}
+    with store.transaction('demo') as db:
+        store.put(db, 'plan', {'id': execution['id'], 'stages': [stage]})
+        store.put(db, 'execution', execution)
+    monkeypatch.setattr(runs.campaign, 'jobs', lambda *args: [{'job_id': '123', 'status': 'RUNNING'}])
+    error = ['Reviewed dispatcher lacks exact bounded log transport.']
+    def unsupported(*args, **kwargs):
+        raise store.Conflict(error[0])
+    monkeypatch.setattr(runs, '_remote_transport', unsupported)
+    calls = []
+    tail_output = ['stdout progress\nstderr warning']
+    def transport(rec, argv, **kwargs):
+        calls.append(argv)
+        return {'ok': True, 'output': tail_output[0]}
+    monkeypatch.setattr(dispatch, '_run', transport)
+    with Browser(width=1300, height=850) as browser:
+        browser.goto(url + '/projects/demo/executions/plan-legacy', settle=.3)
+        wait_for(browser, "[...document.querySelectorAll('button')].some(b=>b.textContent.startsWith('Logs:'))")
+        browser.eval("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('Logs:')).click()")
+        wait_for(browser, "document.body.innerText.includes('stdout progress') && document.body.innerText.includes('stderr warning')")
+        assert browser.eval("document.body.innerText.includes('Latest tail · stdout + stderr · last 100 lines per stream')")
+        assert browser.eval("[...document.querySelectorAll('button')].find(b=>b.textContent==='Next bounded page').disabled")
+        assert calls == [['logs', '--campaign', 'plan-legacy', '--job', '123', '-n', '100']]
+        tail_output[0] = 'x' * 100000
+        click(browser, 'Refresh logs')
+        wait_for(browser, "document.body.innerText.includes('display truncated to the latest 64 KiB')")
+        assert browser.eval("document.querySelector('pre').textContent.length") == 65536
+        before_failure = len(calls)
+        error[0] = 'Remote network timeout'
+        click(browser, 'Refresh logs')
+        wait_for(browser, "document.body.innerText.includes('Remote network timeout')")
+        assert not browser.eval("document.body.innerText.includes('stdout progress')")
+        assert len(calls) == before_failure
+        # A multi-attempt stage cannot safely use a stage-wide legacy tail.
+        stage['attempts'].append({'id': 'attempt-other', 'exp': 'other', 'state': 'accepted', 'job_ids': ['123']})
+        with store.transaction('demo') as db:
+            store.put(db, 'execution', execution)
+        error[0] = 'Reviewed dispatcher lacks exact bounded log transport.'
+        browser.goto(url + '/projects/demo/executions/plan-legacy', settle=.3)
+        wait_for(browser, "[...document.querySelectorAll('button')].some(b=>b.textContent.startsWith('Logs: attempt-legacy'))")
+        browser.eval("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('Logs: attempt-legacy')).click()")
+        wait_for(browser, "document.body.innerText.includes('Reviewed dispatcher lacks exact bounded log transport')")
+        assert len(calls) == before_failure
+
+        # Reject an unexpected identity in the legacy response itself.
+        stage['attempts'] = stage['attempts'][:1]
+        with store.transaction('demo') as db:
+            store.put(db, 'execution', execution)
+        monkeypatch.setattr(workspace, 'execution_logs', lambda *args: {
+            'stages': [{'id': 'other-stage', 'job_ids': ['999'], 'output': 'sibling must not leak'}]})
+        browser.goto(url + '/projects/demo/executions/plan-legacy', settle=.3)
+        wait_for(browser, "[...document.querySelectorAll('button')].some(b=>b.textContent.startsWith('Logs: attempt-legacy'))")
+        browser.eval("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('Logs: attempt-legacy')).click()")
+        wait_for(browser, "document.body.innerText.includes('Legacy log identity changed')")
+        assert not browser.eval("document.body.innerText.includes('sibling must not leak')")

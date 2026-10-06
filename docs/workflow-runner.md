@@ -73,6 +73,17 @@ GenAI launch remains a compatibility adapter for its current form and dataset bi
 It delegates preparation to the runner module. The form then opens the frozen plan for explicit approval.
 It preserves the workflow allowlist and dataset bindings.
 Evaluation setup returns a prepared plan. Runner approval returns an execution.
+The matrix form selects models and datasets, with available corpus subsets and splits.
+Preparation freezes one plan per dataset, with separate model variants.
+Each plan and its checks remain visible in the matrix review before explicit batch approval.
+Unrestricted string model parameters accept manually entered model names.
+Batch retries return existing approvals and approve only remaining plans.
+The single-evaluation API still prepares a plan without approving it.
+
+Evaluation removal hides selected rows from GenAI lists.
+It retains source, results, artifacts, frozen plans, approval bindings, execution history, and scheduler receipts.
+Research tools can still inspect the evidence.
+
 The generic runner derives allowed workflows from the project declaration.
 The worker continues independently of browser sessions.
 
