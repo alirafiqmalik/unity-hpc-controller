@@ -7,16 +7,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 
-# Local agent guidance. Machine-local, not shipped with the plugin.
-/AGENTS.md
-
-# Generated project config. The scaffold writes unityHPC/.env with a real
-# SLURM_ACCOUNT and remote paths; a scratch project scaffolded inside this repo
-# would otherwise be committable. The tracked templates are named env.example,
-# which this pattern does not match.
+# Local environment files are never shipped.
 .env
 
-# Dashboard build. controller/web is the source; the bundle and the installed
-# packages are generated, and `hpc-controller` builds them on first start.
-controller/web/node_modules/
-controller/web/dist/
+# Maintainer research notes and raw probe dumps stay local.
+.research_notes/

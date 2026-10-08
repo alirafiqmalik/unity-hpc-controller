@@ -4,9 +4,8 @@ author's real identifiers, so the plugin is safe to install for anyone.
 Ported from the phd-agentic-tools marketplace suite when plugins moved into
 standalone repositories.
 
-Scoped to the generic code surface (lib/, scripts/, mcp/, bin/, tests/). The
-plugin's own docs (README, skills, docs/) legitimately describe the author's
-environment and are a separate "make public" decision — not scanned here.
+Scoped to the shipped code and the shipped documentation: lib/, scripts/,
+mcp/, controller/, cluster-intel/, skills/, docs/, tests/ and the root guides.
 """
 
 import subprocess
@@ -14,14 +13,15 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
-CODE_DIRS = ("lib", "scripts", "mcp", "bin", "tests", "controller")
-AGENT_DIR = "agents"
+CODE_DIRS = ("lib", "scripts", "mcp", "tests", "controller", "cluster-intel")
+DOC_DIRS = ("skills", "docs")
+ROOT_DOCS = ("README.md", "ARCHITECTURE.md", "CONTEXT.md")
 BANNED = ("pi_taqi_umass_edu", "ahmalik", "autoresearch")
 
 # Guard tests legitimately name the banned tokens in their own assertions, so
 # they are excluded — a guard cannot scan another guard's token list without
 # false-positiving on it.
-EXCLUDED = {Path(__file__).name, "test_scaffold.py"}
+EXCLUDED = {Path(__file__).name}
 SKIP_PARTS = {"__pycache__", ".git"}
 
 
@@ -75,28 +75,40 @@ def test_no_unresolvable_plugin_dir_placeholder():
     assert not offenders, f"<plugin_dir> still present in: {offenders}"
 
 
-def test_agents_have_no_author_identifiers():
+def _doc_files():
+    for top in DOC_DIRS:
+        for path in (PLUGIN_ROOT / top).rglob("*"):
+            if path.is_file() and not SKIP_PARTS & set(path.parts) and path.suffix in {".md", ".json"}:
+                yield path
+    for name in ROOT_DOCS:
+        yield PLUGIN_ROOT / name
+
+
+def test_no_author_identifiers_in_shipped_docs():
     offenders = []
-    for path in (PLUGIN_ROOT / AGENT_DIR).rglob("*"):
-        if not path.is_file() or SKIP_PARTS & set(path.parts):
-            continue
+    for path in _doc_files():
         text = path.read_text(errors="replace")
-        for token in BANNED:
+        for token in BANNED + ("/home/ahm",):
             if token in text:
                 offenders.append(f"{path.relative_to(PLUGIN_ROOT)}: {token}")
-    assert not offenders, f"author identifiers leaked into agents: {offenders}"
+    assert not offenders, f"author identifiers leaked into shipped docs: {offenders}"
+
+
+def test_no_retired_surfaces_ship():
+    """The headless contract has no agents, templates, dashboard or runbooks."""
+    for retired in ("agents", "templates", "controller/web", "controller/ops", "cluster-intel/dashboard", ".cursor"):
+        assert not (PLUGIN_ROOT / retired).exists(), f"{retired} is retired"
 
 
 def test_noninteractive_ssh_paths_are_bounded():
     offenders = []
     candidates = list((PLUGIN_ROOT / "scripts").glob("*"))
-    candidates.append(PLUGIN_ROOT / "templates" / "scaffold" / "common" / "sync.sh")
     for path in candidates:
         if not path.is_file():
             continue
-        # hpc-ssh is interactive; auth setup only runs local `ssh -G` under a
-        # subprocess timeout, and never opens a cluster connection.
-        if path.name in {"hpc-ssh", "release-check", "hpc-ssh-auth-setup"}:
+        # Auth setup only runs local `ssh -G` under a subprocess timeout, and
+        # never opens a cluster connection.
+        if path.name in {"release-check", "hpc-ssh-auth-setup"}:
             continue
         for lineno, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
             stripped = line.strip()
@@ -104,8 +116,6 @@ def test_noninteractive_ssh_paths_are_bounded():
                 continue
             if "RSYNC_RSH" in stripped:
                 continue  # rsync transport setting, not an SSH invocation
-            if path.name == "hpc-tmux" and "attach" in stripped:
-                continue
             if "timeout" not in stripped and "SSH=(" not in stripped:
                 offenders.append(f"{path.relative_to(PLUGIN_ROOT)}:{lineno}")
     assert not offenders, f"unbounded noninteractive SSH calls: {offenders}"

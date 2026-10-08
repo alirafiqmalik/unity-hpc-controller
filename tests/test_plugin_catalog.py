@@ -14,17 +14,18 @@ def test_each_skill_has_skill_md():
         assert (SKILLS / name / "SKILL.md").is_file()
 
 
-def test_connect_mentions_projects_api():
+def test_connect_prepares_campaigns():
     text = (SKILLS / "connect" / "SKILL.md").read_text()
-    assert "/api/v1/projects" in text
+    assert "mcp__unity-hpc__unity_campaign_plan" in text
 
 
-def test_dispatch_mentions_project_runs_api():
+def test_dispatch_uses_campaign_lifecycle():
     text = (SKILLS / "dispatch" / "SKILL.md").read_text()
-    assert "/api/v1/projects/" in text
-    assert "/runs" in text
+    assert "mcp__unity-hpc__unity_campaign_submit" in text
+    assert "mcp__unity-hpc__unity_campaign_results" in text
 
 
-def test_doctor_mentions_health_api():
+def test_doctor_checks_headless_backend():
     text = (SKILLS / "doctor" / "SKILL.md").read_text()
-    assert "/api/v1/health" in text
+    assert "mcp__unity-hpc__unity_doctor" in text
+    assert "mcp__unity-hpc__unity_backend" in text

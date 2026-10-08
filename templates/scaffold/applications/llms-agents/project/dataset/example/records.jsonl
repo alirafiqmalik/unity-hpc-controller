@@ -1,3 +1,0 @@
-{"record_id": "example-0001", "inputs": {"question": "What is the capital of France?"}, "expectations": {"expected_response": "Paris", "guidelines": "Name the city. One sentence is enough."}, "source": {"type": "HUMAN"}, "tags": {"topic": "geography"}}
-{"record_id": "example-0002", "inputs": {"question": "Who wrote Romeo and Juliet?"}, "expectations": {"expected_response": "William Shakespeare", "expected_facts": ["Shakespeare"]}, "source": {"type": "HUMAN"}, "tags": {"topic": "literature"}}
-{"record_id": "example-0003", "inputs": {"question": "Who was the first person to walk on the Moon?"}, "expectations": {"expected_response": "Neil Armstrong"}, "source": {"type": "HUMAN"}, "tags": {"topic": "history"}}
