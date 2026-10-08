@@ -1,7 +1,7 @@
 {
   "name": "unity-hpc",
-  "version": "0.14.0",
-  "description": "Thin Unity HPC plugin: connect a project to the always-on controller and dispatch runs. Cluster monitoring, queue, and fetch live in the controller UI.",
+  "version": "0.16.0",
+  "description": "Headless Unity HPC campaigns: portable experiment bundles, fixed hardware classes, durable scheduling and incremental results.",
   "author": {
     "name": "Ali Hamza Malik",
     "email": "ahmalik@umass.edu"

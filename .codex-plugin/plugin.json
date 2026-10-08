@@ -1,14 +1,14 @@
 {
   "name": "unity-hpc",
-  "version": "0.14.0",
-  "description": "Thin Unity HPC plugin: connect a project to the always-on controller and dispatch runs. Cluster monitoring, queue, and fetch live in the controller UI.",
+  "version": "0.16.0",
+  "description": "Headless Unity HPC campaigns: portable experiment bundles, fixed hardware classes, durable scheduling and incremental results.",
   "author": {
     "name": "Ali Hamza Malik",
     "email": "ahmalik@umass.edu",
     "url": "https://github.com/alirafiqmalik"
   },
   "homepage": "https://github.com/alirafiqmalik/phd-plugin-unity-hpc",
-  "repository": "https://github.com/alirafiqmalik/phd-agentic-tool",
+  "repository": "https://github.com/alirafiqmalik/phd-plugin-unity-hpc",
   "license": "MIT",
   "keywords": [
     "hpc",
@@ -22,8 +22,8 @@
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "Unity HPC",
-    "shortDescription": "Attach projects to the Unity HPC controller and dispatch runs",
-    "longDescription": "Thin plugin for the Unity HPC controller: connect a project, dispatch runs, check wiring. Monitoring and cluster operations live in the always-on controller dashboard.",
+    "shortDescription": "Run reproducible experiment campaigns through the Unity HPC controller",
+    "longDescription": "Submit portable task bundles without project registration. The headless controller owns hardware placement, durable attempts, bounded retries and results.",
     "developerName": "Ali Hamza Malik",
     "category": "Development"
   }

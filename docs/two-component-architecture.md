@@ -1,87 +1,28 @@
-# Two-component architecture
+# Plugin and controller responsibilities
 
-How the plugin, the controller, and Unity fit together. The ledger
-contract in `ARCHITECTURE.md` still holds: `unityHPC/run.sh` records
-every job, and every management tool reads that record.
+Version 0.16.0 uses the headless campaign contract in [ADR 0009](adr/0009-headless-campaign-controller.md).
+The plugin provides HTTP clients and skills.
+The controller owns cluster execution and continues after the agent exits.
 
-## The three parties
-
-```
-  Cursor / Claude                 this machine                    Unity
- ┌──────────────────┐          ┌──────────────────────────┐     ┌──────────┐
- │ Plugin (3 skills)│   HTTP   │ Controller               │ SSH │ SLURM    │
- │  connect         │─────────▶│  registry  snapshot      │────▶│ sbatch   │
- │  dispatch        │          │  dispatch → run.sh       │     │ sacct    │
- │  doctor          │          │  UI  :8300               │     │ squeue   │
- └──────────────────┘          └────────────┬─────────────┘     └────┬─────┘
-                                            │ Tailscale              │
-                                            ▼                        │
-                                      any tailnet browser            │
-                                            ▲                        │
-                                            │ telemetry              │
-                                            └────────────────────────┘
-```
-
-The LLM session holds three short skills. Heavy work — recon, queue
-reads, fetch, watch, rollup, the dashboard — lives in the controller,
-which stays up independently of any chat.
-
-## Seams
-
-| Seam | Interface | Callers |
+| Component | Owns | Interface |
 |---|---|---|
-| Plugin → controller | HTTP `/api/v1/*` | `connect`, `dispatch`, `doctor`, the UI |
-| Controller → project | `unityHPC/run.sh` subcommands | dispatch, cancel, fetch, sync, status |
-| Dispatcher → Unity | SSH / rsync / sbatch | `run.sh` only |
-| Unity → shared tier | collector → `sync-telemetry.sh` → `summaries.db` | snapshot, analytics |
+| Evaluation project | Experiment YAML, datasets, models, scientific checks, result schemas | Portable task commands and result files |
+| Project runner | Hardware environment and campaign translation | Immutable bundle and campaign JSON |
+| Plugin | Preparation, submission, health, and incremental result tools | Controller HTTP API |
+| Controller | Source snapshots, placement, attempts, hardware locks, retries, and retrieval | SSH, rsync, and Slurm |
+| Slurm | Allocation, priority, backfill, and preemption | Job identities and observations |
 
-The plugin never crosses the Unity seam. The UI never calls `run.sh`
-directly; it POSTs to the same HTTP interface the plugin uses.
+The project requires no registered directory, generated dispatcher, or local Unity ledger.
+Only its runner directory contains cluster details.
+The controller treats the scientific command and its result schema as opaque.
+Its completion check verifies declared files and hardware evidence.
+The project checks response counts and scientific outcomes.
 
-## What each side owns
+Campaign state resides under `$UNITY_HPC_DATA/controller/`.
+The SQLite journal, source bundles, and retrieved files form a single execution record.
+Telemetry remains a separate shared archive under `$UNITY_HPC_DATA`.
+The collector records measured resource and accounting evidence.
+The planner uses that evidence without replacing Slurm scheduling.
 
-**Controller** (always-on, this machine)
-
-- Project registry at `$UNITY_HPC_DATA/controller/projects.json`
-- Cluster snapshot from `cluster-config.json`, `snapshot.csv`, `summaries.db`
-- Dispatch, cancel, fetch, sync — by invoking the attached project's `run.sh`
-- The dashboard at `:8300`, published over Tailscale by default
-- Operator runbooks under `controller/ops/` (the old skill bodies)
-
-**Plugin** (loaded into an LLM session)
-
-- `connect` — scaffold `unityHPC/` if needed, register the directory, write `unityHPC/controller.json`
-- `dispatch` — POST a run request
-- `doctor` — controller health and this project's wiring
-
-MCP tools remain as a programmatic read/submit path for sessions that
-already have them. New agent work goes through the three skills.
-
-**Unity**
-
-- Unchanged. The collector still writes telemetry on the cluster (I1).
-  The dispatcher still records the landed partition, not the first
-  request.
-
-## Data
-
-```
-$UNITY_HPC_DATA
-├── cluster-config.json
-├── summaries.db
-├── snapshot.csv
-├── telemetry/
-└── controller/
-    ├── projects.json      attached projects
-    ├── projects.json.lock
-    └── events.jsonl       dispatch / attach / cancel (append-only)
-```
-
-An attached project still keeps its ledger at
-`<project>/.unity_state/<campaign>.db`. The controller reads those files
-in place. It does not copy the ledger.
-
-## Why this shape
-
-See `docs/adr/0001-two-component-split.md`. The short form: one HTTP
-interface, one ledger writer, no cluster logic in the LLM context.
+Read [backend operations](backend-campaigns.md) for the API, settings, and recovery procedure.
+Read [architecture](../ARCHITECTURE.md) for the execution flow and data stores.

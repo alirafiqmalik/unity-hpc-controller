@@ -1,5 +1,7 @@
 # Two-component split: controller owns the cluster, the plugin stays thin
 
+> **Superseded by [ADR 0009](0009-headless-campaign-controller.md).** The project ledger, `unityHPC/run.sh`, and project registration were removed. The controller-owns-the-cluster split still holds.
+
 The plugin used to load nine skills, fourteen MCP tools, and three agent
 personas into every LLM session. That put SSH, recon, fetch, watch, and
 cluster telemetry into the model's context even when the user only wanted

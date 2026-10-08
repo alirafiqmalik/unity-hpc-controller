@@ -1,5 +1,7 @@
 # Project workspace and approved executions
 
+> **Superseded by [ADR 0009](0009-headless-campaign-controller.md).** The workspace modules, project registry, and scaffold templates were removed on 2026-10-08. Campaigns replace reviewed plans and executions.
+
 Accepted implementation decision, 2026-10-03. Implements the accepted Experiments specification Q1–Q23.
 This decision supersedes design decisions 3.4, 3.9, and 3.10 for the workspace API.
 ADR 0001 still governs dispatch and ledger ownership.

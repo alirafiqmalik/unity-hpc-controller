@@ -1,137 +1,99 @@
 # Unity HPC
 
-A blind harness between a project and Unity SLURM. It submits, records, observes
-and fetches. It does not know what a project's metrics mean.
+A headless controller between a project and Unity Slurm. It snapshots a source
+bundle, places tasks on exact hardware, submits, reconciles, retries within a
+budget, and retrieves declared outputs. It does not know what a project's
+metrics mean.
 
 ## Language
 
-**Primitive**:
-A named legal pairing of a resource and an orchestration. The workspace primitives are `cpu`, `gpu`, `multi-cpu`, and `multi-gpu`.
-Legacy CLI configurations also accept `ml`. See ADR 0008.
-_Avoid_: type, job type, backend, scaffold type
+**Campaign**:
+A declared collection of tasks whose source bundle, configuration, attempts, and results share one durable identity.
+The controller preserves this identity across restart and collection.
+Resending an identical declaration returns the existing campaign.
+_Avoid_: run, sweep, group, job
 
-**Resource**:
-The hardware class a job asks for: `cpu` or `gpu`.
+**Task**:
+One declared scientific command, its resource request, dependencies, and required output files.
+Retries preserve the task's identity and output directory.
+_Avoid_: experiment, unit, step
+
+**Attempt**:
+One submission intention and its scheduler outcome for a task.
+An uncertain attempt cannot establish that no job exists.
+_Avoid_: retry, try, submission
+
+**Experiment bundle**:
+An immutable snapshot of portable scientific code, configuration, and selected input data.
+The controller records its digest before execution.
+_Avoid_: repo, checkout, source tree
+
+**Runner**:
+The one project directory that translates experiment YAML into a campaign declaration and collects declared results.
+It is project-owned code. It never talks to Slurm.
+_Avoid_: dispatcher, scaffold, adapter script
+
+**Declaration**:
+The campaign JSON a runner produces: bundle identity, tasks, resources, dependencies, and required outputs.
+_Avoid_: spec, manifest, config
+
+**Model class**:
+A scientific comparison group locked to one GPU model, memory size, device count, and required node features.
+The lock persists across campaigns. A new hardware regime needs a new class identity.
+_Avoid_: hardware profile, GPU type (that is only one field of the class)
+
+**Hardware class / fingerprint**:
+The typed GRES, count, exact device name, expected memory, features, and optional node or UUID restrictions bound to a model class.
 _Avoid_: partition, queue
 
-**Orchestration**:
-How the work is launched: single, fan-out or coordinated.
-_Avoid_: sweep, array
+**Attestation**:
+The in-job record of the assigned GPU UUIDs, device name, reported memory, node, and driver, taken before the scientific command runs.
+_Avoid_: probe, check
 
-**Fan-out**:
-N independent tasks that do not communicate. One group. N ledger rows.
-_Avoid_: sweep, parallel, multi
+**Catalog**:
+The controller's timestamped record of live nodes, partitions, access rules, QOS limits, and fairshare.
+A stale catalog blocks new submissions.
+_Avoid_: profile, recon, cluster config
 
-**Coordinated**:
-One allocation whose ranks communicate. One job. One ledger row.
-_Avoid_: distributed, multi-node
+**Planner**:
+The read-only check of a declaration against the catalog: hardware fit, access, ceilings, and ranked compatible partitions.
+A plan never submits.
+_Avoid_: scheduler (that is Slurm), dry run
 
-**cpu**:
-One CPU job. Single orchestration. One ledger row.
-_Avoid_: CPU-only, serial
+**Worker**:
+The controller thread that stages bundles, records submission intent, calls Slurm, observes state, retries infrastructure failures, and retrieves outputs.
+_Avoid_: daemon, agent, watcher
 
-**gpu**:
-One GPU job on one node. Single orchestration. One ledger row. The job may use
-more than one GPU on that node.
-_Avoid_: single-gpu (that name excludes a one-node multi-GPU job)
-
-**multi-cpu**:
-Fan-out of independent CPU tasks. Today's `run.sh array` on a CPU resource.
-_Avoid_: MPI, multi-node CPU, ntasks
-
-**multi-gpu**:
-GPU work with an explicit execution mode: independent experiments or coordinated ranks.
-Legacy configurations without a mode retain independent fan-out behavior.
-Variant concurrency and rank counts are separate controls.
-
-**ml**:
-An application category in the workspace. Legacy `ml` primitive configurations
-map to `multi-gpu` with coordinated mode. Historical values remain unchanged.
-The legacy CLI template continues to accept `ml`.
-
-**Hardware**:
-A device class on a finished task (`cpu`, `a100`, `gpu:unspecified`). It is not
-a primitive and not a partition.
-_Avoid_: queue, backend
-
-**Campaign**:
-An optional grouping label on ledger rows. Default is today's UTC date. It is
-not the fan-out group's identity. One campaign may hold many groups and may mix
-primitives. It is the public scope for cancel, fetch and watch.
-_Avoid_: run, sweep, group
-
-**Group**:
-The tasks from one fan-out submit. Its identity is the parent SLURM job id.
-Membership is the ledger rows `<parent>_<index>`.
-_Avoid_: campaign, array, sweep
-
-**Task payload**:
-An opaque JSON string on a fan-out manifest line, exported as
-`UNITY_TASK_PAYLOAD`. The harness never parses it. The leading token remains
-`EXP`.
-_Avoid_: plan, sidecar, unit config
-
-**Watcher**:
-An opt-in foreground process on the user's machine. The user starts it and
-stops it. It drives `run.sh` subcommands only. It owns a retry budget. One
-watcher per campaign. It is not a login-node daemon.
-_Avoid_: monitor, collector, daemon
-
-**Results tree**:
-Remote artifacts for one campaign, default `$REMOTE_DIR/_results/<campaign>/`.
-Fetch prefers that directory when it exists.
-_Avoid_: output, artifacts dir
-
-**Bootstrap hook**:
-An optional `unityHPC/bootstrap.sh`. If the file exists, the job template
-sources it under one `flock` so concurrent tasks do not race. The harness
-does not own a pip convention.
-_Avoid_: VENV_BOOTSTRAP, requirements.txt
+**Result event**:
+One durable, cursor-addressed record of a task state change or retrieved artifact.
+Clients resume from `next_cursor` without duplicates.
+_Avoid_: notification, message
 
 **Controller**:
-The always-on process on this machine. It owns the project registry, the
-HTTP interface, the dashboard, and every call to `run.sh`. It is not a
-login-node process and not the watcher.
+The always-on local process that owns the campaign journal, hardware locks, scheduling requests, attempts, and result retrieval.
 _Avoid_: daemon, monitor, MCP server, plugin
 
 **Cluster session**:
-A tmux session on the login node that the controller opens to run one
-scheduled sample. It closes after a quiet period. Sample logs are copied
-to this machine and the remote `/tmp` files are removed. It is not a
-resident collector and not the watcher.
-_Avoid_: collector, daemon, unity-collector
+A tmux session on the login node that the controller opens to run one scheduled telemetry sample.
+It closes after a quiet period. It is not a resident collector.
+_Avoid_: collector, daemon
 
-**Attached project**:
-A local directory registered with the controller. Identity is its slug.
-The controller reaches its `unityHPC/run.sh` and its ledger through that
-registration.
-_Avoid_: repo, workspace, integration
+**Telemetry archive**:
+The local `summaries.db`, enriched accounting records, and raw sampled days under `$UNITY_HPC_DATA`.
+Allocation counts in it are not time-weighted utilization.
+_Avoid_: dashboard data, usage database
 
-**Dispatch**:
-A run request sent to the controller. The controller calls `run.sh`. A
-dispatch that does not go through the controller is outside the contract.
-_Avoid_: submit (that is `run.sh`'s act), sbatch
+**Hardware**:
+A device class recorded on a finished task (`cpu`, `a100`, `gpu:unspecified`).
+It is not a partition.
+_Avoid_: queue, backend
 
 **Plugin**:
-The three LLM-facing skills (`connect`, `dispatch`, `doctor`). They write
-wiring and HTTP to the controller. They do not SSH.
-_Avoid_: agent, MCP, marketplace plugin (the install unit is still this
-repo; this term is the thin skill catalog)
+The LLM-facing skills and MCP tools. Every tool is an HTTP client of the controller.
+_Avoid_: agent, marketplace plugin, dispatcher
 
-**Experiment**:
-A reusable project-declared study with editable revisions and immutable executions.
+## Retired terms
 
-**Reviewed plan**:
-The checked expansion of one revision: variants, stages, resources, scripts, source, and input identities.
-One plan approves at most one execution. Repeat creates another plan with fresh outputs.
-
-**Execution**:
-One approved plan and its durable attempts, ledger links, artifacts, and continuation history.
-It does not replace a campaign or scheduler job identity.
-
-**Purpose**:
-Explicit stage metadata: Experiment or Smoke test. Historical jobs remain Unclassified.
-Purpose is separate from scheduler State and never inferred from names.
-
-**Analysis revision**:
-A reviewed analysis of selected saved artifacts, with fresh report outputs and preserved input provenance.
+These terms named the project-side design that ADR 0009 replaced. Do not reintroduce them:
+primitive, `ml` type, attached project, scaffold, `unityHPC/run.sh`, ledger, watcher, bootstrap hook,
+reviewed plan, execution, purpose, analysis revision, workspace, dashboard.

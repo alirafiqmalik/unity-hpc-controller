@@ -1,6 +1,6 @@
 # The dashboard is plain ES modules with no build step
 
-> **Superseded by [ADR 0006](0006-dashboard-on-the-twenty-front-stack.md).**
+> **Superseded by [ADR 0006](0006-dashboard-on-the-twenty-front-stack.md), then retired by [ADR 0009](0009-headless-campaign-controller.md): the controller has no dashboard.**
 > The dashboard is now a Vite build of `controller/web` on the `twenty-front`
 > stack. ADR 0006 records what changed and why. The reasoning below still holds
 > for the tree it describes, and for the rejection of a committed `dist/`.

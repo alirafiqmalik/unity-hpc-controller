@@ -1,5 +1,7 @@
 # The dashboard is a React build on the twenty-front stack
 
+> **Retired by [ADR 0009](0009-headless-campaign-controller.md).** The dashboard and `controller/web/` were removed on 2026-10-08. The controller is an HTTP API only.
+
 Supersedes ADR 0002, which made the dashboard plain ES modules with no build
 step.
 

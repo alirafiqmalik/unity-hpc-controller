@@ -58,7 +58,7 @@ but a persistent tunnel is not required for this controller.
    defaults with that override in mind.
 
 4. **P2 — Treat remote collector updates as a separate deployment policy.**
-   The setup instructions at `controller/ops/setup.md` require an explicit
+   The retired setup runbook required an explicit
    opt-in before copying scripts to the shared login node. Automatic updates
    are outside the retrieval authentication failure. If deployment is later
    authorized, use the controller's saved alias and identity, compare a local

@@ -4,8 +4,8 @@ Status: the five-second poll is superseded by ADR 0004. On-demand retrieval,
 the local lock, and the decision to keep the schedule in the controller are
 unchanged.
 
-The dashboard draws GPU utilization from `summaries.db` and the header pill from
-`snapshot.csv`. Both files are local copies. `cluster-intel/sync-telemetry.sh`
+API clients read GPU allocation summaries from `summaries.db` and the live
+header from `snapshot.csv`. Both files are local copies. `cluster-intel/sync-telemetry.sh`
 fills them: it pulls the raw telemetry with `rsync`, then rolls it up, and holds
 `locks/sync.lock` across both. Until now nothing called that script on a
 cadence, and nothing showed an operator whether it had ever run. A dashboard
@@ -21,7 +21,7 @@ A periodic pull is 20 lines of `threading` inside it: one daemon thread that
 wakes every five seconds, reads the saved settings, and starts a retrieval when
 one is due. It starts in `controller/serve.py` and stops with the server.
 
-- **A login-node daemon** is refused by design. §3.7 of `docs/design-decisions.md`
+- **A login-node daemon** is refused by design. the retired design-decisions document (git history before 2026-10-08)
   and the **Watcher** entry in `CONTEXT.md` both say the login node is shared and
   that nothing the plugin ships may live there. The cluster-side collector is
   the one exception, and it is a deliberate, opt-in deployment.
