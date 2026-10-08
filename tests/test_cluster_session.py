@@ -70,6 +70,48 @@ def test_the_remote_command_samples_once_and_sets_the_idle_timer():
     assert "--- unity-hpc-session-log ---" in script
 
 
+def test_controller_sessions_use_separate_remote_completion_files():
+    first = cluster_session.remote_invocation("backend-one", "/work/one", 900)
+    second = cluster_session.remote_invocation("backend-two", "/work/two", 900)
+    assert "/tmp/backend-one-sample.rc" in first
+    assert "/tmp/backend-one-sample.log" in first
+    assert "backend-two" not in first
+    assert "/tmp/backend-two-sample.rc" in second
+    assert "/tmp/backend-two-sample.log" in second
+    assert "backend-one" not in second
+    assert "/tmp/unity-hpc-sample." not in first + second
+
+
+def test_collect_and_close_use_only_the_configured_session():
+    commands = []
+
+    def run(host, script, timeout_s):
+        commands.append(script)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    cfg = {"interval_minutes": 15, "session_name": "backend-isolated"}
+    report = cluster_session.collect(cfg, "unity:/work/isolated/telemetry", run=run)
+    assert report["session"] == "backend-isolated"
+    closed = cluster_session.close_session(
+        "unity:/work/isolated/telemetry", run=run,
+        session_name=cfg["session_name"],
+    )
+    assert closed["session"] == "backend-isolated"
+    assert "tmux kill-session -t backend-isolated" in commands[1]
+    assert "/tmp/backend-isolated-sample.rc" in commands[1]
+    assert "/tmp/unity-hpc-sample." not in "\n".join(commands)
+
+
+def test_session_names_cannot_inject_commands_or_tmux_targets():
+    for value in ("one;echo secret", "../one", "one:2", "one.two", "x" * 65):
+        try:
+            cluster_session.clean_session_name(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe session accepted: {value}")
+
+
 def test_a_remote_timeout_reports_the_partial_log_and_removes_temp_files(
     tmp_path, monkeypatch,
 ):

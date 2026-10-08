@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS task_profile(
   wait_p50 REAL, wait_p90 REAL, cpu_eff_p50 REAL, mem_eff_p50 REAL,
   max_rss_p95 REAL, success_rate REAL,
   PRIMARY KEY(project, skill, hardware));
+CREATE TABLE IF NOT EXISTS task_accounting(
+  job_id TEXT PRIMARY KEY, user TEXT, account TEXT, node_list TEXT,
+  job_name TEXT, qos TEXT, constraints TEXT, accounting_version INTEGER,
+  details_json TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS task_accounting_user ON task_accounting(user);
+CREATE INDEX IF NOT EXISTS task_accounting_account ON task_accounting(account);
 CREATE TABLE IF NOT EXISTS events(
   ts TEXT, event TEXT, resource_id TEXT, job_id TEXT, detail TEXT,
   PRIMARY KEY(ts, event, resource_id, job_id, detail));
@@ -299,8 +305,9 @@ def _process_day(conn, day: str, src: Path) -> None:
             'submit=excluded.submit, '
             'start=excluded.start, "end"=excluded."end", '
             'elapsed_s=excluded.elapsed_s, wait_s=excluded.wait_s, '
-            'cpu_eff=excluded.cpu_eff, mem_eff=excluded.mem_eff, '
-            'max_rss_mb=excluded.max_rss_mb, state=excluded.state, '
+            'cpu_eff=COALESCE(excluded.cpu_eff,task_run.cpu_eff), '
+            'mem_eff=COALESCE(excluded.mem_eff,task_run.mem_eff), '
+            'max_rss_mb=COALESCE(excluded.max_rss_mb,task_run.max_rss_mb), state=excluded.state, '
             'exit_code=excluded.exit_code '
             'WHERE is_terminal(task_run.state)=0 OR is_terminal(excluded.state)=1',
             (t.get("job_id"), t.get("project") or "unknown", t.get("campaign") or "",
@@ -309,6 +316,22 @@ def _process_day(conn, day: str, src: Path) -> None:
              used.get("elapsed_s"), wait, used.get("cpu_eff_pct"),
              used.get("mem_eff_pct"), used.get("max_rss_mb"),
              t.get("state"), t.get("exit_code"), day, t.get("partition")))
+        # Keep the existing task_run schema compatible with old readers, while
+        # retaining every richer field for planning and historical analysis.
+        # Sparse legacy observations cannot erase a newer accounting format.
+        current = conn.execute("SELECT state FROM task_run WHERE job_id=?", (t.get("job_id"),)).fetchone()
+        if current and current[0] == t.get("state"):
+            conn.execute(
+                "INSERT INTO task_accounting VALUES(?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET user=excluded.user, account=excluded.account, "
+                "node_list=excluded.node_list, job_name=excluded.job_name, qos=excluded.qos, "
+                "constraints=excluded.constraints, accounting_version=excluded.accounting_version, "
+                "details_json=excluded.details_json "
+                "WHERE excluded.accounting_version>=task_accounting.accounting_version",
+                (t.get("job_id"), t.get("user"), t.get("account"), t.get("node_list"),
+                 t.get("job_name"), t.get("qos"), t.get("constraints"),
+                 t.get("accounting_version", 1), json.dumps(t, sort_keys=True)),
+            )
 
     # ---- day_index (monotonic slots_ingested AND rows_emitted) ----
     observed = len(all_slots)

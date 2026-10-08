@@ -2,8 +2,8 @@
 """Give one Unity SSH alias a stable, user-owned agent socket.
 
 Run once on the controller machine. The private key and its passphrase never
-enter this script; Settings > Config saves the passphrase in Secret Service
-after ssh-add verifies it.
+enter this script; `POST /api/v1/telemetry/ssh-unlock` saves the passphrase in
+Secret Service after ssh-add verifies it.
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def main() -> int:
               "the config edit was reverted", file=sys.stderr)
         return 1
     print(f"Host {args.host} now uses the shared agent socket: {socket}")
-    print("Enter the key passphrase once in the controller's Settings > Config > Unlock key.")
+    print("Unlock the key once with POST /api/v1/telemetry/ssh-unlock on the controller.")
     return 0
 
 

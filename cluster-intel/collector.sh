@@ -26,6 +26,8 @@ set -euo pipefail
 
 export PATH="/modules/user-resources/bin:$PATH"
 export PAGER=NONE
+export TZ=UTC
+export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -105,8 +107,9 @@ for line in lines:
     rec = json.loads(line)
     e = eff.get(rec.get("job_id"))
     if e and is_terminal(rec.get("state")):
-        rec["used"]["cpu_eff_pct"] = e.get("cpu_eff_pct")
-        rec["used"]["mem_eff_pct"] = e.get("mem_eff_pct")
+        for key in ("cpu_eff_pct", "mem_eff_pct"):
+            if e.get(key) is not None:
+                rec["used"][key] = e[key]
     out.append(json.dumps(rec, sort_keys=True))
 open(runs_path, "w", encoding="utf-8").write("\n".join(out) + "\n")
 PY
@@ -280,18 +283,19 @@ sample() {
     timeout 60 nice -n 19 unity-slurm-gpu-usage \
         </dev/null >"$tmp/gpu.raw" 2>/dev/null || true
 
-    # Request User (the Users tab) and a trailing Timelimit column (feeds
-    # req.walltime_s). A trailing empty-field pad keeps the width stable
-    # regardless of what the running sacct actually returns.
+    # Keep the legacy first 13 fields, followed by request, node, and step
+    # measurements. The parser also accepts older allocation-only samples.
     # sacct's OWN exit code must be checked: a transient slurmdbd failure
     # (rate-limit, restart) yields empty output, and treating that as "no
     # jobs" while advancing the high-water mark would PERMANENTLY skip this
     # window's jobs. Failure -> keep the mark, warn, retry the same window
     # next cycle. (Same masking class as the sync driver's dry-run guard.)
     local sacct_rc=0
-    timeout 60 nice -n 19 sacct $SACCT_SCOPE -S "$start_window" -E now -X -P -n \
-        -o JobID,User,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit \
-        </dev/null 2>"$tmp/sacct.err" | sed 's/$/|/' >"$tmp/sacct.raw" || sacct_rc=$?
+    # Include steps: -X suppresses the RSS/CPU/GPU accounting we need.
+    # Tabs preserve OR constraints whose literal pipe conflicts with -P's default.
+    timeout 60 nice -n 19 sacct $SACCT_SCOPE -S "$start_window" -E now -P -n --delimiter=$'\t' \
+        -o JobID,User,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit,NodeList,JobName,QOS,ReqTRES,ReqMem,ReqCPUS,Constraints,TotalCPU,CPUTimeRAW,TRESUsageInMax,Eligible,Restarts \
+        </dev/null 2>"$tmp/sacct.err" >"$tmp/sacct.raw" || sacct_rc=$?
 
     if [ "$sacct_rc" -ne 0 ]; then
         echo "[collector] WARNING: sacct failed (rc=$sacct_rc) -- keeping high-water mark, window retried next cycle" >&2
@@ -346,9 +350,9 @@ catchup() {
     # reports "success" with zero records and the operator believes the heal
     # happened. Fail LOUDLY instead (rc=3) so callers can retry the chunk.
     local sacct_rc=0
-    timeout 300 nice -n 19 sacct $SACCT_SCOPE -S "$start" -E now -X -P -n \
-        -o JobID,User,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit \
-        </dev/null 2>"$tmp/sacct.err" | sed 's/$/|/' >"$tmp/sacct.raw" || sacct_rc=$?
+    timeout 300 nice -n 19 sacct $SACCT_SCOPE -S "$start" -E now -P -n --delimiter=$'\t' \
+        -o JobID,User,Account,Partition,State,Submit,Start,End,Elapsed,AllocTRES,ExitCode,MaxRSS,Timelimit,NodeList,JobName,QOS,ReqTRES,ReqMem,ReqCPUS,Constraints,TotalCPU,CPUTimeRAW,TRESUsageInMax,Eligible,Restarts \
+        </dev/null 2>"$tmp/sacct.err" >"$tmp/sacct.raw" || sacct_rc=$?
     if [ "$sacct_rc" -ne 0 ]; then
         echo "[collector] catchup: sacct failed (rc=$sacct_rc) -- nothing written, retry this window" >&2
         sed 's/^/[collector]   sacct: /' "$tmp/sacct.err" >&2 || true

@@ -7,6 +7,7 @@ database, table, or row is absent, so callers degrade rather than crash (I6).
 from __future__ import annotations
 
 import sqlite3
+import json
 
 from lib import paths
 
@@ -118,3 +119,60 @@ def project_hardware_profile(job_ids: list[str]) -> list[dict]:
             "mem_eff_p50": _pctl(mem, 0.5),
         })
     return profile
+
+
+def job_accounting_for_jobs(job_ids: list[str]) -> list[dict]:
+    """Read richer request, allocation, node and step data without SSH or writes."""
+    ids = [str(value) for value in dict.fromkeys(job_ids) if value]
+    db = paths.summaries_db()
+    if not ids or not db.exists():
+        return []
+    out = []
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            for offset in range(0, len(ids), _ID_CHUNK):
+                chunk = ids[offset:offset + _ID_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                for (raw,) in con.execute(
+                    f"SELECT details_json FROM task_accounting WHERE job_id IN ({placeholders}) ORDER BY job_id", chunk
+                ):
+                    out.append(json.loads(raw))
+        finally:
+            con.close()
+    except (sqlite3.Error, ValueError):
+        return []
+    return out
+
+
+def historical_accounting(*, user=None, account=None, partition=None, gpu_type=None,
+                          since=None, until=None, limit=100, offset=0) -> list[dict]:
+    """Read a bounded history page. Time filters use UTC Slurm Submit timestamps."""
+    db = paths.summaries_db()
+    if not db.exists():
+        return []
+    limit, offset = min(max(int(limit), 1), 1000), max(int(offset), 0)
+    conditions, arguments = [], []
+    for column, value in (("a.user", user), ("a.account", account),
+                          ("t.partition", partition), ("t.hardware", gpu_type)):
+        if value is not None:
+            conditions.append(f"{column}=?")
+            arguments.append(value)
+    for operator, value in ((">=", since), ("<", until)):
+        if value is not None:
+            conditions.append(f"t.submit{operator}?")
+            arguments.append(value)
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT a.details_json FROM task_accounting a JOIN task_run t USING(job_id)"
+                + where + " ORDER BY t.submit DESC,a.job_id LIMIT ? OFFSET ?",
+                [*arguments, limit, offset],
+            ).fetchall()
+        finally:
+            con.close()
+        return [json.loads(raw) for (raw,) in rows]
+    except (sqlite3.Error, ValueError):
+        return []

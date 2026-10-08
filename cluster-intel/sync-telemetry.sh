@@ -77,7 +77,7 @@ if [ "$PRUNE_RC" -ne 0 ]; then
 fi
 
 # 5. The live queue signal. snapshot.csv is a sibling of the telemetry
-# directory on the cluster, it is one small file, and the dashboard header
+# directory on the cluster, it is one small file, and the live header
 # reads it. The default source is that sibling; UNITY_SNAPSHOT_SRC overrides
 # it, and an empty value turns this step off. A cluster that does not publish
 # the file is normal, so a failure here is reported and never fatal: the

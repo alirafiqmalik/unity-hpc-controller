@@ -1,4 +1,4 @@
-"""A saved sacct response fills the same API window the dashboard reads."""
+"""A saved sacct response fills the same API window the usage route reads."""
 
 import json
 import sqlite3

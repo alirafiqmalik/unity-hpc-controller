@@ -1,0 +1,47 @@
+{
+  "observed_at": "2026-10-06T04:34:33.360525+00:00",
+  "host": "unity",
+  "scope": "installed client field inventory; field presence does not imply every record has a value or unrestricted visibility",
+  "tools": [
+    {
+      "tool": "sacct",
+      "argv": [
+        "sacct",
+        "--helpformat"
+      ],
+      "return_code": 0,
+      "stdout": "Account             AdminComment        AllocCPUS           AllocNodes         \nAllocTRES           AssocID             AveCPU              AveCPUFreq         \nAveDiskRead         AveDiskWrite        AvePages            AveRSS             \nAveVMSize           BlockID             Cluster             Comment            \nConstraints         ConsumedEnergy      ConsumedEnergyRaw   Container          \nCPUTime             CPUTimeRAW          DBIndex             DerivedExitCode    \nElapsed             ElapsedRaw          Eligible            End                \nExitCode            Extra               FailedNode          Flags              \nGID                 Group               JobID               JobIDRaw           \nJobName             Layout              Licenses            MaxDiskRead        \nMaxDiskReadNode     MaxDiskReadTask     MaxDiskWrite        MaxDiskWriteNode   \nMaxDiskWriteTask    MaxPages            MaxPagesNode        MaxPagesTask       \nMaxRSS              MaxRSSNode          MaxRSSTask          MaxVMSize          \nMaxVMSizeNode       MaxVMSizeTask       McsLabel            MinCPU             \nMinCPUNode          MinCPUTask          NCPUS               NNodes             \nNodeList            NTasks              Partition           Planned            \nPlannedCPU          PlannedCPURAW       Priority            QOS                \nQOSRAW              QOSREQ              Reason              ReqCPUFreq         \nReqCPUFreqGov       ReqCPUFreqMax       ReqCPUFreqMin       ReqCPUS            \nReqMem              ReqNodes            ReqTRES             Reservation        \nReservationId       ReqReservation      Restarts            SegmentSize        \nSLUID               Start               State               StdErr             \nStdIn               StdOut              Submit              SubmitLine         \nSuspended           SystemComment       SystemCPU           Timelimit          \nTimelimitRaw        TotalCPU            TRESUsageInAve      TRESUsageInMax     \nTRESUsageInMaxNode  TRESUsageInMaxTask  TRESUsageInMin      TRESUsageInMinNode \nTRESUsageInMinTask  TRESUsageInTot      TRESUsageOutAve     TRESUsageOutMax    \nTRESUsageOutMaxNode TRESUsageOutMaxTask TRESUsageOutMin     TRESUsageOutMinNode\nTRESUsageOutMinTask TRESUsageOutTot     UID                 User               \nUserCPU             WCKey               WCKeyID             WorkDir            \n",
+      "stderr": ""
+    },
+    {
+      "tool": "sstat",
+      "argv": [
+        "sstat",
+        "--helpformat"
+      ],
+      "return_code": 0,
+      "stdout": "AllocTRES           AveCPU              AveCPUFreq          AveDiskRead        \nAveDiskWrite        AvePages            AveRSS              AveVMSize          \nConsumedEnergy      ConsumedEnergyRaw   JobID               MaxDiskRead        \nMaxDiskReadNode     MaxDiskReadTask     MaxDiskWrite        MaxDiskWriteNode   \nMaxDiskWriteTask    MaxPages            MaxPagesNode        MaxPagesTask       \nMaxRSS              MaxRSSNode          MaxRSSTask          MaxVMSize          \nMaxVMSizeNode       MaxVMSizeTask       MinCPU              MinCPUNode         \nMinCPUTask          Nodelist            NTasks              Pids               \nReqCPUFreq          ReqCPUFreqMin       ReqCPUFreqMax       ReqCPUFreqGov      \nTRESUsageInAve      TRESUsageInMax      TRESUsageInMaxNode  TRESUsageInMaxTask \nTRESUsageInMin      TRESUsageInMinNode  TRESUsageInMinTask  TRESUsageInTot     \nTRESUsageOutAve     TRESUsageOutMax     TRESUsageOutMaxNode TRESUsageOutMaxTask\nTRESUsageOutMin     TRESUsageOutMinNode TRESUsageOutMinTask TRESUsageOutTot    \n",
+      "stderr": ""
+    },
+    {
+      "tool": "squeue",
+      "argv": [
+        "squeue",
+        "--helpformat"
+      ],
+      "return_code": 0,
+      "stdout": "%a    %F    %K    %B    %o    %k    %O    %I    \n%X    %E    %e    %x    %f    %G    %g    %i    \n%A    %W    %c    %m    %d    %j    %y    %N    \n%C    %D    %h    %P    %p    %Q    %q    %r    \n%R    %n    %v    %Y    %z    %s    %H    %S    \n%T    %t    %V    %J    %L    %l    %M    %U    \n%u    %w    %Z    \n",
+      "stderr": ""
+    },
+    {
+      "tool": "squeue",
+      "argv": [
+        "squeue",
+        "--helpFormat"
+      ],
+      "return_code": 0,
+      "stdout": "Account             AccrueTime          admin_comment       AllocNodes          \nAllocSID            ArrayJobId          ArrayTaskId         AssocId             \nBatchFlag           BatchHost           BoardsPerNode       BurstBuffer         \nBurstBufferState    Cluster             ClusterFeature      Command             \nComment             Container           ContainerId         Contiguous          \nCores               CoreSpec            CPUsPerTask         cpus-per-task       \ncpus-per-tres       CronJob             Deadline            DelayBoot           \nDependency          DerivedEC           EligibleTime        EndTime             \nExcNodes            exit_code           Feature             GroupId             \nGroupName           HetJobId            HetJobIdSet         HetJobOffset        \nJobArrayId          JobId               LastSchedEval       Licenses            \nLicensesAlloc       MaxCPUs             MaxNodes            mem-per-tres        \nMCSLabel            MinCPUs             MinMemory           MinTime             \nMinTmpDisk          Name                Network             Nice                \nNodeList            NTPerCore           NTPerNode           NTPerSocket         \nNTPerBoard          NumCPUs             NumNodes            NumTasks            \nOrigin              OriginRaw           OverSubscribe       Partition           \nPendingTime         PreemptTime         Prefer              Priority            \nPriorityLong        Profile             QOS                 Reason              \nReasonList          Reboot              ReqNodes            ReqSwitch           \nRequeue             Reservation         ResizeTime          RestartCnt          \nSchedNodes          SCT                 SegmentSize         SiblingsActive      \nSiblingsActiveRaw   SiblingsViable      SiblingsViableRaw   SLUID               \nSockets             SPerBoard           StartTime           State               \nStateCompact        StdErr              StdIn               StdOut              \nSubmitTime          system_comment      Threads             TimeLeft            \nTimeLimit           TimeUsed            tres-alloc          tres-bind           \ntres-freq           tres-per-job        tres-per-socket     tres-per-task       \nUserId              UserName            Wait4Switch         WCKey               \nWorkDir             \n",
+      "stderr": ""
+    }
+  ]
+}

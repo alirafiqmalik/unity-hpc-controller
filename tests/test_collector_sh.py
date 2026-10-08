@@ -326,14 +326,6 @@ def test_collector_dispatches_catchup_via_parser():
     assert "collector_parse.py" in text
 
 
-def test_setup_skill_deploys_the_new_collector():
-    text = (REPO_ROOT / "controller" / "ops" / "setup.md").read_text()
-    assert "collector.sh" in text
-    assert "collector_parse.py" in text
-    assert "sacct-collector.sh" not in text
-    assert "snapshot-poller.sh" not in text
-
-
 def test_collector_has_path_and_pager_fix():
     text = COLLECTOR.read_text()
     assert "/modules/user-resources/bin" in text

@@ -6,7 +6,7 @@ Usage:
 
 Reads a JSON observation (a partial config), acquires locks/config.lock, merges
 with the deterministic union/max/newest-wins rules, and atomically rewrites
-cluster-config.json. Invoked by the unity-hpc:recon skill. Cluster-neutral:
+cluster-config.json. Cluster-neutral:
 never write project commentary into the observation.
 
 Prints `written` or `skipped`, and exits 0 for both: a TTL-fresh skip is a

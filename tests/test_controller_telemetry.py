@@ -149,29 +149,18 @@ def test_the_environment_is_used_when_nothing_is_saved(monkeypatch):
     assert src["origin"] == "environment"
 
 
-def test_an_attached_project_env_is_the_last_resort(tmp_path):
-    from controller import registry
-
-    project = tmp_path / "proj"
-    (project / "unityHPC").mkdir(parents=True)
-    (project / "unityHPC" / ".env").write_text(
-        'SLURM_ACCOUNT="pi_x"\n'
-        'UNITY_TELEMETRY_SRC="unity:/from/project/telemetry/"  # comment\n'
-    )
-    registry.attach(slug="proj", path=str(project), primitive="cpu")
-    src = telemetry.resolve_source()
-    assert src["value"] == "unity:/from/project/telemetry/"
-    assert src["origin"] == "project:proj"
+def test_source_resolution_reads_no_project_directory(monkeypatch):
+    monkeypatch.delenv("UNITY_TELEMETRY_SRC", raising=False)
+    assert not hasattr(telemetry, "_project_source")
+    assert telemetry.resolve_source() == {"value": "", "origin": "none", "configured": False}
 
 
-def test_an_empty_project_value_is_not_a_source(tmp_path):
-    from controller import registry
-
-    project = tmp_path / "proj"
-    (project / "unityHPC").mkdir(parents=True)
-    (project / "unityHPC" / ".env").write_text('UNITY_TELEMETRY_SRC=""\n')
-    registry.attach(slug="proj", path=str(project), primitive="cpu")
-    assert telemetry.resolve_source()["configured"] is False
+def test_telemetry_session_setting_round_trips_and_rejects_unsafe_names():
+    telemetry.save_settings(session_name="backend-isolated")
+    assert telemetry.settings()["session_name"] == "backend-isolated"
+    with pytest.raises(ValueError, match="session_name"):
+        telemetry.save_settings(session_name="../other")
+    assert telemetry.settings()["session_name"] == "backend-isolated"
 
 
 # --------------------------------------------------------------------------

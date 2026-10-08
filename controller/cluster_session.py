@@ -35,6 +35,7 @@ _LOG_END = "--- unity-hpc-session-log-end ---"
 SESSION_LOG_KEEP = 50
 #: An SSH config Host alias. No user@host, no options, no spaces.
 _HOST_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SESSION_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _restore_lock = threading.Lock()
 _last_restore_attempt: dict[str, float] = {}
 _RESTORE_RETRY_S = 30
@@ -80,6 +81,21 @@ def clean_mode(mode: str | None) -> str:
     if text not in MODES:
         raise ValueError("script must be once, sample, or prune")
     return text
+
+
+def clean_session_name(value) -> str:
+    """A separate tmux namespace for each controller deployment."""
+    text = str(value or SESSION_NAME).strip()
+    if not _SESSION_OK.fullmatch(text):
+        raise ValueError("session_name must use 1–64 letters, digits, underscores, or hyphens")
+    return text
+
+
+def _session_files(session: str) -> tuple[str, str]:
+    session = clean_session_name(session)
+    if session == SESSION_NAME:
+        return _MARK, _LOG
+    return f"/tmp/{session}-sample.rc", f"/tmp/{session}-sample.log"
 
 
 def clean_ssh_host(value) -> str:
@@ -432,28 +448,30 @@ def remote_invocation(
     call waits for the exit file so the local pull does not race the sample.
     """
     chosen = clean_mode(mode)
+    session = clean_session_name(session)
+    mark, log = _session_files(session)
     qname = shlex.quote(session)
     line = (
         f"export TMOUT={int(timeout_s)}; "
         f"UNITY_CID={shlex.quote(cid)} "
         f"bash {shlex.quote(cid + '/collector.sh')} {chosen} "
-        f"> {_LOG} 2>&1; echo $? > {_MARK}"
+        f"> {log} 2>&1; echo $? > {mark}"
     )
     qline = shlex.quote(line)
     return "\n".join([
-        f"rm -f {_MARK}",
+        f"rm -f {mark}",
         f"tmux has-session -t {qname} 2>/dev/null || tmux new-session -d -s {qname}",
         f"tmux send-keys -t {qname} {qline} Enter",
         (
-            f"i=0; while [ ! -f {_MARK} ] && [ \"$i\" -lt {int(wait_s)} ]; "
+            f"i=0; while [ ! -f {mark} ] && [ \"$i\" -lt {int(wait_s)} ]; "
             "do sleep 1; i=$((i+1)); done"
         ),
-        f"if [ -f {_MARK} ]; then rc=$(cat {_MARK}); else rc=124; echo timeout; fi",
+        f"if [ -f {mark} ]; then rc=$(cat {mark}); else rc=124; echo timeout; fi",
         'echo "rc=$rc"',
         f"echo {shlex.quote(_LOG_START)}",
-        f"cat {_LOG} 2>/dev/null || true",
+        f"cat {log} 2>/dev/null || true",
         f"echo {shlex.quote(_LOG_END)}",
-        f"rm -f {_MARK} {_LOG}",
+        f"rm -f {mark} {log}",
         f"exit \"$rc\"",
     ])
 
@@ -562,11 +580,12 @@ def collect(cfg: dict, source: str, mode: str = "once", run=None) -> dict:
     try:
         host = clean_ssh_host(cfg.get("ssh_host") or "unity")
         identity = clean_ssh_identity(cfg.get("ssh_identity") or "")
+        session = clean_session_name(cfg.get("session_name"))
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     chosen = clean_mode(mode)
     timeout_s = inactivity_timeout_s(cfg.get("interval_minutes"))
-    script = remote_invocation(SESSION_NAME, cid, timeout_s, mode=chosen)
+    script = remote_invocation(session, cid, timeout_s, mode=chosen)
     runner = run or (lambda h, s, t: ssh_run(h, s, t, identity=identity))
     try:
         proc = runner(host, script, SAMPLE_WAIT_S + 30)
@@ -581,14 +600,14 @@ def collect(cfg: dict, source: str, mode: str = "once", run=None) -> dict:
         "ok": True,
         "mode": chosen,
         "timeout_s": timeout_s,
-        "session": SESSION_NAME,
+        "session": session,
         "host": host,
         "session_log": log_path,
     }
 
 
 def close_session(source: str, run=None, host: str | None = None,
-                  identity: str = "") -> dict:
+                  identity: str = "", session_name: str = SESSION_NAME) -> dict:
     """End the cluster session. A missing session is already closed."""
     parsed = parse_remote_source(source)
     if parsed is None:
@@ -596,12 +615,14 @@ def close_session(source: str, run=None, host: str | None = None,
     try:
         dest = clean_ssh_host(host or "unity")
         ident = clean_ssh_identity(identity)
+        session = clean_session_name(session_name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-    qname = shlex.quote(SESSION_NAME)
+    qname = shlex.quote(session)
+    mark, log = _session_files(session)
     script = (
         f"tmux kill-session -t {qname} 2>/dev/null || true\n"
-        f"rm -f {_MARK} {_LOG}\n"
+        f"rm -f {mark} {log}\n"
     )
     runner = run or (lambda h, s, t: ssh_run(h, s, t, identity=ident))
     try:
@@ -611,4 +632,4 @@ def close_session(source: str, run=None, host: str | None = None,
     if proc.returncode != 0:
         err = ((proc.stderr or "") + (proc.stdout or "")).strip()
         return {"ok": False, "error": err[-500:], "rc": proc.returncode}
-    return {"ok": True, "session": SESSION_NAME, "closed": True}
+    return {"ok": True, "session": session, "closed": True}

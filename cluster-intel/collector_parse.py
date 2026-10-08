@@ -449,21 +449,57 @@ def _provenance(provenance_dir: str | None, job_id: str) -> dict:
     return {k: data[k] for k in allowed if k in data and data[k] != ""}
 
 
+ACCOUNTING_FIELDS = (
+    "node_list", "job_name", "qos", "req_tres", "req_mem", "req_cpus",
+    "constraints", "total_cpu", "cpu_time_raw", "tres_usage_in_max",
+    "eligible", "restarts",
+)
+
+
+def _cpu_seconds(value: str) -> float | None:
+    """Parse Slurm CPU durations, including fractional seconds."""
+    if not re.fullmatch(r"(?:\d+-)?\d+(?::\d+){0,2}(?:\.\d+)?", value or ""):
+        return None
+    days, _, rest = value.partition("-")
+    if not rest:
+        rest, days = days, "0"
+    parts = [float(part) for part in rest.split(":")]
+    parts = [0.0] * (3 - len(parts)) + parts
+    return int(days) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def _tres_values(text: str) -> dict:
+    """Keep raw TRES metrics with their scheduler units; missing stays absent."""
+    out = {}
+    for item in (text or "").split(","):
+        key, sep, value = item.partition("=")
+        if sep:
+            try:
+                out[key] = float(value) if "." in value else int(value)
+            except ValueError:
+                out[key] = value
+    return out
+
+
 def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
     """Parse sacct rows.
 
     Current: JobID|User|Account|Partition|State|Submit|Start|End|Elapsed|
     AllocTRES|ExitCode|MaxRSS|Timelimit (13 fields). A 12-field line without
     User (the previous format) is still accepted. A trailing empty field from
-    collector.sh's pad is ignored.
+    collector.sh's pad is ignored. New samples append ACCOUNTING_FIELDS and
+    use tabs so an OR constraint containing a pipe cannot shift columns.
+    Step records enrich their parent; they never become duplicate jobs.
     """
     out = []
+    steps = {}
     for line in text.splitlines():
-        line = line.strip()
-        if not line:
+        if not line.strip():
             continue
-        f = line.split("|")
-        if len(f) < 12 or not f[0] or "." in f[0] or not f[0][0].isdigit():
+        f = line.split("\t" if "\t" in line else "|")
+        if len(f) == 11:  # Old collector dumps omitted Timelimit and the pad.
+            f.append("")
+        if len(f) < 12 or not f[0] or not f[0][0].isdigit():
             continue
         # 12 fields, or 13 with a trailing empty pad, is the pre-User format.
         # 13 nonempty fields, or 14 with a pad, includes User after JobID.
@@ -474,7 +510,18 @@ def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
             (job_id, account, part, state, submit, start, end,
              elapsed, tres, exit_code, max_rss, timelimit) = f[:12]
             user = None
-        gpu_type, req = _parse_tres(tres)
+        extra = dict(zip(ACCOUNTING_FIELDS, f[13:25])) if len(f) >= 25 else {}
+        if "." in job_id:
+            parent = job_id.split(".", 1)[0]
+            steps.setdefault(parent, []).append({
+                "job_id": job_id, "state": _normalize_state(state),
+                "total_cpu_s": _cpu_seconds(extra.get("total_cpu", "")),
+                "max_rss_mb": _parse_mem_mb(max_rss),
+                "tres_usage_in_max": _tres_values(extra.get("tres_usage_in_max", "")),
+            })
+            continue
+        gpu_type, allocated = _parse_tres(tres)
+        requested_type, req = _parse_tres(extra.get("req_tres") or tres)
         walltime_s = _parse_time_limit(timelimit)
         if walltime_s is not None:
             req["walltime_s"] = walltime_s
@@ -494,11 +541,36 @@ def parse_task_runs(text: str, provenance_dir: str | None = None) -> list[dict]:
             "config_hash": provenance.get("config_hash"),
             "submit": submit or None, "start": start or None, "end": end or None,
             "partition": part, "gpu_type": gpu_type, "req": req,
+            "accounting_version": 2 if extra else 1,
+            "req_source": "ReqTRES" if extra.get("req_tres") else "AllocTRES_fallback",
+            "requested_gpu_type": requested_type,
+            "allocated": allocated if tres else None,
+            "alloc_tres": tres or None,
+            **{key: value or None for key, value in extra.items()
+               if key not in ("total_cpu", "cpu_time_raw", "tres_usage_in_max")},
             "used": {"elapsed_s": _parse_elapsed(elapsed),
                      "max_rss_mb": _parse_mem_mb(max_rss),
-                     "cpu_eff_pct": None, "mem_eff_pct": None},
+                     "cpu_eff_pct": None, "mem_eff_pct": None,
+                     "total_cpu_s": _cpu_seconds(extra.get("total_cpu", "")),
+                     "allocated_cpu_s": _cpu_seconds(extra.get("cpu_time_raw", "")),
+                     "gpu_util_pct": None},
             "state": _normalize_state(state), "exit_code": rc,
         })
+    for record in out:
+        measured_steps = steps.get(record["job_id"], [])
+        record["steps"] = measured_steps
+        used = record["used"]
+        rss = [step["max_rss_mb"] for step in measured_steps if step["max_rss_mb"] is not None]
+        if used["max_rss_mb"] is not None:
+            rss.append(used["max_rss_mb"])
+        used["max_rss_mb"] = max(rss) if rss else None
+        # Allocation TotalCPU already aggregates its steps. Never add both.
+        if used["total_cpu_s"] is None:
+            cpu = [step["total_cpu_s"] for step in measured_steps
+                   if step["total_cpu_s"] is not None and not step["job_id"].endswith(".extern")]
+            used["total_cpu_s"] = sum(cpu) if cpu else None
+        if is_terminal(record["state"]) and used["allocated_cpu_s"] and used["total_cpu_s"] is not None:
+            used["cpu_eff_pct"] = used["total_cpu_s"] / used["allocated_cpu_s"] * 100
     return out
 
 
@@ -540,7 +612,7 @@ def build_resource_state(ts, partitions_text, pending_text, gpu_text, nodes_text
     # pending/vram/compute-capability), but fall back to the measured
     # per-node GRES already in `nodes` when the wrapper yields nothing —
     # otherwise a silent wrapper leaves the whole gpu_type series empty and
-    # the unity_usage/unity_traffic readers answer no_data forever, which is
+    # the usage readers answer no_data forever, which is
     # exactly what the deployed collector produced. Neither branch invents a
     # reading: with no source at all, no gpu_type record is emitted.
     gpu_recs = parse_gpu_types(gpu_text) or gpu_types_from_nodes(nodes_text)

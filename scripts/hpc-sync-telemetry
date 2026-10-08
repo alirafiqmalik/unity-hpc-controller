@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# hpc-sync-telemetry — exposed entry point for the local-archive telemetry pull.
-# Load the active project's .env when present.  The lower-level synchronizer
-# still requires an explicit source, so a missing or blank value fails safely.
+# hpc-sync-telemetry — entry point for the local-archive telemetry pull.
+# The controller passes UNITY_TELEMETRY_SRC from its saved settings or its
+# environment. The synchronizer requires that value, so a blank source fails
+# safely before any transfer.
 set -euo pipefail
-
-PROJECT_DIR="${PROJECT_DIR:-$PWD}"
-ENV_FILE="$PROJECT_DIR/unityHPC/.env"
-if [ -f "$ENV_FILE" ]; then
-    set -a
-    . "$ENV_FILE"
-    set +a
-fi
 
 exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/cluster-intel/sync-telemetry.sh" "$@"

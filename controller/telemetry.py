@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import cluster_session, events, registry
+from controller import cluster_session, events
 from lib import paths
 
 REPO = Path(__file__).resolve().parent.parent
@@ -55,6 +55,7 @@ DEFAULTS = {
     "script_mode": "once",
     "ssh_host": "unity",
     "ssh_identity": "",
+    "session_name": cluster_session.SESSION_NAME,
 }
 
 _lock = threading.Lock()
@@ -130,6 +131,10 @@ def settings() -> dict:
         )
     except ValueError:
         out["ssh_identity"] = DEFAULTS["ssh_identity"]
+    try:
+        out["session_name"] = cluster_session.clean_session_name(out.get("session_name"))
+    except ValueError:
+        out["session_name"] = DEFAULTS["session_name"]
     return out
 
 
@@ -190,6 +195,8 @@ def save_settings(**changes) -> dict:
         current["ssh_identity"] = cluster_session.clean_ssh_identity(
             changes["ssh_identity"]
         )
+    if "session_name" in changes:
+        current["session_name"] = cluster_session.clean_session_name(changes["session_name"])
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
@@ -205,30 +212,10 @@ def save_settings(**changes) -> dict:
 # source resolution
 
 
-def _project_source() -> tuple[str, str]:
-    """The first UNITY_TELEMETRY_SRC an attached project's .env declares."""
-    for rec in registry.list_projects():
-        env_file = Path(rec.get("path", "")) / "unityHPC" / ".env"
-        try:
-            text = env_file.read_text(errors="replace")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            line = line.strip()
-            if not line.startswith("UNITY_TELEMETRY_SRC"):
-                continue
-            _, _, value = line.partition("=")
-            value = value.split("#", 1)[0].strip().strip("'\"")
-            if value:
-                return value, f"project:{rec.get('slug', '')}"
-    return "", ""
-
-
 def resolve_source() -> dict:
     """Where the retrieval reads from, and which layer named it.
 
-    Order: the saved controller setting, then the controller's own environment,
-    then the first attached project that declares one.
+    Order: the saved controller setting, then the controller's own environment.
     """
     saved = settings()["source"]
     if saved:
@@ -236,9 +223,6 @@ def resolve_source() -> dict:
     from_env = str(os.environ.get("UNITY_TELEMETRY_SRC") or "").strip()
     if from_env:
         return {"value": from_env, "origin": "environment", "configured": True}
-    value, origin = _project_source()
-    if value:
-        return {"value": value, "origin": origin, "configured": True}
     return {"value": "", "origin": "none", "configured": False}
 
 
@@ -638,6 +622,7 @@ def close_session() -> dict:
         source["value"],
         host=cfg.get("ssh_host") or "unity",
         identity=cfg.get("ssh_identity") or "",
+        session_name=cfg["session_name"],
     )
     if report.get("ok") and not report.get("skipped"):
         events.record("sync", "cluster session closed", session=report.get("session"))
@@ -753,7 +738,7 @@ def scheduler_alive() -> bool:
 
 
 # --------------------------------------------------------------------------
-# the one payload the dashboard reads
+# the one payload API clients read
 
 
 def status(limit: int = 10) -> dict:
@@ -779,7 +764,7 @@ def status(limit: int = 10) -> dict:
             "inactivity_timeout_s": cluster_session.inactivity_timeout_s(
                 cfg["interval_minutes"]
             ),
-            "session": cluster_session.SESSION_NAME,
+            "session": cfg["session_name"],
             "script": cfg["script_mode"],
             "scripts": list(cluster_session.MODES),
         },
