@@ -58,7 +58,7 @@ def test_in_use_port(tmp_data_dir, monkeypatch, capsys):
     assert "8301" in err and "already in use" in err
 
 
-def test_fg_binds_localhost_and_publishes_tailscale(tmp_data_dir, monkeypatch, capsys):
+def test_fg_binds_localhost_and_publishes_tailscale_on_request(tmp_data_dir, monkeypatch, capsys):
     bound = {}
 
     class FakeSrv:
@@ -72,7 +72,7 @@ def test_fg_binds_localhost_and_publishes_tailscale(tmp_data_dir, monkeypatch, c
     monkeypatch.setattr(
         serve, "_tailscale_serve", lambda port: "https://box.tailnet.ts.net/"
     )
-    assert serve.main(["--fg", "--port", "8300"]) == 0
+    assert serve.main(["--fg", "--tailscale", "--port", "8300"]) == 0
     assert bound["addr"] == ("127.0.0.1", 8300)
     out = capsys.readouterr().out
     assert "https://box.tailnet.ts.net/" in out
@@ -101,7 +101,7 @@ def test_no_tailscale_skips_serve(tmp_data_dir, monkeypatch, capsys):
     assert "serve :" not in out
 
 
-def test_default_start_runs_in_background(tmp_data_dir, monkeypatch, capsys):
+def test_background_start_passes_tailscale_through(tmp_data_dir, monkeypatch, capsys):
     class FakeProc:
         pid = 4242
 
@@ -124,8 +124,8 @@ def test_default_start_runs_in_background(tmp_data_dir, monkeypatch, capsys):
         serve, "_tailscale_https_url", lambda *_a: "https://box.tailnet.ts.net/"
     )
     monkeypatch.setattr(serve, "_tailscale_ip", lambda: None)
-    assert serve.main(["--port", "8300"]) == 0
-    assert "--fg" in spawned["cmd"]
+    assert serve.main(["--tailscale", "--port", "8300"]) == 0
+    assert "--fg" in spawned["cmd"] and "--tailscale" in spawned["cmd"]
     assert spawned["kwargs"].get("start_new_session") is True
     runtime = json.loads(paths.controller_runtime().read_text())
     assert runtime["pid"] == 4242
@@ -197,3 +197,28 @@ def test_install_user_service_is_foreground_and_tailscale_ready(
     out = capsys.readouterr().out
     assert "enable --now" in out
     assert "hpc-controller --tailscale" not in out
+
+
+def test_isolated_service_preserves_backend_paths_and_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    data = tmp_path / "backend data%"
+    monkeypatch.setenv("UNITY_HPC_DATA", str(data))
+    assert serve.main(["--install-user-service", "--service-name", "unity-refinement",
+                       "--port", "8301", "--host", "127.0.0.2", "--no-tailscale"]) == 0
+    units = tmp_path / ".config" / "systemd" / "user"
+    assert not (units / "unity-hpc-controller.service").exists()
+    text = (units / "unity-refinement.service").read_text()
+    assert 'Environment="UNITY_HPC_DATA=' + str(data).replace("%", "%%") + '"' in text
+    assert '"127.0.0.2"' in text and '"8301"' in text
+    assert '"--tailscale"' not in text
+    assert "--legacy-projects" not in text and "--no-build-ui" not in text
+    assert "Restart=on-failure" in text and "CPUSchedulingPolicy=other" in text
+
+
+def test_service_installer_rejects_path_as_unit_name(tmp_path, monkeypatch):
+    import pytest
+    monkeypatch.setenv("HOME", str(tmp_path))
+    with pytest.raises(SystemExit) as error:
+        serve.main(["--install-user-service", "--service-name", "../other"])
+    assert error.value.code == 2
+    assert not (tmp_path / ".config" / "systemd" / "other.service").exists()

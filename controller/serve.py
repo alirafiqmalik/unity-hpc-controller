@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Serve the Unity HPC controller (API + dashboard). Stdlib only.
+"""Serve the headless Unity HPC controller API. Stdlib only.
 
-    hpc-controller                 # background + Tailscale HTTPS (default)
+    hpc-controller                 # background, loopback only (default)
     hpc-controller --status
     hpc-controller --stop
     hpc-controller --fg            # stay in the terminal
-    hpc-controller --no-tailscale  # localhost only
+    hpc-controller --tailscale     # also publish over `tailscale serve`
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import argparse
 import errno
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -26,15 +27,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from controller import telemetry
-from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, UI_DIR, WEB_DIR, handle
+from controller.http import DEFAULT_HOST, DEFAULT_PORT, Request, handle
 from lib import paths
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-
-#: How long one `npm` step may take before the start-up gives up on it.
-BUILD_TIMEOUT_S = 900
-
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args):
@@ -57,11 +54,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)
         self.send_header("Content-Length", str(len(resp.body)))
-        # `no-store` is the default, and it is right for every API answer and
-        # for index.html. A response that sets its own Cache-Control keeps it:
-        # sending both puts two headers on the wire, and a client combines them
-        # into one list where `no-store` wins, so a hashed asset would never be
-        # cached. Only the route knows which of the two it needs.
         if "Cache-Control" not in resp.headers:
             self.send_header("Cache-Control", "no-store")
         for key, value in resp.headers.items():
@@ -81,75 +73,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._dispatch("DELETE")
 
-
-
-def dashboard_built() -> bool:
-    """True when `controller/web/dist` holds a built page."""
-    return (UI_DIR / "index.html").is_file()
-
-
-def _npm() -> str | None:
-    return shutil.which("npm")
-
-
-def _run_npm(args: list[str], note: str) -> bool:
-    """Run one npm step in `controller/web`, streaming its output."""
-    npm = _npm()
-    if npm is None:
-        return False
-    print(f"  {note} ...", flush=True)
-    try:
-        proc = subprocess.run(
-            [npm, *args],
-            cwd=WEB_DIR,
-            timeout=BUILD_TIMEOUT_S,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"  {note}: timed out after {BUILD_TIMEOUT_S}s", file=sys.stderr)
-        return False
-    except OSError as exc:
-        print(f"  {note}: {exc}", file=sys.stderr)
-        return False
-    return proc.returncode == 0
-
-
-def ensure_dashboard(force: bool = False) -> bool:
-    """
-    Build the dashboard when it is missing.
-
-    The controller ships the dashboard as source, so the first start on a
-    machine builds it. A later start finds `dist/` and does nothing, which
-    keeps start-up instant. `force` rebuilds an existing `dist/`.
-
-    A failure here never stops the controller: the API is the part that must
-    come up, and `http._static` answers 503 with the two commands to run.
-    ADR 0006.
-    """
-    if not WEB_DIR.is_dir():
-        return False
-    if dashboard_built() and not force:
-        return True
-    if _npm() is None:
-        print(
-            "The dashboard is not built and npm is not on PATH.\n"
-            "  Install Node 20 or newer, then run:\n"
-            "    cd controller/web && npm install && npm run build\n"
-            "  The API is up; the dashboard page answers 503 until then.",
-            file=sys.stderr,
-        )
-        return False
-
-    print("Building the dashboard (first start on this machine).")
-    if not (WEB_DIR / "node_modules").is_dir():
-        if not _run_npm(["install", "--no-audit", "--no-fund"], "npm install"):
-            print("  npm install failed; the dashboard stays unbuilt.", file=sys.stderr)
-            return False
-    if not _run_npm(["run", "build"], "npm run build"):
-        print("  npm run build failed; the dashboard stays unbuilt.", file=sys.stderr)
-        return False
-    print("  dashboard built.")
-    return True
 
 
 def _pid_alive(pid: int) -> bool:
@@ -280,14 +203,6 @@ def _print_urls(host: str, port: int, ts_url: str | None = None,
         print(f"  log   : {log}")
 
 
-def _open_browser(url: str) -> None:
-    try:
-        import webbrowser
-        webbrowser.open(url)
-    except Exception:
-        pass
-
-
 def _controller_running(port: int) -> tuple[bool, dict | None]:
     runtime = _read_runtime()
     if runtime is None:
@@ -311,8 +226,8 @@ def _spawn_background(host: str, port: int, tailscale: bool) -> subprocess.Popen
         sys.executable, "-m", "controller.serve",
         "--fg", "--host", host, "--port", str(port),
     ]
-    if not tailscale:
-        cmd.append("--no-tailscale")
+    if tailscale:
+        cmd.append("--tailscale")
     env = os.environ.copy()
     extra = str(REPO)
     env["PYTHONPATH"] = extra + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -379,20 +294,43 @@ def _status() -> int:
     return 0
 
 
-def install_user_service(port: int) -> int:
+def _systemd_quote(value: str, *, command: bool = False) -> str:
+    """Quote a literal unit value, including systemd's specifier expansion."""
+    if any(character in value for character in "\n\r\0"):
+        raise ValueError("service paths cannot contain line breaks or NUL")
+    value = value.replace("%", "%%")
+    if command:
+        value = value.replace("$", "$$")
+    return json.dumps(value, ensure_ascii=False)
+
+
+def install_user_service(port: int, *, host: str = DEFAULT_HOST,
+                         tailscale: bool = False,
+                         service_name: str = "unity-hpc-controller") -> int:
     """Write a systemd --user unit that keeps the controller up."""
     dest_dir = Path.home() / ".config" / "systemd" / "user"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / "unity-hpc-controller.service"
-    python = sys.executable
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", service_name):
+        raise ValueError("service name must contain only letters, digits, underscores, or hyphens")
+    dest = dest_dir / f"{service_name}.service"
+    command = [sys.executable, "-m", "controller.serve", "--fg",
+               "--host", host, "--port", str(port)]
+    if tailscale:
+        command.append("--tailscale")
+    executable = " ".join(_systemd_quote(argument, command=True) for argument in command)
+    data_environment = _systemd_quote("UNITY_HPC_DATA=" + str(paths.data_dir().resolve()))
     unit = f"""[Unit]
-Description=Unity HPC controller (dashboard + API)
+Description=Unity HPC backend controller
 After=network.target
 
 [Service]
 Type=simple
-ExecStart={python} -m controller.serve --fg --port {port}
-WorkingDirectory={REPO}
+ExecStart={executable}
+WorkingDirectory={str(REPO).replace('%', '%%')}
+Environment={data_environment}
+Environment=PYTHONUNBUFFERED=1
+CPUSchedulingPolicy=other
+Nice=0
 Restart=on-failure
 RestartSec=5
 
@@ -402,7 +340,7 @@ WantedBy=default.target
     dest.write_text(unit)
     print(f"wrote {dest}")
     print("enable with:  systemctl --user daemon-reload")
-    print("              systemctl --user enable --now unity-hpc-controller")
+    print(f"              systemctl --user enable --now {service_name}")
     return 0
 
 
@@ -410,10 +348,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="hpc-controller",
         description=(
-            "Unity HPC controller — API + dashboard. "
-            "Starts in the background and publishes over Tailscale by default."
+            "Headless Unity HPC controller. "
+            "Starts in the background on the loopback interface by default."
         ),
-        epilog="Do not use `tailscale funnel` — that publishes the dashboard to the internet.",
+        epilog="Do not use `tailscale funnel`: it publishes the API to the internet.",
     )
     ap.add_argument("--host", default=DEFAULT_HOST,
                     help=f"bind address (default {DEFAULT_HOST})")
@@ -422,8 +360,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--tailscale",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="publish via `tailscale serve` (default: on)",
+        default=False,
+        help="publish via `tailscale serve` (default: off)",
     )
     ap.add_argument("--fg", "--foreground", action="store_true",
                     help="stay in the foreground (default is background)")
@@ -431,27 +369,26 @@ def main(argv: list[str] | None = None) -> int:
                     help="stop the background controller")
     ap.add_argument("--status", action="store_true",
                     help="print whether the controller is running, and its URLs")
-    ap.add_argument("--open", action="store_true",
-                    help="open the dashboard in a local browser")
     ap.add_argument("--install-user-service", action="store_true",
                     help="write a systemd --user unit and exit")
-    ap.add_argument("--build-ui", action="store_true",
-                    help="rebuild the dashboard even when controller/web/dist exists")
-    ap.add_argument("--no-build-ui", action="store_true",
-                    help="never build the dashboard on start")
+    ap.add_argument("--service-name", default="unity-hpc-controller",
+                    help="unit name for --install-user-service (default: unity-hpc-controller)")
     args = ap.parse_args(argv)
 
     if args.install_user_service:
-        return install_user_service(args.port)
+        try:
+            return install_user_service(
+                args.port, host=args.host, tailscale=args.tailscale,
+                service_name=args.service_name,
+            )
+        except ValueError as exc:
+            ap.error(str(exc))
     if args.stop:
         return _stop()
     if args.status:
         return _status()
 
-    # The dashboard is built from source on the first start of a machine, so
-    # a fresh clone serves a page without a separate step. ADR 0006.
-    if not args.no_build_ui:
-        ensure_dashboard(force=args.build_ui)
+    from controller import campaigns
 
     host = args.host
     port = args.port
@@ -470,8 +407,6 @@ def main(argv: list[str] | None = None) -> int:
                 pid = runtime.get("pid") if runtime else None
         ts_url = _tailscale_https_url(rt_port)
         _print_urls(rt_host, rt_port, ts_url=ts_url, pid=pid)
-        if args.open:
-            _open_browser(ts_url or f"http://127.0.0.1:{rt_port}")
         return 0
 
     if not args.fg:
@@ -496,8 +431,6 @@ def main(argv: list[str] | None = None) -> int:
         ts_url = _tailscale_https_url(port) if args.tailscale else None
         _print_urls(host, port, ts_url=ts_url, pid=proc.pid)
         print("  stop  : hpc-controller --stop")
-        if args.open:
-            _open_browser(ts_url or f"http://127.0.0.1:{port}")
         return 0
 
     try:
@@ -516,21 +449,17 @@ def main(argv: list[str] | None = None) -> int:
     # The schedule sleeps in this process until a run is due. It does nothing
     # until an operator switches it on. ADR 0004.
     telemetry.start_scheduler()
-    from controller import workspace_worker
-    workspace_worker.start()
+    campaigns.start()
     ts_url = _tailscale_serve(port) if args.tailscale else None
     _print_urls(host, port, ts_url=ts_url, pid=os.getpid())
     print("  Ctrl-C to stop.")
-
-    if args.open:
-        _open_browser(ts_url or f"http://127.0.0.1:{port}")
 
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\nstopped.")
     finally:
-        workspace_worker.stop()
+        campaigns.stop()
         telemetry.stop_scheduler()
         _clear_runtime()
     return 0

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Portable campaigns. HTTP only: no project registration or SSH here.
+set -euo pipefail
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${PLUGIN_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m controller.campaign_cli "$@"

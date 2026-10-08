@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
 """
-Unity HPC MCP server — stdio transport.
-Exposes 14 tools for reading campaign state, job status, results,
-logs, cluster queue, historical usage, the shared cluster profile, this
-project's own job telemetry, this server's own health, submitting or
-cancelling jobs, and running SSH commands on Unity.
+Unity HPC MCP server. Stdio transport.
 
-Reports metrics a job printed; it never names one itself. A project declares
-its own in unityHPC/metrics.json (see lib/metrics.py).
+Every tool is an HTTP client of the headless controller. The controller owns
+SSH, the campaign journal, source bundles, scheduling, retries, and result
+retrieval. This server never opens a cluster connection and never reads a
+project directory.
 
-Registered automatically by the plugin's .mcp.json; no manual config needed.
-Only third-party dependency is `mcp` — the analysis libraries (pandas, plotext)
-belong to cluster-intel/, not to this server.
-
-Campaign state resolves from PROJECT_DIR if set, else the working directory.
-Shared cluster-intel data (usage history, cluster profile) resolves to
-$UNITY_HPC_DATA (default ~/.local/share/unity-hpc) — a machine-wide, version-
-independent store shared by every project, NOT the versioned plugin dir.
+`UNITY_CONTROLLER` names the controller base URL (default http://127.0.0.1:8300).
+The plugin's .mcp.json registers this server; no manual configuration is needed.
+The only third-party dependency is `mcp`.
 
 Tools are invoked as mcp__unity-hpc__<tool_name> in skills.
 """
@@ -24,12 +17,10 @@ Tools are invoked as mcp__unity-hpc__<tool_name> in skills.
 import asyncio
 import json
 import os
-import subprocess
-import sqlite3
-import sys
 import time
-import glob
-import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -37,1202 +28,163 @@ import mcp.server.stdio
 import mcp.types as types
 from mcp.server import Server
 
-# The repo root holds lib/; make it importable however this file is launched
-# (plugin cache, checkout, or a spec-loaded test import).
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lib import queries as _queries  # noqa: E402
-from lib import campaign as _campaign  # noqa: E402
-from lib import metrics as _metrics  # noqa: E402
-
 server = Server("unity-hpc")
 
-#: This process runs the code that existed when it started. A plugin upgrade
-#: rewrites those files but cannot restart the server, so a session can keep
-#: talking to code that was replaced minutes ago — reading the fixed source and
-#: seeing the old behaviour, with nothing to indicate why. Recorded at import so
-#: unity_doctor can detect exactly that.
+#: Recorded at import. A plugin upgrade rewrites this file but cannot restart
+#: the server, so unity_doctor compares the file's mtime with this stamp.
 _SOURCE = Path(__file__).resolve()
 _LOADED_AT = time.time()
 
 
-def _project_dir() -> Path:
-    """Return the project root from PROJECT_DIR env or cwd."""
-    d = os.environ.get("PROJECT_DIR", "")
-    return Path(d) if d else Path.cwd()
-
-
-def _state_dir() -> Path:
-    return _project_dir() / ".unity_state"
-
-
-def _latest_db() -> Path | None:
-    """Return the most recently modified campaign DB, or None."""
-    dbs = sorted(_state_dir().glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return dbs[0] if dbs else None
-
-
-def _db_query(db_path: Path, sql: str, params: tuple = ()) -> list[dict]:
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
+def _plugin_version() -> str | None:
+    manifest = _SOURCE.parent.parent / ".claude-plugin" / "plugin.json"
     try:
-        cur = con.execute(sql, params)
-        return [dict(r) for r in cur.fetchall()]
-    finally:
-        con.close()
+        return json.loads(manifest.read_text()).get("version")
+    except (OSError, ValueError):
+        return None
 
-
-def _parse_env_value(raw: str) -> str:
-    """Take the value out of one `.env` right-hand side, the way bash would.
-
-    The generated .env documents itself with trailing comments
-    (`UNITY_HOST="unity"   # ssh alias`). Stripping only the quotes left the
-    comment glued to the value, so `_ssh` was handed `unity"   # ssh alias`
-    as a hostname — every SSH-backed tool failed with "hostname contains
-    invalid characters" in any project scaffolded from a template that
-    comments that line."""
-    raw = raw.strip()
-    if not raw:
-        return ""
-    if raw[0] in "\"'":
-        quote = raw[0]
-        end = raw.find(quote, 1)
-        return raw[1:end] if end != -1 else raw[1:]
-    for marker in (" #", "\t#"):
-        cut = raw.find(marker)
-        if cut != -1:
-            raw = raw[:cut]
-    return raw.strip()
-
-
-def _env_value(key: str, default: str = "") -> str:
-    """Read one value from the project's unityHPC/.env.
-
-    Last assignment wins, because that is what `set -a; . .env` does: the
-    generated .env ships blank placeholders and users append their real values
-    below them. Taking the first match read those placeholders and silently
-    disabled every feature that depended on them."""
-    env_path = _project_dir() / "unityHPC" / ".env"
-    if not env_path.exists():
-        return default
-    value = default
-    for line in env_path.read_text(errors="replace").splitlines():
-        line = line.strip()
-        if line.startswith("#") or not line.startswith(f"{key}="):
-            continue
-        candidate = _parse_env_value(line.split("=", 1)[1])
-        if candidate:
-            value = candidate
-    return value
-
-
-def _ssh(cmd: str, timeout: int = 30) -> tuple[str, str, int]:
-    """Run a command on Unity via SSH. Returns (stdout, stderr, returncode)."""
-    unity_host = _env_value("UNITY_HOST", "unity")
-    proc = subprocess.run(
-        ["ssh", unity_host, cmd],
-        capture_output=True, text=True, timeout=timeout
-    )
-    return proc.stdout, proc.stderr, proc.returncode
-
-
-# ─── Tool handlers ────────────────────────────────────────────────────────────
 
 @server.list_tools()
 async def list_tools() -> list[types.Tool]:
+    identity = {"campaign_id": {"type": "string", "description": "Campaign identity from the accepted declaration."}}
     return [
-        types.Tool(
-            name="unity_status",
-            description="Job state counts for this project's latest (or named) campaign. Instant local read of the job ledger, refreshed from shared telemetry; no SSH.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "campaign": {"type": "string", "description": "Campaign name. Omit for latest."}
-                }
-            }
-        ),
-        types.Tool(
-            name="unity_jobs",
-            description="This project's jobs for a campaign: job_id, exp, partition, status and the hardware each landed on. Local read; no SSH.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "campaign": {"type": "string", "description": "Campaign name. Omit for latest."}
-                }
-            }
-        ),
-        types.Tool(
-            name="unity_results",
-            description="Numeric `key: value` pairs each fetched job printed to stdout. Metric-agnostic — reports whatever the job chose to print.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "campaign": {"type": "string", "description": "Campaign name. Omit for latest."}
-                }
-            }
-        ),
-        types.Tool(
-            name="unity_results_tsv",
-            description=("Read one bounded page of local results.tsv as structured data. "
-                         "Rows use the file's own header."),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 500,
-                              "description": "Maximum rows to return (default 100)."},
-                    "offset": {"type": "integer", "minimum": 0,
-                               "description": "Zero-based row offset (default 0)."},
-                },
-            },
-        ),
-        types.Tool(
-            name="unity_submit",
-            description=(
-                "Submit a job to SLURM via the project's unityHPC/run.sh dispatcher. "
-                "Works for any job type (CPU-only, GPU, or multi-node). Returns the "
-                "scheduler's response, or guidance if the project has no scaffold yet."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "exp": {"type": "string", "description": "Job name — used for the SLURM job name and log filenames"},
-                    "extra_args": {"type": "string", "description": "Extra flags passed to sbatch, e.g. '--qos=short'. Use '--dry-run' to preview without submitting. Use '--export=ALL,MODEL=x' to pass values into JOB_COMMAND."},
-                    "campaign": {"type": "string", "description": "Group this job with others under one campaign. Omit for today's UTC date."},
-                    "env": {"type": "object",
-                            "description": ("Override .env values for this one job without editing the file, "
-                                            "e.g. {\"JOB_COMMAND\": \"echo smoke\", \"SLURM_MEM\": \"1G\"}. "
-                                            "An empty string is a deliberate override: {\"SLURM_GPUS\": \"\"} "
-                                            "runs one CPU job in a GPU project. Rejected if run.sh does not "
-                                            "list the name as overridable.")}
-                },
-                "required": ["exp"]
-            }
-        ),
-        types.Tool(
-            name="unity_array",
-            description=(
-                "Submit a fan-out array of independent tasks to SLURM via the "
-                "project's unityHPC/run.sh dispatcher, from a manifest file of "
-                "one experiment name per line. Returns the scheduler's response, "
-                "or guidance if the project has no scaffold yet."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "manifest": {"type": "string", "description": "Path to the manifest file, one experiment name (optionally with a tab-separated payload) per line. Absolute, or relative to the project directory."},
-                    "extra_args": {"type": "string", "description": "Extra flags. '--limit 20' caps concurrent tasks and is read by run.sh; anything else is passed to sbatch, e.g. '--qos=short'. '--dry-run' is not supported here."},
-                    "campaign": {"type": "string", "description": "Group this array under one campaign. Omit for today's UTC date."}
-                },
-                "required": ["manifest"]
-            }
-        ),
-        types.Tool(
-            name="unity_cancel",
-            description=(
-                "Cancel live jobs via the project's unityHPC/run.sh dispatcher: "
-                "scancel the parent job(s) for a campaign, or one job within it, "
-                "and update the ledger."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "campaign": {"type": "string", "description": "Campaign name. Omit for the latest."},
-                    "job": {"type": "string", "description": "Cancel only this parent job id, within the campaign."}
-                }
-            }
-        ),
-        types.Tool(
-            name="unity_logs",
-            description=("Tail the newest recorded job's SLURM output AND error files "
-                         "— live over SSH, falling back to a fetched copy. Reads both "
-                         "streams by default, because most failures print to stderr."),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "campaign": {"type": "string", "description": "Campaign name. Omit for the latest."},
-                    "lines": {"type": "integer", "description": "Lines to tail (default 20)"},
-                    "stream": {"type": "string", "enum": ["out", "err", "both"],
-                               "description": ("Which stream to read (default both). "
-                                               "'err' is where a failing job says why.")}
-                }
-            }
-        ),
-        types.Tool(
-            name="unity_ssh",
-            description="Run a read-only command on Unity login node via SSH. Blocks dangerous writes.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "cmd": {"type": "string", "description": "Shell command to run on Unity"},
-                    "timeout": {"type": "integer", "description": "Seconds to wait (default 60, or $UNITY_SSH_TIMEOUT). Raise it for wide sacct queries."}
-                },
-                "required": ["cmd"]
-            }
-        ),
-        types.Tool(
-            name="unity_traffic",
-            description="Live-ish queue signal + best/worst submit hours from cluster-intel usage summary.",
-            inputSchema={"type": "object", "properties": {}}
-        ),
-        types.Tool(
-            name="unity_cluster_profile",
-            description="Return the shared cluster profile (partitions, GPU types, account limits, capacity) written by unity-hpc:recon. Shared by all projects; cwd-independent.",
-            inputSchema={"type": "object", "properties": {}}
-        ),
-        types.Tool(
-            name="unity_my_jobs",
-            description=("This project's own submitted jobs, enriched with the "
-                         "real hardware and efficiency each got (from shared "
-                         "telemetry). Jobs not yet collected show as pending."),
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        types.Tool(
-            name="unity_doctor",
-            description=("Report which plugin version this server process is actually "
-                         "running, plus project scaffold, ledger, metric declaration "
-                         "and shared-data health. Call this first when behaviour "
-                         "disagrees with the source. status is 'stale' only when this "
-                         "process is running code that is no longer on disk (see "
-                         "code_stale) — every other finding reports 'degraded'."),
-            inputSchema={"type": "object", "properties": {}}
-        ),
-        types.Tool(
-            name="unity_usage",
-            description="Query historical cluster usage (fixed time slots) for a window: GPU allocation by type, jobs, memory. Reads usage.db built from sacct history.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "hours": {"type": "integer", "description": "Look-back window in hours (default 168 = 7d)"},
-                    "gpu_type": {"type": "string", "description": "Filter to one GPU type (e.g. h100)"}
-                }
-            }
-        ),
+        types.Tool(name="unity_campaign_plan",
+                   description="Check an immutable experiment bundle and compatible hardware placement through the controller. Read-only; submits nothing.",
+                   inputSchema={"type": "object", "properties": {"specification_path": {"type": "string", "description": "Absolute path to runner-produced campaign JSON."}}, "required": ["specification_path"]}),
+        types.Tool(name="unity_campaign_submit",
+                   description="Accept a campaign JSON bundle into the controller journal. The service stages, schedules, reconciles, retries within budget, and retrieves declared results.",
+                   inputSchema={"type": "object", "properties": {"specification_path": {"type": "string", "description": "Absolute path to runner-produced campaign JSON; campaign_id is the idempotency identity."}}, "required": ["specification_path"]}),
+        types.Tool(name="unity_campaign_status",
+                   description="Read one campaign's tasks, attempts, errors and completion status, or list campaigns when campaign_id is omitted.",
+                   inputSchema={"type": "object", "properties": identity}),
+        types.Tool(name="unity_campaign_results",
+                   description="Read a bounded page of durable result and state events. Save next_cursor and pass it as after on the next read.",
+                   inputSchema={"type": "object", "properties": {**identity, "after": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "required": ["campaign_id"]}),
+        types.Tool(name="unity_campaign_cancel",
+                   description="Request cancellation of only the named controller campaign and its recorded jobs.",
+                   inputSchema={"type": "object", "properties": identity, "required": ["campaign_id"]}),
+        types.Tool(name="unity_backend",
+                   description="Read controller backend settings and the catalog age (status), or refresh the bounded live Slurm hardware and policy catalog (probe).",
+                   inputSchema={"type": "object", "properties": {"action": {"type": "string", "enum": ["status", "probe"]}}}),
+        types.Tool(name="unity_accounting",
+                   description="Read archived Slurm accounting rows: requested and allocated resources, nodes, timing, and step high-water marks. Allocation counts are not time-weighted utilization.",
+                   inputSchema={"type": "object", "properties": {
+                       "user": {"type": "string"}, "account": {"type": "string"}, "partition": {"type": "string"}, "gpu_type": {"type": "string"},
+                       "since": {"type": "string", "description": "ISO-8601 UTC lower bound."}, "until": {"type": "string", "description": "ISO-8601 UTC upper bound."},
+                       "limit": {"type": "integer", "minimum": 1, "maximum": 1000}, "offset": {"type": "integer", "minimum": 0}}}),
+        types.Tool(name="unity_doctor",
+                   description="Read controller health, backend mode, SSH key state, and whether this server process runs the plugin code on disk. Call this first when behaviour disagrees with the source.",
+                   inputSchema={"type": "object", "properties": {}}),
     ]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
-    result = await _dispatch(name, arguments)
+    result = await _dispatch(name, arguments or {})
     return [types.TextContent(type="text", text=result)]
 
 
 async def _dispatch(name: str, args: dict) -> str:
-    if name == "unity_status":
-        return _unity_status(args.get("campaign"))
-    elif name == "unity_jobs":
-        return _unity_jobs(args.get("campaign"))
-    elif name == "unity_results":
-        return _unity_results(args.get("campaign"))
-    elif name == "unity_results_tsv":
-        return _unity_results_tsv(args.get("limit"), args.get("offset"))
-    elif name == "unity_submit":
-        return _unity_submit(args["exp"], args.get("extra_args", ""),
-                             args.get("campaign"), args.get("env"))
-    elif name == "unity_array":
-        return _unity_array(args["manifest"], args.get("extra_args", ""),
-                            args.get("campaign"))
-    elif name == "unity_cancel":
-        return _unity_cancel(args.get("campaign"), args.get("job"))
-    elif name == "unity_logs":
-        return _unity_logs(args.get("campaign"), args.get("lines", 20),
-                           args.get("stream", "both"))
-    elif name == "unity_ssh":
-        return _unity_ssh(args["cmd"], args.get("timeout"))
-    elif name == "unity_cluster_profile":
-        return _unity_cluster_profile()
-    elif name == "unity_usage":
-        return _unity_usage(args.get("hours", 168), args.get("gpu_type"))
-    elif name == "unity_traffic":
-        return _unity_traffic()
-    elif name == "unity_my_jobs":
-        return _unity_my_jobs()
-    elif name == "unity_doctor":
-        return _unity_doctor()
-    return f"Unknown tool: {name}"
+    if name == "unity_campaign_plan":
+        return await asyncio.to_thread(_campaign_from_file, args["specification_path"], "/api/v1/campaigns/plan")
+    if name == "unity_campaign_submit":
+        return await asyncio.to_thread(_campaign_from_file, args["specification_path"], "/api/v1/campaigns")
+    if name == "unity_campaign_status":
+        route = "/api/v1/campaigns"
+        if args.get("campaign_id"):
+            route += "/" + urllib.parse.quote(str(args["campaign_id"]), safe="")
+        return await asyncio.to_thread(_controller_request, "GET", route)
+    if name == "unity_campaign_results":
+        identity = urllib.parse.quote(str(args["campaign_id"]), safe="")
+        after, limit = int(args.get("after", 0)), int(args.get("limit", 100))
+        if after < 0 or not 1 <= limit <= 1000:
+            return json.dumps({"ok": False, "error": "after must be nonnegative; limit must be 1 to 1000"})
+        route = f"/api/v1/campaigns/{identity}/results?" + urllib.parse.urlencode({"after": after, "limit": limit})
+        return await asyncio.to_thread(_controller_request, "GET", route)
+    if name == "unity_campaign_cancel":
+        identity = urllib.parse.quote(str(args["campaign_id"]), safe="")
+        return await asyncio.to_thread(_controller_request, "POST", f"/api/v1/campaigns/{identity}/cancel", {})
+    if name == "unity_backend":
+        action = args.get("action", "status")
+        if action not in ("status", "probe"):
+            return json.dumps({"ok": False, "error": "action must be status or probe"})
+        if action == "probe":
+            return await asyncio.to_thread(_controller_request, "POST", "/api/v1/backend/probe", {})
+        return await asyncio.to_thread(_controller_request, "GET", "/api/v1/backend")
+    if name == "unity_accounting":
+        keys = ("user", "account", "partition", "gpu_type", "since", "until", "limit", "offset")
+        query = {key: str(args[key]) for key in keys if args.get(key) not in (None, "")}
+        route = "/api/v1/telemetry/accounting" + ("?" + urllib.parse.urlencode(query) if query else "")
+        return await asyncio.to_thread(_controller_request, "GET", route)
+    if name == "unity_doctor":
+        return await asyncio.to_thread(_doctor)
+    return json.dumps({"ok": False, "error": f"Unknown tool: {name}"})
 
 
-def _resolve_db(campaign: str | None) -> tuple[str, Path] | tuple[None, None]:
-    if campaign:
-        db = _state_dir() / f"{campaign}.db"
-        return (campaign, db) if db.exists() else (None, None)
-    db = _latest_db()
-    if db is None:
-        return None, None
-    return db.stem, db
+def _controller_base() -> str | None:
+    base = os.environ.get("UNITY_CONTROLLER", "http://127.0.0.1:8300").rstrip("/")
+    parsed = urllib.parse.urlsplit(base)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        return None
+    return base
 
 
-_NO_LEDGER = (
-    "No jobs recorded for this project yet.\n"
-    "Jobs are recorded when you submit through the dispatcher:\n"
-    "  bash unityHPC/run.sh run <exp>      (or the unity_submit tool)\n"
-    "If you submitted with sbatch directly, this project has no record of it — "
-    "unity_ssh with an sacct query is the way to find it."
-)
-
-
-def _refresh(campaign: str | None) -> None:
-    """Fold shared telemetry into the ledger. Local-only, never raises."""
+def _controller_request(method: str, route: str, payload=None) -> str:
+    """Campaign operations cross HTTP; this plugin never becomes a submitter."""
+    base = _controller_base()
+    if base is None:
+        return json.dumps({"ok": False, "error": "UNITY_CONTROLLER must be an HTTP(S) controller URL"})
+    request = urllib.request.Request(base + route, method=method,
+                                    data=json.dumps(payload).encode() if payload is not None else None,
+                                    headers={"Content-Type": "application/json", "Accept": "application/json"})
     try:
-        _campaign.refresh_from_telemetry(_project_dir(), campaign)
-    except Exception:
-        pass  # a stale read is fine; an exception here would blind the tool
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.read(16 * 1024 * 1024).decode()
+    except urllib.error.HTTPError as exc:
+        return exc.read(65536).decode(errors="replace")
+    except (OSError, ValueError) as exc:
+        return json.dumps({"ok": False, "error": f"controller request failed: {exc}"})
 
 
-def _stale_hint(rows: list[dict]) -> str | None:
-    if any(r.get("status") not in _campaign.TERMINAL for r in rows):
-        return ("\nSome jobs are not in a terminal state. These come from the "
-                "ledger (refreshed from telemetry collected every ~15 min). "
-                "For a live answer: bash unityHPC/run.sh status")
-    return None
-
-
-def _unity_status(campaign: str | None) -> str:
-    _refresh(campaign)
-    name = campaign or _campaign.latest_campaign(_project_dir())
-    if name is None:
-        return _NO_LEDGER
-    rows = _campaign.jobs(_project_dir(), name)
-    if not rows:
-        return f"Campaign {name} has no recorded jobs."
-    counts: dict[str, int] = {}
-    for r in rows:
-        counts[r["status"]] = counts.get(r["status"], 0) + 1
-    lines = [f"Campaign: {name}"]
-    for status in sorted(counts):
-        lines.append(f"  {status:<14} {counts[status]}")
-    hint = _stale_hint(rows)
-    if hint:
-        lines.append(hint)
-    return "\n".join(lines)
-
-
-def _unity_jobs(campaign: str | None) -> str:
-    _refresh(campaign)
-    name = campaign or _campaign.latest_campaign(_project_dir())
-    if name is None:
-        return _NO_LEDGER
-    rows = _campaign.jobs(_project_dir(), name)
-    if not rows:
-        return f"Campaign {name} has no recorded jobs."
-    header = f"{'job_id':<10} {'exp':<20} {'partition':<14} {'status':<14} {'hardware'}"
-    lines = [f"Campaign: {name}", header, "-" * len(header)]
-    for r in rows:
-        lines.append(
-            f"{str(r['job_id'] or ''):<10} {str(r['exp'] or ''):<20} "
-            f"{str(r['partition'] or ''):<14} {str(r['status'] or ''):<14} "
-            f"{r['hardware'] or '-'}"
-        )
-    hint = _stale_hint(rows)
-    if hint:
-        lines.append(hint)
-    return "\n".join(lines)
-
-
-#: keys a job might print that are not really metrics
-_METRIC_SKIP = {"real", "user", "sys", "warning", "error", "note", "usage"}
-
-
-def _parse_out_file(out_path: Path) -> dict:
-    """Parse `key: value` numeric pairs a job printed to stdout.
-
-    Deliberately metric-agnostic: this plugin serves every kind of SLURM job,
-    so it reports whatever the job chose to print rather than looking for one
-    domain's metrics. A job that prints nothing parseable yields {} — which the
-    caller must report as "no metrics", not as an empty result set.
-    """
-    metrics: dict = {}
+def _campaign_from_file(value: str, route: str) -> str:
     try:
-        text = out_path.read_text(errors="replace")
-    except OSError:
-        return metrics
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or ":" not in line or line.count(":") > 3:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip().rstrip(":")
-        if not key or len(key) > 40 or " " in key.strip() and len(key.split()) > 3:
-            continue
-        if key.lower() in _METRIC_SKIP:
-            continue
-        try:
-            metrics[key] = float(value.strip().split()[0]) if value.strip() else None
-        except (ValueError, IndexError):
-            continue
-        if metrics.get(key) is None:
-            metrics.pop(key, None)
-    return metrics
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ValueError("specification_path must be absolute")
+        if path.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError("campaign JSON exceeds 16 MiB")
+        specification = json.loads(path.read_text())
+        if not isinstance(specification, dict):
+            raise ValueError("campaign JSON must be an object")
+    except (OSError, ValueError, TypeError) as exc:
+        return json.dumps({"ok": False, "error": f"cannot read campaign JSON: {exc}"})
+    return _controller_request("POST", route, specification)
 
 
-def _unity_results(campaign: str | None) -> str:
-    """Parse metrics from _results/<campaign>/*.out files (source of truth)."""
-    name = campaign or _campaign.latest_campaign(_project_dir())
-    if name is None:
-        return _NO_LEDGER
-
-    results_dir = _project_dir() / "_results" / name
-    if not results_dir.exists():
-        return (f"Nothing fetched yet for campaign {name}. "
-                f"Run /unity-hpc:fetch (bash unityHPC/run.sh fetch).")
-
-    out_files = sorted(results_dir.glob("*.out"))
-    if not out_files:
-        return (f"No .out files in {results_dir}. The jobs may still be running, "
-                f"or they wrote their output elsewhere.")
-
-    parsed = {f.stem: _parse_out_file(f) for f in out_files}
-    discovered: list[str] = []
-    for metrics in parsed.values():
-        for k in metrics:
-            if k not in discovered:
-                discovered.append(k)
-
-    spec, spec_error = _metrics.load_with_error(_project_dir())
-    footer: list[str] = []
-    if spec_error:
-        footer.append(spec_error)
-
-    if not discovered:
-        msg = [f"Campaign {name}: {len(out_files)} output file(s) fetched, but "
-               f"none printed any `key: value` numeric lines.",
-               f"Raw output is in {results_dir}."]
-        declared = _metrics.missing_keys(spec, discovered)
-        if declared:
-            msg.append(f"This project declares {', '.join(declared)} in "
-                       f"unityHPC/{_metrics.FILENAME}; no job printed them.")
-        return "\n".join(msg + footer)
-
-    keys = _metrics.order_keys(spec, discovered)
-    width = max(len(s) for s in parsed) + 2
-    labels = [spec.label(k) if spec else k for k in keys]
-    header = f"{'job':<{width}}" + "".join(f"{lab:>16}" for lab in labels)
-    lines = [f"Campaign: {name}", header, "-" * len(header)]
-    for stem in sorted(parsed):
-        row = f"{stem:<{width}}"
-        for k in keys:
-            v = parsed[stem].get(k)
-            row += f"{v:>16.6g}" if isinstance(v, (int, float)) else f"{'-':>16}"
-        lines.append(row)
-
-    winner = _metrics.best(spec, parsed)
-    if winner and spec is not None:
-        lines.append(f"\nBest by {spec.label(spec.primary)} ({spec.goal}): "
-                     f"{winner[0]} = {winner[1]:.6g}")
-    missing = _metrics.missing_keys(spec, discovered)
-    if missing:
-        footer.append(f"Declared but not printed by any job: {', '.join(missing)}")
-    if spec is None and not spec_error:
-        footer.append("Metrics are whatever each job printed. To rank results, "
-                      f"declare a primary metric in unityHPC/{_metrics.FILENAME}.")
-    lines.append("")
-    lines.append(f"{len(out_files)} job(s). " + " ".join(footer))
-    return "\n".join(lines).rstrip()
-
-
-def _unity_results_tsv(limit: int | None = None, offset: int | None = None) -> str:
-    """Return results.tsv keyed by its own header row.
-
-    Header-driven on purpose: every project chooses its own columns, and a
-    hardcoded schema silently dropped rows that did not match it.  The page is
-    bounded so a long-running project cannot exhaust an MCP response."""
+def _doctor() -> str:
+    """Controller health plus the one local fact only this process knows:
+    whether its loaded code is older than the plugin source on disk."""
+    raw = _controller_request("GET", "/api/v1/health")
     try:
-        page_limit = 100 if limit is None else int(limit)
-    except (TypeError, ValueError):
-        page_limit = 100
-    try:
-        page_offset = 0 if offset is None else int(offset)
-    except (TypeError, ValueError):
-        page_offset = 0
-    page_limit = max(1, min(page_limit, 500))
-    page_offset = max(0, page_offset)
-
-    tsv = _project_dir() / "results.tsv"
-    if not tsv.exists():
-        return "results.tsv not found. Run /unity-hpc:connect to initialise it."
-    lines = [l for l in tsv.read_text().splitlines() if l.strip()]
-    if not lines:
-        return "results.tsv is empty."
-    columns = lines[0].split("\t")
-    if len(lines) == 1:
-        return json.dumps({"columns": columns, "rows": [], "total_rows": 0,
-                           "offset": page_offset, "limit": page_limit,
-                           "next_offset": None})
-    all_rows = []
-    for line in lines[1:]:
-        parts = line.split("\t")
-        row = {columns[i]: (parts[i] if i < len(parts) else "")
-               for i in range(len(columns))}
-        if len(parts) > len(columns):
-            row["_extra"] = parts[len(columns):]
-        all_rows.append(row)
-    rows = all_rows[page_offset:page_offset + page_limit]
-    next_offset = page_offset + len(rows)
-    if next_offset >= len(all_rows):
-        next_offset = None
-    return json.dumps({"columns": columns, "rows": rows,
-                       "total_rows": len(all_rows), "offset": page_offset,
-                       "limit": page_limit, "next_offset": next_offset})
-
-
-def _overridable(runner: Path) -> set[str]:
-    """The names run.sh accepts as a per-invocation override.
-
-    Read from the project's own dispatcher, not from a list kept here: run.sh is
-    a COPY inside the project, so a list in the server would claim support the
-    project's actual script may not have."""
-    try:
-        text = runner.read_text(errors="replace")
-        return set(text.split("UNITY_OVERRIDABLE=", 1)[1].split('"', 2)[1].split())
-    except (OSError, IndexError):
-        return set()
-
-
-def _missing_scaffold_message(runner: Path) -> str:
-    return (
-        f"No job scaffold in this project: {runner} does not exist.\n"
-        "Run /unity-hpc:connect to generate unityHPC/{run.sh,job_template.sh,"
-        "sync.sh,.env} for this project (it will ask whether the project is "
-        "cpu, gpu or ml).\n"
-        "If you keep your dispatcher elsewhere, point PROJECT_DIR at the "
-        "directory that contains unityHPC/."
-    )
-
-
-def _unity_submit(exp: str, extra_args: str, campaign: str | None = None,
-                  env: dict | None = None) -> str:
-    runner = _project_dir() / "unityHPC" / "run.sh"
-    if not runner.exists():
-        return _missing_scaffold_message(runner)
-
-    # Per-invocation overrides were reachable from a shell but not from this
-    # tool, so a CPU smoke test inside a GPU-scaffolded project could not be run
-    # through the plugin at all -- the caller had to drop to raw ssh, which is
-    # also how a job escapes the ledger.
-    call_env = dict(os.environ)
-    if env:
-        allowed = _overridable(runner)
-        if not allowed:
-            return ("unity_submit: this project's unityHPC/run.sh does not declare "
-                    "which values can be overridden per invocation, so it probably "
-                    "predates the feature.\nRe-run /unity-hpc:connect to regenerate "
-                    "the dispatcher (your .env is preserved), or submit from a "
-                    "shell: NAME=value bash unityHPC/run.sh run <exp>")
-        unknown = sorted(k for k in env if k not in allowed)
-        if unknown:
-            return (f"unity_submit: run.sh does not accept {', '.join(unknown)} "
-                    f"as a per-invocation override.\nIt accepts: "
-                    f"{', '.join(sorted(allowed))}.")
-        # str(), not a bare value: an empty string is a deliberate override --
-        # SLURM_GPUS="" is how one job in a GPU project runs on cpu -- and
-        # run.sh tests whether the name is SET, not whether it is non-empty.
-        call_env.update({k: str(v) for k, v in env.items()})
-
-    cmd = ["bash", str(runner), "run", exp]
-    if campaign:
-        cmd += ["--campaign", campaign]
-    if extra_args:
-        cmd += extra_args.split()
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=str(_project_dir()), env=call_env)
-    output = (proc.stdout + proc.stderr).strip()
-    if not output:
-        return f"run.sh exited {proc.returncode} with no output."
-    dry_run = "[dry-run]" in output
-    if not dry_run and "Recorded job" not in output and proc.returncode == 0:
-        output += ("\n\n[unity-hpc] The job was not recorded in the ledger — "
-                   "unity_status/unity_jobs will not see it. Note the job id above.")
-    return output
-
-
-def _unity_array(manifest: str, extra_args: str = "",
-                 campaign: str | None = None) -> str:
-    runner = _project_dir() / "unityHPC" / "run.sh"
-    if not runner.exists():
-        return _missing_scaffold_message(runner)
-
-    cmd = ["bash", str(runner), "array", manifest]
-    if campaign:
-        cmd += ["--campaign", campaign]
-    if extra_args:
-        cmd += extra_args.split()
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=str(_project_dir()), env=dict(os.environ))
-    output = (proc.stdout + proc.stderr).strip()
-    if not output:
-        return f"run.sh exited {proc.returncode} with no output."
-    if "Recorded" not in output and proc.returncode == 0:
-        output += ("\n\n[unity-hpc] The array was not recorded in the ledger — "
-                   "unity_status/unity_jobs will not see it. Note the job id above.")
-    return output
-
-
-def _unity_cancel(campaign: str | None = None, job: str | None = None) -> str:
-    runner = _project_dir() / "unityHPC" / "run.sh"
-    if not runner.exists():
-        return _missing_scaffold_message(runner)
-
-    cmd = ["bash", str(runner), "cancel"]
-    if campaign:
-        cmd += ["--campaign", campaign]
-    if job:
-        cmd += ["--job", job]
-    proc = subprocess.run(cmd, capture_output=True, text=True,
-                          cwd=str(_project_dir()), env=dict(os.environ))
-    output = (proc.stdout + proc.stderr).strip()
-    if not output:
-        return f"run.sh exited {proc.returncode} with no output."
-    return output
-
-
-def log_stem(campaign: str, job_id: str, exp: str) -> str:
-    """The SLURM log file stem for one recorded job.
-
-    A plain job writes `<exp>-<job id>`, because run.sh renders
-    `--output=.../<exp>-%j.out`. An array writes `<campaign>-<job id>`, because
-    one array script covers every task and `%A_%a` carries the task apart. The
-    ledger stores array ids as `12345_0`, which is what tells the two cases
-    apart. run.sh's own fetch and logs paths use the same rule."""
-    return f"{campaign}-{job_id}" if "_" in job_id else f"{exp}-{job_id}"
-
-
-#: what `stream` accepts, and the order sections are printed in
-_LOG_STREAMS = ("out", "err")
-
-
-def _read_stream(name: str, stem: str, suffix: str, lines: int,
-                 remote_dir: str | None) -> str | None:
-    """One log section, read live and falling back to a fetched copy."""
-    if remote_dir:
-        try:
-            stdout, _stderr, rc = _ssh(
-                f"tail -n {int(lines)} {remote_dir}/_slurm/{stem}.{suffix}", timeout=30)
-            if rc == 0 and stdout.strip():
-                return (f"--- {stem}.{suffix} (last {lines} lines, live) ---\n"
-                        f"{stdout.strip()}")
-        except subprocess.TimeoutExpired:
-            pass  # fall through to the fetched copy
-        except Exception:
-            pass
-
-    local = _project_dir() / "_results" / name / f"{stem}.{suffix}"
-    if local.exists():
-        tail = local.read_text(errors="replace").splitlines()[-int(lines):]
-        if any(line.strip() for line in tail):
-            return (f"--- {stem}.{suffix} (last {lines} lines, fetched copy) ---\n"
-                    + "\n".join(tail))
-    return None
-
-
-def _unity_logs(campaign: str | None, lines: int, stream: str = "both") -> str:
-    """Tail the newest recorded job's output on the cluster.
-
-    There is no background monitor and no monitor log — that machinery was
-    removed. The useful answer to "what is my job printing" is the job's own
-    SLURM files, read live over SSH, falling back to a fetched copy.
-
-    Both streams are read by default. A tool that reads only stdout can report
-    that a job failed but never why: most failures — an import error, a stack
-    trace, an OOM kill — reach stderr and nothing else. A field test lost a
-    session to `ModuleNotFoundError` that this tool structurally could not
-    show, and had to leave the plugin for raw ssh to find it."""
-    if stream not in ("out", "err", "both"):
-        return f"unity_logs: unknown stream {stream!r}; expected out, err or both."
-    name = campaign or _campaign.latest_campaign(_project_dir())
-    if name is None:
-        return _NO_LEDGER
-    rows = _campaign.jobs(_project_dir(), name)
-    if not rows:
-        return f"Campaign {name} has no recorded jobs."
-    job = rows[-1]
-    stem = log_stem(name, job["job_id"], job["exp"])
-    wanted = _LOG_STREAMS if stream == "both" else (stream,)
-
-    remote_dir = _env_value("REMOTE_DIR")
-    sections = [section for section in
-                (_read_stream(name, stem, suffix, lines, remote_dir) for suffix in wanted)
-                if section]
-    if sections:
-        return "\n\n".join(sections)
-
-    empty = " or ".join(f"{stem}.{suffix}" for suffix in wanted)
-    return (f"Nothing in {empty} for job {job['job_id']} ({job['status']}).\n"
-            f"If the job has not started, that is expected. Otherwise check SSH, "
-            f"or fetch the files: bash unityHPC/run.sh fetch --campaign {name}")
-
-
-
-
-_BLOCKED_PATTERNS = ["rm ", "rmdir", "mv ", "cp ", "> ", ">>", "kill ", "pkill", "shutdown"]
-
-#: sacct over a wide window on a busy slurmdbd routinely needs more than 30s.
-#: Raise with $UNITY_SSH_TIMEOUT, or per call with the `timeout` argument.
-def _default_ssh_timeout() -> int:
-    try:
-        return max(5, int(os.environ.get("UNITY_SSH_TIMEOUT", "60")))
+        health = json.loads(raw)
     except ValueError:
-        return 60
-
-
-def _unity_ssh(cmd: str, timeout: int | None = None) -> str:
-    for pattern in _BLOCKED_PATTERNS:
-        if pattern in cmd:
-            return f"Blocked: '{pattern}' is not allowed via unity_ssh (use hpc-ssh script for write ops)."
-    limit = timeout if timeout and timeout > 0 else _default_ssh_timeout()
+        health = {"ok": False, "error": raw[:500]}
     try:
-        stdout, stderr, rc = _ssh(cmd, timeout=limit)
-        parts = []
-        if stdout.strip():
-            parts.append(stdout.strip())
-        if stderr.strip():
-            parts.append(f"[stderr] {stderr.strip()}")
-        if rc != 0:
-            parts.append(f"[exit {rc}]")
-        return "\n".join(parts) if parts else "(no output)"
-    except subprocess.TimeoutExpired:
-        return (f"SSH command timed out after {limit}s. Heavy sacct/squeue reads "
-                f"can exceed it — retry with a larger `timeout`, narrow the query "
-                f"(add -S/-E or fewer fields), or raise $UNITY_SSH_TIMEOUT.")
-    except Exception as e:
-        return f"SSH error: {e}"
-
-
-def _data_dir() -> Path:
-    """Machine-wide cluster-intel data root — shared by every project and
-    INDEPENDENT of the plugin version (so a plugin update never orphans it).
-    Override with $UNITY_HPC_DATA; defaults to $XDG_DATA_HOME/unity-hpc or
-    ~/.local/share/unity-hpc. (Code lives in the versioned plugin install; data
-    lives here.)"""
-    d = os.environ.get("UNITY_HPC_DATA")
-    if d:
-        return Path(d).expanduser()
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
-    return base / "unity-hpc"
-
-
-def _config_path() -> Path:
-    return _data_dir() / "cluster-config.json"
-
-
-def _summaries_db() -> Path:
-    return _data_dir() / "summaries.db"
-
-
-def _unity_cluster_profile() -> str:
-    """Render the shared cluster-config.json as human-readable markdown.
-
-    Cwd-independent; written by unity-hpc:recon through a locked merge."""
-    p = _config_path()
-    if not p.exists():
-        return (f"No shared cluster config yet at {p}. "
-                "Run /unity-hpc:recon to generate it (shared across all projects).")
-    try:
-        data = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError) as e:
-        return f"cluster-config.json unreadable: {e}"
-    return _render_cluster_config(data)
-
-
-def _render_cluster_config(data: dict) -> str:
-    lines = [f"# Unity Cluster Profile",
-             f"_cluster: {data.get('cluster', '?')}  ·  "
-             f"slurm: {data.get('slurm_version', '?')}  ·  "
-             f"schema: {data.get('schema_version', '?')}_", ""]
-
-    parts = data.get("partitions") or {}
-    if parts:
-        lines += ["## Partitions",
-                  "| Partition | Nodes | GPU types | Max walltime | Access |",
-                  "|---|---|---|---|---|"]
-        for name in sorted(parts):
-            p = parts[name]
-            gt = ", ".join(p.get("gpu_types") or []) or "—"
-            lines.append(f"| {name} | {p.get('nodes', '?')} | {gt} | "
-                         f"{p.get('max_walltime', '?')} | {p.get('access', '?')} |")
-        lines.append("")
-
-    fleet = data.get("gpu_fleet") or {}
-    if fleet:
-        lines += ["## GPU fleet (accessible)",
-                  "| Type | Accessible | VRAM (GB) | Compute cap. |",
-                  "|---|---|---|---|"]
-        for name in sorted(fleet):
-            g = fleet[name]
-            vram = ", ".join(str(v) for v in (g.get("vram_gb") or [])) or "?"
-            lines.append(f"| {name} | {g.get('total_accessible', '?')} | {vram} | "
-                         f"{g.get('compute_capability', '?')} |")
-        lines.append("")
-
-    al = data.get("account_limits") or {}
-    if al:
-        # "no limit" and "nobody probed this" are different answers, and the
-        # sweep skill branches on them: an agent sizing a batch against a cap
-        # must not read an unmeasured field as unlimited. A key that is present
-        # and null was measured; a key that is absent was not.
-        def _limit(key: str) -> str:
-            if key not in al:
-                return "not probed"
-            return "no limit" if al[key] is None else str(al[key])
-
-        lines += ["## Account limits",
-                  f"- account: {al.get('account', '?')}",
-                  f"- max_submit_jobs: {_limit('max_submit_jobs')}",
-                  f"- max_jobs: {_limit('max_jobs')}",
-                  f"- max_wall: {_limit('max_wall')}"]
-        for q in al.get("qos") or []:
-            lines.append(f"- qos {q.get('name')}: max_wall={q.get('max_wall')} "
-                         f"priority={q.get('priority')}")
-        lines.append("")
-
-    fs = data.get("fairshare") or {}
-    if fs:
-        lines += [f"## Fair-share",
-                  f"- factor: {fs.get('factor')}  (observed {fs.get('observed_utc', '?')})", ""]
-
-    storage = data.get("storage") or {}
-    if storage:
-        lines.append("## Storage")
-        for vol in sorted(storage):
-            s = storage[vol]
-            lines.append(f"- {vol}: {s.get('used_gb', '?')} / {s.get('total_gb', '?')} GB")
-        lines.append("")
-
-    prov = data.get("provenance") or {}
-    if prov:
-        lines += ["## Provenance",
-                  f"- last write: {prov.get('last_write_utc', '?')} "
-                  f"by {prov.get('last_writer', '?')}",
-                  f"- writers seen: {', '.join(prov.get('writers_seen') or []) or '—'}"]
-    return "\n".join(lines)
-
-
-def _unity_traffic() -> str:
-    """Best/worst submit hours by GPU utilization, from summaries.db."""
-    db = _summaries_db()
-    if not db.exists():
-        return json.dumps({
-            "status": "no_data",
-            "message": "No summaries yet. Run hpc-sync-telemetry to pull cluster "
-                       "telemetry and build summaries.db.",
-            "recommendation": "proceed_with_caution"})
-    try:
-        rows = _db_query(db,
-            "SELECT substr(hour_utc,12,2) AS hour, ROUND(AVG(util_mean),3) AS util, "
-            "SUM(samples) AS samples FROM hourly_resource "
-            "WHERE resource_kind='gpu_type' GROUP BY hour ORDER BY util ASC")
-    except sqlite3.OperationalError as e:
-        if "no such table" in str(e):
-            return json.dumps({
-                "status": "no_data",
-                "message": "summaries.db is missing the hourly_resource table. "
-                           "Run hpc-sync-telemetry to pull cluster telemetry and "
-                           "build summaries.db.",
-                "recommendation": "proceed_with_caution"})
-        return json.dumps({"status": "error", "message": str(e)})
-    if not rows:
-        return json.dumps({"status": "no_data",
-                           "message": "summaries.db has no gpu_type rows yet. "
-                                      "Run hpc-sync-telemetry.",
-                           "recommendation": "proceed_with_caution"})
-    return json.dumps({
-        "status": "ok",
-        "best_hours_utc": [r["hour"] for r in rows[:3]],
-        "worst_hours_utc": [r["hour"] for r in rows[-3:]],
-        "by_hour_utc": rows}, indent=2)
-
-
-def _unity_usage(hours: int, gpu_type: str | None) -> str:
-    """GPU-type utilization over a window, from summaries.db hourly_resource."""
-    db = _summaries_db()
-    if not db.exists():
-        return json.dumps({
-            "status": "no_data",
-            "message": "No summaries yet. Run hpc-sync-telemetry to pull cluster "
-                       "telemetry and build summaries.db."})
-    from datetime import datetime, timedelta, timezone
-    hours = max(1, min(int(hours), 24 * 3650))
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:00:00Z")
-    sql = ("SELECT resource_id AS gpu_type, ROUND(AVG(util_mean),3) AS avg_util, "
-           "ROUND(MAX(util_max),3) AS peak_util, ROUND(AVG(free_ratio),3) AS avg_free, "
-           "SUM(samples) AS samples FROM hourly_resource "
-           "WHERE resource_kind='gpu_type' AND hour_utc >= ? ")
-    params: tuple = (cutoff,)
-    if gpu_type:
-        sql += "AND resource_id = ? "
-        params += (gpu_type,)
-    sql += "GROUP BY resource_id ORDER BY avg_util DESC"
-    try:
-        rows = _db_query(db, sql, params)
-    except sqlite3.OperationalError as e:
-        if "no such table" in str(e):
-            return json.dumps({
-                "status": "no_data",
-                "message": "summaries.db is missing the hourly_resource table. "
-                           "Run hpc-sync-telemetry to pull cluster telemetry and "
-                           "build summaries.db."})
-        return json.dumps({"status": "error", "message": str(e)})
-    if not rows:
-        return json.dumps({
-            "status": "no_data",
-            "message": "summaries.db has no gpu_type rows for this window. "
-                       "Run hpc-sync-telemetry."})
-    return json.dumps({"window_hours": hours, "since_utc": cutoff,
-                       "gpu_type_filter": gpu_type, "by_gpu_type": rows}, indent=2)
-
-
-def _project_job_ids() -> list[str]:
-    """Every job_id this project has submitted, across its .unity_state campaigns."""
-    ids: list[str] = []
-    for db in sorted(_state_dir().glob("*.db")):
-        try:
-            ids += [r["job_id"] for r in _db_query(db, "SELECT job_id FROM jobs")]
-        except sqlite3.Error:
-            # A campaign DB without a jobs table (or an unreadable one) simply
-            # contributes no ids — never a crash for the whole project.
-            continue
-    return [j for j in dict.fromkeys(ids) if j]
-
-
-def _unity_my_jobs() -> str:
-    """This project's own jobs joined against the shared task_run telemetry.
-
-    Read-only over both stores. Jobs not yet collected are reported as
-    "pending" rather than dropped, and an absent summaries.db yields guidance
-    instead of an error (I6)."""
-    job_ids = _project_job_ids()
-    if not job_ids:
-        return json.dumps({"jobs": [],
-                           "note": "No jobs submitted from this project yet."})
-    telem = {r["job_id"]: r for r in _queries.task_runs_for_jobs(job_ids)}
-    jobs = []
-    for jid in job_ids:
-        t = telem.get(jid)
-        if t is None:
-            jobs.append({"job_id": jid, "telemetry": "pending"})
-        else:
-            jobs.append({"job_id": jid, "hardware": t["hardware"],
-                         "elapsed_s": t["elapsed_s"], "wait_s": t["wait_s"],
-                         "cpu_eff": t["cpu_eff"], "mem_eff": t["mem_eff"],
-                         "state": t["state"]})
-    result: dict = {"jobs": jobs}
-    if not telem:
-        result["note"] = ("No telemetry for these jobs yet. Run hpc-sync-telemetry "
-                          "to pull cluster telemetry and build summaries.")
-    return json.dumps(result, indent=2)
-
-
-def _plugin_version(root: Path) -> str | None:
-    try:
-        return json.loads((root / ".claude-plugin" / "plugin.json").read_text()).get("version")
-    except (OSError, ValueError, AttributeError):
-        return None
-
-
-def _installed_registry() -> Path:
-    base = os.environ.get("CLAUDE_CONFIG_DIR")
-    root = Path(base).expanduser() if base else Path.home() / ".claude"
-    return root / "plugins" / "installed_plugins.json"
-
-
-def _installed_version() -> tuple[str | None, str | None]:
-    """(version, installPath) this machine has registered for unity-hpc.
-
-    Prefers the entry whose projectPath contains the current project, so a
-    machine with several projects reports the one that matters here."""
-    try:
-        data = json.loads(_installed_registry().read_text())
-        entries = data.get("plugins", {}).get("unity-hpc@phd-agentic-tools", [])
-    except (OSError, ValueError, AttributeError):
-        return None, None
-    if not entries:
-        return None, None
-    project = str(_project_dir())
-    for entry in entries:
-        if project.startswith(str(entry.get("projectPath", "\0"))):
-            return entry.get("version"), entry.get("installPath")
-    return entries[0].get("version"), entries[0].get("installPath")
-
-
-def _scaffold_version(project: Path) -> str | None:
-    """The plugin version that generated this project's dispatcher.
-
-    None means either no dispatcher, or one generated before stamping existed
-    (<= 0.8.1) — which is itself the answer: it predates the stamp."""
-    runner = project / "unityHPC" / "run.sh"
-    if not runner.exists():
-        return None
-    try:
-        for line in runner.read_text(errors="replace").splitlines()[:40]:
-            if line.startswith("UNITY_SCAFFOLD_VERSION="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
+        code_stale = _SOURCE.stat().st_mtime > _LOADED_AT
     except OSError:
-        return None
-    return None
-
-
-def _strip_stamp(text: str) -> str:
-    return "\n".join(l for l in text.splitlines()
-                     if not l.startswith("UNITY_SCAFFOLD_VERSION="))
-
-
-def _dispatcher_differs(project: Path) -> bool | None:
-    """True if the project's run.sh no longer matches the canonical template.
-
-    Compared by content, not by version number: releases that touch only the
-    server leave the template alone, and flagging every project stale on those
-    would train people to ignore the signal that matters. The version stamp
-    itself is excluded from the comparison — it is the one line guaranteed to
-    differ. None means the question does not apply (no dispatcher, or the
-    template could not be read)."""
-    runner = project / "unityHPC" / "run.sh"
-    if not runner.exists():
-        return None
-    try:
-        from lib import scaffold
-        canonical = scaffold.render(
-            (scaffold.template_root() / "common" / "run.sh").read_text())
-        return _strip_stamp(runner.read_text(errors="replace")) != _strip_stamp(canonical)
-    except Exception:
-        return None
-
-
-_GUIDANCE_MARKER = re.compile(r"<!--\s*unity-hpc-guidance:\s*([^\s>]+)\s*-->")
-
-
-def _claude_guidance_problem(project: Path, running_version: str | None) -> dict | None:
-    """Return an actionable stale-guidance finding for a Unity project."""
-    path = project / "CLAUDE.md"
-    if not path.exists():
-        return None
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return None
-    if "unityHPC" not in text and "Unity Cluster" not in text:
-        return None
-    marker = _GUIDANCE_MARKER.search(text)
-    observed = marker.group(1) if marker else None
-    if observed == running_version:
-        return None
-    why = ("its unity-hpc guidance marker is missing" if observed is None else
-           f"its guidance marker is {observed}, but the running plugin is {running_version}")
-    return {
-        "issue": "claude_guidance_stale",
-        "detail": f"{path}: {why}. The file may describe an older scaffold or workflow.",
-        # --write-guidance only acts when CLAUDE.md is ABSENT, and this finding
-        # only fires when it EXISTS, so naming it here sent an agent into a loop
-        # against a command that reported "already exists" and changed nothing.
-        "fix": ("Review the project-specific instructions against the current "
-                "scaffold, then run hpc-scaffold --type <type> "
-                "--refresh-guidance-marker to stamp this file with the running "
-                "version. That touches the marker only; your prose is not "
-                "rewritten."),
-    }
-
-
-#: the findings that mean this process is running code other than what is on
-#: disk -- the only ones that make status "stale"
-_CODE_STALE_ISSUES = frozenset({"server_code_changed_after_start", "version_mismatch"})
-
-
-def _unity_doctor() -> str:
-    """Report what this server is actually running, and whether it is stale.
-
-    Exists because a field report traced a bug to source that was already
-    fixed: the session was talking to a server process started before the
-    upgrade. Reading the code on disk cannot reveal that — only the running
-    process can."""
-    root = _SOURCE.parent.parent
-    running = _plugin_version(root)
-    installed, install_path = _installed_version()
-
-    problems: list[dict] = []
-    try:
-        if _SOURCE.stat().st_mtime > _LOADED_AT:
-            problems.append({
-                "issue": "server_code_changed_after_start",
-                "detail": "The server source was modified after this process "
-                          "started, so it is running the previous version.",
-                "fix": "Run /reload-plugins, or restart the session.",
-            })
-    except OSError:
-        pass
-
-    if installed and running and installed != running:
-        problems.append({
-            "issue": "version_mismatch",
-            "detail": f"This server runs {running} from {root}, but this machine "
-                      f"has {installed} registered at {install_path}.",
-            "fix": "Run /reload-plugins, or restart the session.",
-        })
-
-    project = _project_dir()
-    scaffold_version = _scaffold_version(project)
-    has_scaffold = (project / "unityHPC" / "run.sh").exists()
-    if has_scaffold and _dispatcher_differs(project):
-        problems.append({
-            "issue": "scaffold_stale",
-            "detail": (
-                f"unityHPC/run.sh differs from the canonical template "
-                f"(stamped {scaffold_version or 'unstamped, i.e. pre-0.8.2'}; "
-                f"plugin is {running}). The dispatcher is a copy in the project: "
-                f"upgrading the plugin does not upgrade it, so fixes and features "
-                f"added since are absent here. If you edited it deliberately, that "
-                f"edit is what is being reported."
-            ),
-            "fix": "Re-run /unity-hpc:connect (or hpc-scaffold --type <type>). "
-                   "Your .env is preserved; the old run.sh is kept in "
-                   "unityHPC/.pre-redesign/.",
-        })
-
-    guidance_problem = _claude_guidance_problem(project, running)
-    if guidance_problem:
-        problems.append(guidance_problem)
-
-    campaigns = _campaign.campaigns(project)
-    spec, spec_error = _metrics.load_with_error(project)
-    data_dir = _data_dir()
-    summaries = _summaries_db()
-
-    # "stale" is reserved for the one condition this tool exists to catch: the
-    # server process is running code that is no longer what is on disk. Letting
-    # a cosmetic finding raise the same headline meant a missing marker in
-    # CLAUDE.md and "your MCP server is running dead code" read identically, and
-    # an agent told to call unity_doctor first could not tell them apart without
-    # walking problems[]. Anything else that is wrong reports "degraded".
-    code_stale = any(p["issue"] in _CODE_STALE_ISSUES for p in problems)
+        code_stale = False
     report = {
-        "status": "stale" if code_stale else ("degraded" if problems else "ok"),
-        "code_stale": code_stale,
-        "running": {"version": running, "source": str(_SOURCE), "root": str(root)},
-        "installed": {"version": installed, "path": install_path},
-        "project": {
-            "dir": str(project),
-            "scaffold": has_scaffold,
-            "scaffold_version": scaffold_version,
-            "unity_host": _env_value("UNITY_HOST", "unity"),
-            "remote_dir": _env_value("REMOTE_DIR") or None,
-            "campaigns": campaigns[:5],
-            "recorded_jobs": len(_campaign.all_job_ids(project)),
-        },
-        "metrics_declaration": (
-            {"declared": True, "primary": spec.primary, "goal": spec.goal,
-             "report": list(spec.report)} if spec else
-            {"declared": False, "note": spec_error or
-             "No unityHPC/metrics.json; results report whatever jobs print."}
-        ),
-        "shared_data": {
-            "dir": str(data_dir),
-            "summaries_db": summaries.exists(),
-            "cluster_config": _config_path().exists(),
-        },
-        "problems": problems,
+        "ok": bool(health.get("ok")),
+        "controller": health,
+        "controller_url": _controller_base(),
+        "plugin": {"version": _plugin_version(), "source": str(_SOURCE), "code_stale": code_stale},
     }
-    if not problems:
-        report["note"] = "Server is running the installed version."
+    if code_stale:
+        report["fix"] = "The server source changed after this process started. Run /reload-plugins, or restart the session."
+    elif not health.get("ok"):
+        report["fix"] = "Start the controller with scripts/hpc-controller --no-tailscale, then call unity_doctor again."
     return json.dumps(report, indent=2)
 
-
-# ─── Entry point ──────────────────────────────────────────────────────────────
 
 async def main():
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):

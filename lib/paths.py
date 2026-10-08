@@ -60,14 +60,6 @@ def controller_dir() -> Path:
     return data_dir() / "controller"
 
 
-def projects_registry() -> Path:
-    return controller_dir() / "projects.json"
-
-
-def projects_lock() -> Path:
-    return controller_dir() / "projects.json.lock"
-
-
 def events_log() -> Path:
     return controller_dir() / "events.jsonl"
 

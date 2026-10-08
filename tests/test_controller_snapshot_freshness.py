@@ -1,4 +1,4 @@
-"""The dashboard must never call an old snapshot live.
+"""The cluster API must never call an old snapshot live.
 
 `snapshot.csv` having rows says only that the collector ran once. When the
 collector stops, the newest row keeps its value and the numbers stay on screen.

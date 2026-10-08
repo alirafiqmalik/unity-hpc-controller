@@ -10,8 +10,6 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import registry as _registry
-from lib import campaign as _campaign
 from lib import paths
 
 
@@ -712,7 +710,7 @@ _EMPTY_STATS = {
 }
 
 # (db path, mtime, hours) -> payload. The rollup replaces summaries.db, so a
-# change of mtime is a new answer. The 10s dashboard poll must not scan again.
+# change of mtime is a new answer. A frequent client poll must not scan again.
 _stats_memo: dict[tuple, dict] = {}
 
 
@@ -799,76 +797,6 @@ def outcomes(hours: int | None = None) -> dict:
     stats = task_stats(hours)
     counts = stats.get("counts") or {}
     return {"available": bool(counts), "counts": counts}
-
-
-def project_jobs(slug: str, campaign_name: str | None = None) -> list[dict]:
-    rec = _registry.get(slug)
-    if rec is None:
-        return []
-    root = Path(rec["path"])
-    name = campaign_name or rec.get("campaign") or None
-    _campaign.refresh_from_telemetry(root, name)
-    rows = _campaign.jobs(root, name, include_hidden=False)
-    from controller.workspace_worker import job_metadata
-    metadata = job_metadata(slug)
-    out = []
-    for row in rows:
-        item = dict(row)
-        item["slug"] = slug
-        item["campaign"] = name or _campaign.latest_campaign(root) or ""
-        item.update({"purpose": "unclassified"}, **metadata.get((item["campaign"], item["job_id"]), {}))
-        out.append(item)
-    return out
-
-
-def all_jobs() -> list[dict]:
-    rows: list[dict] = []
-    for rec in _registry.list_projects():
-        root = Path(rec["path"])
-        if not root.is_dir():
-            continue
-        from controller.workspace_worker import job_metadata
-        metadata = job_metadata(rec["slug"])
-        for name in _campaign.campaigns(root):
-            _campaign.refresh_from_telemetry(root, name)
-            for row in _campaign.jobs(root, name, include_hidden=False):
-                item = dict(row)
-                item["slug"] = rec["slug"]
-                item["campaign"] = name
-                item.update({"purpose": "unclassified"}, **metadata.get((name, item["job_id"]), {}))
-                rows.append(item)
-    return rows
-
-
-def project_detail(slug: str) -> dict | None:
-    rec = _registry.get(slug)
-    if rec is None:
-        return None
-    root = Path(rec["path"])
-    jobs = project_jobs(slug)
-    counts: dict[str, int] = {}
-    for job in jobs:
-        st = (job.get("status") or "UNKNOWN").upper()
-        counts[st] = counts.get(st, 0) + 1
-    env_path = root / "unityHPC" / ".env"
-    runner = root / "unityHPC" / "run.sh"
-    from controller import experiments
-    from controller import dispatch
-    catalog = experiments.read(slug)
-    try:
-        artifact_fetch = dispatch.artifact_fetch_hook(rec) is not None
-    except dispatch.DispatchError:
-        artifact_fetch = False
-    return {
-        **rec,
-        **catalog,
-        "artifact_fetch": artifact_fetch,
-        "scaffold": runner.exists(),
-        "env_present": env_path.exists(),
-        "campaigns": _campaign.campaigns(root),
-        "job_counts": counts,
-        "jobs": jobs[-50:],
-    }
 
 
 # A collected sacct pull looks back at most this far. Coverage of a selected
@@ -1531,7 +1459,6 @@ def cluster(hours: int | None = None) -> dict:
             "free_nodes": latest.get("free_nodes", 0),
             "total_nodes": latest.get("total_nodes", 0),
             "gpu_types_free": latest.get("gpu_types_free", ""),
-            "attached_projects": len(_registry.list_projects()),
             "gpus_total": gpus_total,
             "gpus_allocated": gpus_allocated,
             "gpus_free": gpus_free,

@@ -1,4 +1,4 @@
-"""The dashboard stats tabs read cluster, queue and usage from snapshot.py.
+"""The cluster, queue and usage routes read snapshot.py.
 
 These checks seed the same three stores the controller already has — the
 cluster config, snapshot.csv and summaries.db — and assert the public
