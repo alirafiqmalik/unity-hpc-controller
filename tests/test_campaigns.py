@@ -331,14 +331,21 @@ def test_parse_probe_preserves_policy_not_fabricated_free_memory():
 def test_catalog_probe_failure_still_reconciles_tasks(setup, monkeypatch):
     spec, _ = setup
     campaigns.create(spec)
-    reconciled = []
+    reconciled, probes = [], []
+    # A newly booted host can have less than 15 minutes of monotonic uptime.
+    monkeypatch.setattr(campaigns.time, "monotonic", lambda: 100.0)
     def broken_probe():
+        probes.append(True)
         raise RuntimeError("sacctmgr policy service unavailable")
     monkeypatch.setattr(campaigns, "probe", broken_probe)
     monkeypatch.setattr(campaigns, "tick", lambda: reconciled.append(True))
     next_probe = campaigns.worker_pass(0)
     assert reconciled == [True]
-    assert next_probe > 0
+    assert next_probe == 100.0
+    assert probes == [True]
+    assert campaigns.worker_pass(next_probe) == next_probe
+    assert reconciled == [True, True]
+    assert probes == [True]
 
 
 def test_known_qos_submit_limit_caps_admission(setup, tmp_data_dir):

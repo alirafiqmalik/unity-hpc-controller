@@ -482,7 +482,7 @@ def _loop():
 def worker_pass(last_probe=0, *, with_progress=False):
     """Catalog failure must never suppress receipt reconciliation or fetch."""
     pending = any(c["state"] not in TERMINAL for c in store.listing())
-    if pending and time.monotonic() - last_probe >= 900:
+    if pending and (last_probe == 0 or time.monotonic() - last_probe >= 900):
         # Bound unsuccessful refreshes too, so catalog downtime cannot cause
         # one expensive policy survey on every 30-second task poll.
         last_probe = time.monotonic()

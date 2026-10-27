@@ -1,6 +1,6 @@
 {
   "name": "unity-hpc",
-  "version": "0.17.0",
+  "version": "0.17.1",
   "description": "Headless Unity HPC campaigns: portable experiment bundles, fixed hardware classes, durable scheduling and incremental results.",
   "author": {
     "name": "Ali Hamza Malik",
