@@ -1,5 +1,9 @@
 # SSH connection reliability in developer apps
 
+> Historical assessment from 2026-10-02. References to UI actions describe the
+> earlier implementation. Use the [current SSH guide](../guides/ssh-access.md)
+> for the headless controller.
+
 Researched 2026-10-02. This note uses the upstream T3 Code source at
 [`8bc40b4`](https://github.com/pingdotgg/t3code/tree/8bc40b4e07bb7b4b0f71876d59520360c9bf958c),
 Microsoft's Remote-SSH documentation, the OpenSSH manuals, and the rsync manual.

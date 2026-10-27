@@ -12,3 +12,7 @@ __pycache__/
 
 # Maintainer research notes and raw probe dumps stay local.
 .research_notes/
+
+# Local development environment and generated campaign settings.
+.venv/
+backend.json

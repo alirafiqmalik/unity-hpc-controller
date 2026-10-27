@@ -1,6 +1,6 @@
 # Plugin and controller responsibilities
 
-Version 0.16.0 uses the headless campaign contract in [ADR 0009](adr/0009-headless-campaign-controller.md).
+The controller uses the headless campaign contract in [ADR 0009](../adr/0009-headless-campaign-controller.md).
 The plugin provides HTTP clients and skills.
 The controller owns cluster execution and continues after the agent exits.
 
@@ -24,5 +24,5 @@ Telemetry remains a separate shared archive under `$UNITY_HPC_DATA`.
 The collector records measured resource and accounting evidence.
 The planner uses that evidence without replacing Slurm scheduling.
 
-Read [backend operations](backend-campaigns.md) for the API, settings, and recovery procedure.
-Read [architecture](../ARCHITECTURE.md) for the execution flow and data stores.
+Read [backend operations](../backend-campaigns.md) for the API, settings, and recovery procedure.
+Read [architecture](../../ARCHITECTURE.md) for the execution flow and data stores.

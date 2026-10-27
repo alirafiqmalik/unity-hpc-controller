@@ -1,14 +1,13 @@
 {
   "name": "unity-hpc",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Headless Unity HPC campaigns: portable experiment bundles, fixed hardware classes, durable scheduling and incremental results.",
   "author": {
     "name": "Ali Hamza Malik",
-    "email": "ahmalik@umass.edu",
     "url": "https://github.com/alirafiqmalik"
   },
-  "homepage": "https://github.com/alirafiqmalik/phd-plugin-unity-hpc",
-  "repository": "https://github.com/alirafiqmalik/phd-plugin-unity-hpc",
+  "homepage": "https://github.com/alirafiqmalik/unity-hpc-controller",
+  "repository": "https://github.com/alirafiqmalik/unity-hpc-controller",
   "license": "MIT",
   "keywords": [
     "hpc",
@@ -21,7 +20,7 @@
   "skills": "./skills/",
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
-    "displayName": "Unity HPC",
+    "displayName": "Unity HPC Controller",
     "shortDescription": "Run reproducible experiment campaigns through the Unity HPC controller",
     "longDescription": "Submit portable task bundles without project registration. The headless controller owns hardware placement, durable attempts, bounded retries and results.",
     "developerName": "Ali Hamza Malik",

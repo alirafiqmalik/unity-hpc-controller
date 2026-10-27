@@ -1,0 +1,34 @@
+// Relationships implemented by campaign_cli.py, http.py, campaign_store.py,
+// campaign_planner.py, campaigns.py, and campaign_slurm.py.
+digraph campaign {
+  graph [rankdir=LR, bgcolor="#0b1220", pad=0.45, nodesep=0.45, ranksep=0.6,
+         fontname="DejaVu Sans", fontsize=20, fontcolor="#e2e8f0",
+         label="UNITY HPC CONTROLLER\nPortable science. Durable campaigns.", labelloc=t];
+  node [shape=box, style="rounded,filled", fillcolor="#162238", color="#334155",
+        fontname="DejaVu Sans", fontsize=12, fontcolor="#f1f5f9", margin="0.22,0.16"];
+  edge [color="#64748b", arrowsize=0.65, fontname="DejaVu Sans", fontsize=10, fontcolor="#cbd5e1"];
+  runner [label="PROJECT RUNNER\nBundle + declaration"];
+  clients [label="CLI / MCP\nHTTP clients"];
+  subgraph cluster_controller {
+    label="LOCAL CONTROLLER"; fontsize=12; color="#38bdf8"; style=rounded;
+    api [label="HTTP API\nValidate + accept", color="#38bdf8"];
+    plan [label="Planner\nHardware + policy"];
+    journal [label="SQLite journal\nTasks + attempts + events"];
+    worker [label="Worker\nReconcile + retrieve", color="#38bdf8"];
+    {rank=same; api; plan; journal; worker;}
+    api -> plan;
+    api -> journal;
+    journal -> worker [dir=both];
+  }
+  slurm [label="UNITY SLURM\nAllocate + schedule", color="#2dd4bf"];
+  task [label="COMPUTE TASK\nAttestation + command", color="#2dd4bf"];
+  result [label="DECLARED OUTPUTS\nFiles + device evidence"];
+  {rank=same; runner; clients;}
+  {rank=same; slurm; task; result;}
+  runner -> clients -> api;
+  plan -> worker [style=dashed, label="eligible placement"];
+  worker -> slurm [label="SSH"];
+  slurm -> task;
+  task -> result;
+  result -> worker [label="rsync", constraint=false];
+}

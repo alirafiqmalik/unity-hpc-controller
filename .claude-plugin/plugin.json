@@ -1,10 +1,9 @@
 {
   "name": "unity-hpc",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "Headless Unity HPC campaigns: portable experiment bundles, fixed hardware classes, durable scheduling and incremental results.",
   "author": {
-    "name": "Ali Hamza Malik",
-    "email": "ahmalik@umass.edu"
+    "name": "Ali Hamza Malik"
   },
   "license": "MIT",
   "keywords": [
@@ -14,5 +13,7 @@
     "gpu",
     "ml-research",
     "cluster"
-  ]
+  ],
+  "homepage": "https://github.com/alirafiqmalik/unity-hpc-controller",
+  "repository": "https://github.com/alirafiqmalik/unity-hpc-controller"
 }
