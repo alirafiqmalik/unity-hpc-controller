@@ -117,7 +117,7 @@ def _route(method: str, path: str, req: Request) -> Response:
             return _json(202, {"campaign": campaigns.cancel(identity)})
         return _error(404, "unknown campaign route")
     if path == "/api/v1/telemetry/accounting" and method == "GET":
-        from lib.queries import historical_accounting
+        from lib.telemetry_archive import historical_accounting
         rows = historical_accounting(user=_q(req, "user"), account=_q(req, "account"), partition=_q(req, "partition"), gpu_type=_q(req, "gpu_type"),
                                      since=_q(req, "since"), until=_q(req, "until"), limit=int(_q(req, "limit", "100")), offset=int(_q(req, "offset", "0")))
         return _json(200, {"accounting": rows})

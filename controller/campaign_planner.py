@@ -11,7 +11,8 @@ import math
 import sqlite3
 from datetime import datetime, timezone
 
-from lib import paths
+from lib import paths, telemetry_archive
+from lib.cluster_config import canonical_gpu_type
 from controller.campaign_contract import expand_nodes, inventory, validate
 
 
@@ -50,20 +51,21 @@ def catalog():
         return {}
 
 
+def _history_hardware(gpu_type):
+    """The archive's hardware key for a request: the canonical GPU name, or `cpu`."""
+    if isinstance(gpu_type, str) and gpu_type:
+        return canonical_gpu_type(gpu_type)
+    return gpu_type or "cpu"
+
+
 def historical_profile(partition, gpu_type):
-    value = {"source": "local task_run accounting", "partition": partition, "hardware": gpu_type or "cpu", "sample_count": 0,
+    hardware = _history_hardware(gpu_type)
+    value = {"source": "local task_run accounting", "partition": partition, "hardware": hardware, "sample_count": 0,
              "wait_p50_seconds": None, "wait_p95_seconds": None, "runtime_p95_seconds": None, "max_rss_p95_mb": None, "confidence": "unknown"}
-    database = paths.summaries_db()
-    if not database.is_file():
-        return value
     try:
-        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as con:
-            fields = {row[1] for row in con.execute("PRAGMA table_info(task_run)")}
-            if not {"partition", "hardware", "wait_s", "elapsed_s", "state"} <= fields:
-                return value
-            rss = "max_rss_mb" if "max_rss_mb" in fields else "NULL"
-            date_filter = " AND day_utc>=date('now','-30 days')" if "day_utc" in fields else ""
-            rows = con.execute(f"SELECT wait_s,elapsed_s,{rss} FROM task_run WHERE partition=? AND hardware=? AND state='COMPLETED'{date_filter} ORDER BY rowid DESC LIMIT 500", (partition, gpu_type or "cpu")).fetchall()
+        rows = telemetry_archive.completed_runs(partition, hardware)
+        if rows is None:
+            return value
         value["sample_count"] = len(rows)
         for index, key, frac in ((0, "wait_p50_seconds", .5), (0, "wait_p95_seconds", .95), (1, "runtime_p95_seconds", .95), (2, "max_rss_p95_mb", .95)):
             value[key] = _percentile([float(row[index]) for row in rows if row[index] is not None and float(row[index]) >= 0], frac)

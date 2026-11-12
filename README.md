@@ -184,7 +184,7 @@ explains scheduled collection and retention.
 ```text
 controller/       Campaign contract, planner, journal, worker, HTTP service
 cluster-intel/    Bounded collection, parsing, rollup, archive migration
-lib/              Shared paths, configuration, retention, read-only queries
+lib/              Shared paths, configuration, Telemetry archive, retention
 scripts/          Stable service and operator commands
 mcp/              HTTP-backed MCP tools and dependency declaration
 skills/           connect / dispatch / doctor

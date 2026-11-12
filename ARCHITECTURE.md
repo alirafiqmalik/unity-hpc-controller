@@ -99,7 +99,11 @@ Only one listing runs at a time, to bound memory; a second listing waits for the
 Schema setup and the version 1 migration run once for each process and database path.
 Campaign directories hold immutable bundles, scripts, receipts, and retrieved artifacts.
 `backend-catalog.json` records live hardware and policy observations with timestamps.
-`summaries.db` retains collected job and resource history.
+`summaries.db` is the Telemetry archive: collected job and resource history.
+`lib/telemetry_archive.py` owns it: the schema and the `ensure` step, which creates missing tables, adds missing `task_run` columns, and writes nothing on a current archive; the five dated tables and how a day's rows are selected, with `task_accounting` rows following their day's `task_run` rows; the content of a per-day summary backup and the prune that local retention uses; the `task_profile` rebuild; and the reads that production uses (the accounting route, the fully-summarised gate of the remote prune, the Planner's wait and runtime history, and the rollup stamp in telemetry status).
+`cluster-intel/rollup.py` computes rows from raw days and is the one other writer; its upserts stay next to the computation.
+`lib/local_retention.py` owns the backup files, their names, and the copy-and-replace of the live file.
+`controller/snapshot.py`, the test-only readers in `lib/queries.py`, and the one-time tools `cluster-intel/migrate.py` and `cluster-intel/backfill_hardware.py` keep their own SQL.
 
 The `task_run` table keeps its established shape for existing archives.
 The richer `task_accounting` table retains user/account, nodes, job metadata, requests, allocations, job steps, and provenance.
@@ -118,6 +122,7 @@ Project registration routes answer HTTP 410.
 The planner permits only nodes that satisfy the fixed hardware class and resource request.
 It observes partition access, account/QOS policy, walltime ceilings, and configured concurrency.
 It ranks compatible queues using measured historical waits with stated uncertainty.
+It reads that history by partition and the canonical GPU name, the spelling that the archive's `hardware` column holds.
 Source and result storage remain independent of UI state and agent lifetimes.
 
 Accounting retention and data visibility depend on the live cluster configuration.

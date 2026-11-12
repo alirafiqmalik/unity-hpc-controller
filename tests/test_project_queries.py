@@ -1,17 +1,13 @@
 import sqlite3
 
-from lib import paths, queries
+from lib import paths, queries, telemetry_archive
 
 
 def _seed_task_run(rows):
     db = paths.summaries_db()
     db.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(db)
-    con.execute(
-        'CREATE TABLE task_run(job_id TEXT PRIMARY KEY, project TEXT, skill TEXT, '
-        'hardware TEXT, submit TEXT, start TEXT, "end" TEXT, elapsed_s REAL, '
-        'wait_s REAL, cpu_eff REAL, mem_eff REAL, max_rss_mb REAL, state TEXT, '
-        'exit_code INTEGER, day_utc TEXT)')
+    telemetry_archive.ensure(con)
     con.executemany(
         'INSERT INTO task_run(job_id, hardware, elapsed_s, wait_s, cpu_eff, '
         'mem_eff, state) VALUES(?,?,?,?,?,?,?)', rows)

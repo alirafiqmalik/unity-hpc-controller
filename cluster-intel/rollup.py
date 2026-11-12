@@ -6,6 +6,8 @@ UPSERTS summaries.db. A routine run never DELETEs (I9); --full-rebuild discards
 prior summaries and is migration-only. Builds summaries.db.tmp then os.replace()
 (I3). Serialised by flock on locks/sync.lock unless --no-lock (the sync driver
 holds the lock for us). Stdlib only for byte-level determinism.
+The schema, its `ensure` step and the profile rebuild live in
+`lib/telemetry_archive.py`; this file keeps the computation and its upserts.
 
 Note on project/skill: task_runs.project/skill are currently emitted as None
 by the cluster-side collector, which has no way to know which plugin project
@@ -32,51 +34,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib import paths  # noqa: E402
+from lib import paths, telemetry_archive  # noqa: E402
 from lib.cluster_config import canonical_gpu_type  # noqa: E402
+from lib.telemetry_archive import pctl  # noqa: E402
 from collector_parse import derive_hardware, is_terminal  # noqa: E402
 
 SLOT_SECONDS = 900
 FULLY_RATIO = 0.9
 _DAY_GLOB = "20*"
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS hourly_resource(
-  resource_kind TEXT, resource_id TEXT, hour_utc TEXT,
-  util_min REAL, util_mean REAL, util_max REAL, util_p95 REAL,
-  free_ratio REAL, samples INTEGER,
-  PRIMARY KEY(resource_kind, resource_id, hour_utc));
-CREATE TABLE IF NOT EXISTS daily_resource(
-  resource_kind TEXT, resource_id TEXT, day_utc TEXT,
-  free_seconds_total REAL, longest_free_window_s INTEGER,
-  outage_count INTEGER, preemption_count INTEGER, samples INTEGER,
-  PRIMARY KEY(resource_kind, resource_id, day_utc));
-CREATE TABLE IF NOT EXISTS task_run(
-  job_id TEXT PRIMARY KEY, project TEXT, campaign TEXT, skill TEXT, hardware TEXT,
-  submit TEXT, start TEXT, "end" TEXT, elapsed_s REAL, wait_s REAL,
-  cpu_eff REAL, mem_eff REAL, max_rss_mb REAL, state TEXT,
-  exit_code INTEGER, day_utc TEXT, partition TEXT);
-CREATE TABLE IF NOT EXISTS task_profile(
-  project TEXT, skill TEXT, hardware TEXT, n INTEGER,
-  runtime_p50 REAL, runtime_p90 REAL, runtime_p95 REAL,
-  wait_p50 REAL, wait_p90 REAL, cpu_eff_p50 REAL, mem_eff_p50 REAL,
-  max_rss_p95 REAL, success_rate REAL,
-  PRIMARY KEY(project, skill, hardware));
-CREATE TABLE IF NOT EXISTS task_accounting(
-  job_id TEXT PRIMARY KEY, user TEXT, account TEXT, node_list TEXT,
-  job_name TEXT, qos TEXT, constraints TEXT, accounting_version INTEGER,
-  details_json TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS task_accounting_user ON task_accounting(user);
-CREATE INDEX IF NOT EXISTS task_accounting_account ON task_accounting(account);
-CREATE TABLE IF NOT EXISTS events(
-  ts TEXT, event TEXT, resource_id TEXT, job_id TEXT, detail TEXT,
-  PRIMARY KEY(ts, event, resource_id, job_id, detail));
-CREATE TABLE IF NOT EXISTS day_index(
-  day_utc TEXT PRIMARY KEY, slots_ingested INTEGER, rows_emitted INTEGER,
-  events_promoted INTEGER, task_runs_promoted INTEGER,
-  fully_summarised INTEGER, first_seen_utc TEXT, last_rollup_utc TEXT);
-CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-"""
 
 
 def _now_iso() -> str:
@@ -105,18 +70,6 @@ def slot_floor(ts: str) -> str:
     dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(timezone.utc)
     minute = (dt.minute // 15) * 15
     return dt.replace(minute=minute, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def pctl(values: list[float], q: float) -> float | None:
-    if not values:
-        return None
-    s = sorted(values)
-    if len(s) == 1:
-        return round(float(s[0]), 6)
-    pos = q * (len(s) - 1)
-    lo = int(pos)
-    hi = min(lo + 1, len(s) - 1)
-    return round(s[lo] + (s[hi] - s[lo]) * (pos - lo), 6)
 
 
 def _util(rec: dict) -> float | None:
@@ -390,42 +343,6 @@ def _process_day(conn, day: str, src: Path) -> None:
          fully, first_seen, _now_iso()))
 
 
-def _ensure_task_run_columns(conn) -> None:
-    """Add columns a database written by an older rollup does not have."""
-    have = {r[1] for r in conn.execute("PRAGMA table_info(task_run)")}
-    if "partition" not in have:
-        conn.execute("ALTER TABLE task_run ADD COLUMN partition TEXT")
-    if "campaign" not in have:
-        conn.execute("ALTER TABLE task_run ADD COLUMN campaign TEXT")
-
-
-def _rebuild_task_profile(conn) -> None:
-    groups: dict[tuple, list[dict]] = {}
-    for r in conn.execute("SELECT project, skill, hardware, elapsed_s, wait_s, "
-                          "cpu_eff, mem_eff, max_rss_mb, state, exit_code FROM task_run"):
-        groups.setdefault((r[0], r[1], r[2]), []).append({
-            "elapsed": r[3], "wait": r[4], "cpu": r[5], "mem": r[6],
-            "rss": r[7], "state": r[8], "rc": r[9]})
-    for (proj, skill, hw), rows in sorted(groups.items()):
-        rt = [x["elapsed"] for x in rows if x["elapsed"] is not None]
-        wt = [x["wait"] for x in rows if x["wait"] is not None]
-        cpu = [x["cpu"] for x in rows if x["cpu"] is not None]
-        mem = [x["mem"] for x in rows if x["mem"] is not None]
-        rss = [x["rss"] for x in rows if x["rss"] is not None]
-        succ = [1 if (x["state"] == "COMPLETED" and x["rc"] == 0) else 0 for x in rows]
-        conn.execute(
-            "INSERT INTO task_profile VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(project,skill,hardware) DO UPDATE SET n=excluded.n, "
-            "runtime_p50=excluded.runtime_p50, runtime_p90=excluded.runtime_p90, "
-            "runtime_p95=excluded.runtime_p95, wait_p50=excluded.wait_p50, "
-            "wait_p90=excluded.wait_p90, cpu_eff_p50=excluded.cpu_eff_p50, "
-            "mem_eff_p50=excluded.mem_eff_p50, max_rss_p95=excluded.max_rss_p95, "
-            "success_rate=excluded.success_rate",
-            (proj, skill, hw, len(rows), pctl(rt, 0.5), pctl(rt, 0.9), pctl(rt, 0.95),
-             pctl(wt, 0.5), pctl(wt, 0.9), pctl(cpu, 0.5), pctl(mem, 0.5),
-             pctl(rss, 0.95), round(statistics.fmean(succ), 6) if succ else None))
-
-
 def _update_meta(conn, sources: dict[str, Path]) -> None:
     on_disk = set(sources)
     indexed = {r[0] for r in conn.execute("SELECT day_utc FROM day_index")}
@@ -455,15 +372,14 @@ def run(*, full_rebuild: bool = False) -> None:
     # 1/0 so the ON CONFLICT ... WHERE clause can compare against it.
     conn.create_function("is_terminal", 1, lambda s: 1 if is_terminal(s) else 0)
     try:
-        conn.executescript(SCHEMA)
-        _ensure_task_run_columns(conn)
+        telemetry_archive.ensure(conn)
         sources, overlap = _day_sources()
         for day in overlap:
             print(f"[rollup] overlap: {day} present in both trees — using mirror, "
                   f"ignoring imported copy whole")
         for day in sorted(sources):
             _process_day(conn, day, sources[day])
-        _rebuild_task_profile(conn)
+        telemetry_archive.rebuild_profile(conn)
         _update_meta(conn, sources)
         conn.commit()
     finally:

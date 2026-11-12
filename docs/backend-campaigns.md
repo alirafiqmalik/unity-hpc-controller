@@ -298,6 +298,7 @@ scripts/hpc-campaign --url http://127.0.0.1:8301 queue formal-conjectures-small-
 
 Plan creation does not SSH or submit work.
 The plan shows catalog age, matching nodes, rejected partitions, limits, and historical wait estimates.
+Wait estimates come from completed runs on that partition with the task's canonical GPU name (`RTX_8000` reads `rtx8000` history); `history.hardware` shows the name used.
 The estimates describe previous workloads and can differ from this campaign.
 The controller sends eligible work to Slurm immediately within its concurrency limits.
 

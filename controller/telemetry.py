@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from controller import cluster_access, cluster_session, events
-from lib import paths
+from lib import paths, telemetry_archive
 
 REPO = Path(__file__).resolve().parent.parent
 SYNC_SCRIPT = REPO / "scripts" / "hpc-sync-telemetry"
@@ -297,20 +297,10 @@ def _telemetry_state() -> dict:
 
 def rollup_state() -> dict:
     """What summaries.db says about its own last rollup."""
-    import sqlite3
-
     out = {"last_rollup_utc": None, "age_s": None, "schema_version": None,
            "current": False}
-    db = paths.summaries_db()
-    if not db.exists():
-        return out
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            rows = dict(con.execute("SELECT key, value FROM meta").fetchall())
-        finally:
-            con.close()
-    except sqlite3.Error:
+    rows = telemetry_archive.read_meta()
+    if rows is None:
         return out
     out["last_rollup_utc"] = rows.get("last_rollup_utc")
     out["schema_version"] = rows.get("schema_version")

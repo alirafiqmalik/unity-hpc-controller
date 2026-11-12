@@ -20,7 +20,7 @@ import pytest
 from controller import cluster_access, cluster_session
 from controller import http as chttp
 from controller import telemetry
-from lib import paths
+from lib import paths, telemetry_archive
 
 # A stub that stands in for scripts/hpc-sync-telemetry. It writes what it was
 # told to write and exits with the code the environment names.
@@ -485,7 +485,7 @@ def test_status_reports_every_store_the_panel_shows(tmp_data_dir):
 def test_status_reads_the_rollup_stamp_out_of_summaries_db(tmp_data_dir):
     db = paths.summaries_db()
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+    telemetry_archive.ensure(con)
     con.execute("INSERT INTO meta VALUES('last_rollup_utc','2026-07-30T12:00:00Z')")
     con.execute("INSERT INTO meta VALUES('schema_version','1')")
     con.commit()
@@ -499,7 +499,7 @@ def test_status_reads_the_rollup_stamp_out_of_summaries_db(tmp_data_dir):
 def test_a_rollup_older_than_the_raw_files_is_not_current(tmp_data_dir):
     db = paths.summaries_db()
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+    telemetry_archive.ensure(con)
     con.execute("INSERT INTO meta VALUES('last_rollup_utc','2020-01-01T00:00:00Z')")
     con.commit()
     con.close()

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from lib import paths, queries
+from lib import paths, telemetry_archive
 
 _DAY = re.compile(r"^(?:telemetry/)?(\d{4}-\d{2}-\d{2})(?:/|$)")
 _DAY_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -61,7 +61,7 @@ def retention_decision(delete_days: set[str], *, force: bool = False) -> tuple[b
         return False, ["retention inactive: summaries.db absent — withholding "
                        "--delete until a rollup has run (set UNITY_HPC_FORCE_PRUNE=1 "
                        "to override)"]
-    not_ready = sorted(d for d in delete_days if not queries.is_fully_summarised(d))
+    not_ready = sorted(d for d in delete_days if not telemetry_archive.is_fully_summarised(d))
     if not_ready:
         return False, [f"withholding --delete for the whole run: not fully "
                        f"summarised yet: {', '.join(not_ready)}"]
@@ -127,7 +127,7 @@ def remote_prune_decision(
         if not local_day_present(day):
             warnings.append(f"withholding {day}: not archived locally")
             continue
-        if not force and not queries.is_fully_summarised(day):
+        if not force and not telemetry_archive.is_fully_summarised(day):
             warnings.append(f"withholding {day}: not fully summarised")
             continue
         drop.append(day)

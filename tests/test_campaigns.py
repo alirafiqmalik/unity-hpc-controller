@@ -1146,3 +1146,26 @@ def test_slurm_adapter_provider_freezes_backend_and_takes_current_mail(setup, ss
     assert isinstance(adapter.transport, cluster_access.Ssh)
     assert adapter.transport.host == "unity"
     assert ssh_tools.calls() == []
+
+
+def test_planner_history_reads_the_canonical_gpu_name(tmp_data_dir):
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from controller import campaign_planner
+    from lib import paths, telemetry_archive
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    con = sqlite3.connect(paths.summaries_db())
+    telemetry_archive.ensure(con)
+    con.executemany(
+        "INSERT INTO task_run(job_id, hardware, partition, state, wait_s, elapsed_s, max_rss_mb, day_utc) VALUES(?,?,?,?,?,?,?,?)",
+        [(str(i), "rtx8000", "gpu", "COMPLETED", 10.0 * i, 100.0, 512.0, today) for i in range(1, 5)])
+    con.commit()
+    con.close()
+    history = campaign_planner.historical_profile("gpu", "RTX_8000")
+    assert history["hardware"] == "rtx8000"
+    assert history["sample_count"] == 4
+    assert history["wait_p50_seconds"] == 20.0
+    cpu = campaign_planner.historical_profile("gpu", None)
+    assert (cpu["hardware"], cpu["sample_count"]) == ("cpu", 0)

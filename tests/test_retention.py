@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import local_retention, paths, retention
+from lib import local_retention, paths, retention, telemetry_archive
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLI = REPO_ROOT / "scripts" / "hpc-retention-gate"
@@ -26,10 +26,7 @@ ITEMIZE = """\
 
 def _seed_day(day, fully):
     con = sqlite3.connect(paths.summaries_db())
-    con.execute("CREATE TABLE IF NOT EXISTS day_index("
-                "day_utc TEXT PRIMARY KEY, slots_ingested INTEGER, rows_emitted INTEGER, "
-                "events_promoted INTEGER, task_runs_promoted INTEGER, "
-                "fully_summarised INTEGER, first_seen_utc TEXT, last_rollup_utc TEXT)")
+    telemetry_archive.ensure(con)
     con.execute("INSERT OR REPLACE INTO day_index VALUES(?,?,?,?,?,?,?,?)",
                 (day, 96, 96, 1, 1, fully, "x", "x"))
     con.commit()
@@ -186,9 +183,6 @@ def test_remote_prune_cli_drops_an_archived_day(tmp_data_dir, tmp_path):
 @pytest.fixture
 def retention_sample(tmp_data_dir):
     """One expired day and one live day in both raw trees and the summary DB."""
-    sys.path.insert(0, str(REPO_ROOT / "cluster-intel"))
-    import rollup
-
     old = "2026-05-01"
     recent = "2026-09-01"
     for tree in (paths.telemetry_dir(), paths.telemetry_imported_dir()):
@@ -197,7 +191,7 @@ def retention_sample(tmp_data_dir):
             folder.mkdir(parents=True)
             (folder / "resource_state.jsonl").write_text(f"{day}\n")
     con = sqlite3.connect(paths.summaries_db())
-    con.executescript(rollup.SCHEMA)
+    telemetry_archive.ensure(con)
     for day in (old, recent):
         con.execute("INSERT INTO daily_resource VALUES(?,?,?,?,?,?,?,?)",
                     ("gpu_type", "a100", day, 1, 1, 0, 0, 1))
@@ -267,15 +261,12 @@ def test_local_retention_keeps_recent_rows_and_second_run_is_empty(retention_sam
 def test_local_retention_keeps_live_data_when_a_backup_fails(
     tmp_data_dir, monkeypatch,
 ):
-    sys.path.insert(0, str(REPO_ROOT / "cluster-intel"))
-    import rollup
-
     day = "2026-05-01"
     raw = paths.telemetry_dir() / day
     raw.mkdir(parents=True)
     (raw / "resource_state.jsonl").write_text("old data\n")
     con = sqlite3.connect(paths.summaries_db())
-    con.executescript(rollup.SCHEMA)
+    telemetry_archive.ensure(con)
     con.execute("INSERT INTO day_index (day_utc) VALUES(?)", (day,))
     con.commit()
     con.close()

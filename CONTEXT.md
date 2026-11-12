@@ -97,6 +97,7 @@ _Avoid_: connection, tunnel, SSH session
 **Telemetry archive**:
 The local `summaries.db`, enriched accounting records, and raw sampled days under `$UNITY_HPC_DATA`.
 Allocation counts in it are not time-weighted utilization.
+`lib/telemetry_archive.py` owns `summaries.db`: its schema, which rows belong to a day, and the reads that production uses. Rollup is its one other writer.
 _Avoid_: dashboard data, usage database
 
 **Hardware**:

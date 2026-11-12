@@ -1,7 +1,8 @@
-"""Read-only helpers over summaries.db. Writers use rollup.py; these never write.
+"""Test-only readers over summaries.db, kept until the owner decides their future.
 
-Stdlib only. Every helper fails safe (returns a conservative value) when the
-database, table, or row is absent, so callers degrade rather than crash (I6).
+Production reads live in lib/telemetry_archive.py. Stdlib only. Every helper
+fails safe (returns a conservative value) when the database, table, or row is
+absent, so callers degrade rather than crash (I6).
 """
 
 from __future__ import annotations
@@ -10,26 +11,7 @@ import sqlite3
 import json
 
 from lib import paths
-
-
-def is_fully_summarised(day: str) -> bool:
-    """True iff summaries.db has a day_index row for `day` with fully_summarised=1."""
-    db = paths.summaries_db()
-    if not db.exists():
-        return False
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            row = con.execute(
-                "SELECT fully_summarised FROM day_index WHERE day_utc=?", (day,)
-            ).fetchone()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        # Missing table, corrupt/truncated DB, or any open failure: this helper
-        # gates deletion, so fail safe to "not summarised" rather than raise.
-        return False
-    return bool(row and row[0])
+from lib.telemetry_archive import pctl
 
 
 # task_run columns we surface to per-project readers.
@@ -40,20 +22,6 @@ _TASK_RUN_COLS = (
 
 # SQLite's default host-parameter limit is 999; chunk well under it.
 _ID_CHUNK = 900
-
-
-def _pctl(values: list, q: float) -> float | None:
-    """Deterministic q-percentile (0..1) via linear interpolation, 6dp."""
-    xs = sorted(v for v in values if v is not None)
-    if not xs:
-        return None
-    if len(xs) == 1:
-        return round(float(xs[0]), 6)
-    pos = q * (len(xs) - 1)
-    lo = int(pos)
-    frac = pos - lo
-    hi = min(lo + 1, len(xs) - 1)
-    return round(xs[lo] + (xs[hi] - xs[lo]) * frac, 6)
 
 
 def task_runs_for_jobs(job_ids: list[str]) -> list[dict]:
@@ -111,12 +79,12 @@ def project_hardware_profile(job_ids: list[str]) -> list[dict]:
             "hardware": hw,
             "n": len(runs),
             "n_with_eff": len(cpu),
-            "runtime_p50": _pctl(elapsed, 0.5),
-            "runtime_p90": _pctl(elapsed, 0.9),
-            "wait_p50": _pctl(waits, 0.5),
+            "runtime_p50": pctl(elapsed, 0.5),
+            "runtime_p90": pctl(elapsed, 0.9),
+            "wait_p50": pctl(waits, 0.5),
             "success_rate": round(ok / len(runs), 6) if runs else None,
-            "cpu_eff_p50": _pctl(cpu, 0.5),
-            "mem_eff_p50": _pctl(mem, 0.5),
+            "cpu_eff_p50": pctl(cpu, 0.5),
+            "mem_eff_p50": pctl(mem, 0.5),
         })
     return profile
 
@@ -143,36 +111,3 @@ def job_accounting_for_jobs(job_ids: list[str]) -> list[dict]:
     except (sqlite3.Error, ValueError):
         return []
     return out
-
-
-def historical_accounting(*, user=None, account=None, partition=None, gpu_type=None,
-                          since=None, until=None, limit=100, offset=0) -> list[dict]:
-    """Read a bounded history page. Time filters use UTC Slurm Submit timestamps."""
-    db = paths.summaries_db()
-    if not db.exists():
-        return []
-    limit, offset = min(max(int(limit), 1), 1000), max(int(offset), 0)
-    conditions, arguments = [], []
-    for column, value in (("a.user", user), ("a.account", account),
-                          ("t.partition", partition), ("t.hardware", gpu_type)):
-        if value is not None:
-            conditions.append(f"{column}=?")
-            arguments.append(value)
-    for operator, value in ((">=", since), ("<", until)):
-        if value is not None:
-            conditions.append(f"t.submit{operator}?")
-            arguments.append(value)
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
-    try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            rows = con.execute(
-                "SELECT a.details_json FROM task_accounting a JOIN task_run t USING(job_id)"
-                + where + " ORDER BY t.submit DESC,a.job_id LIMIT ? OFFSET ?",
-                [*arguments, limit, offset],
-            ).fetchall()
-        finally:
-            con.close()
-        return [json.loads(raw) for (raw,) in rows]
-    except (sqlite3.Error, ValueError):
-        return []

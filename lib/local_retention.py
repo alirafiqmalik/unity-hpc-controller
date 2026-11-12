@@ -14,39 +14,10 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from lib import paths
+from lib import paths, telemetry_archive
 
-TABLE_DATES = {
-    "hourly_resource": "hour_utc",
-    "daily_resource": "day_utc",
-    "task_run": "day_utc",
-    "events": "ts",
-    "day_index": "day_utc",
-}
 RAW_TREES = ("telemetry", "telemetry-imported")
 DAY_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _accounting_of_days(count: int) -> str:
-    """Select accounting whose job has a task_run on the given days."""
-    return ("job_id IN (SELECT job_id FROM task_run WHERE substr(day_utc,1,10) IN ("
-            + ",".join("?" * count) + "))")
-
-
-def _has_accounting(con) -> bool:
-    """An archive that predates enriched accounting has no such table."""
-    return con.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_accounting'"
-    ).fetchone() is not None
-
-
-def _copy_rows(archive, rows, table) -> int:
-    insert = f"INSERT INTO {table} VALUES({','.join('?' * len(rows.description))})"
-    count = 0
-    while batch := rows.fetchmany(1000):
-        archive.executemany(insert, batch)
-        count += len(batch)
-    return count
 
 
 def _valid_day(value: str) -> bool:
@@ -71,13 +42,7 @@ def _archive_root() -> Path:
 
 
 def _candidate_days(con: sqlite3.Connection, cutoff: str) -> list[str]:
-    found: set[str] = set()
-    for table, column in TABLE_DATES.items():
-        rows = con.execute(
-            f"SELECT DISTINCT substr({column},1,10) FROM {table} "
-            f"WHERE substr({column},1,10) < ?", (cutoff,),
-        )
-        found.update(day for (day,) in rows if _valid_day(day))
+    found: set[str] = {day for day in telemetry_archive.dated_days_before(con, cutoff) if _valid_day(day)}
     for tree in RAW_TREES:
         root = paths.data_dir() / tree
         if root.is_dir():
@@ -140,47 +105,8 @@ def _backup_summary(con: sqlite3.Connection, day: str, folder: Path, orphan_ids=
     db_tmp = Path(db_name)
     try:
         archive = sqlite3.connect(db_tmp)
-        count = 0
         try:
-            for table, column in TABLE_DATES.items():
-                schema = con.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-                    (table,),
-                ).fetchone()[0]
-                archive.execute(schema)
-                rows = con.execute(
-                    f"SELECT * FROM {table} WHERE substr({column},1,10)=?", (day,),
-                )
-                count += _copy_rows(archive, rows, table)
-            if _has_accounting(con):
-                archive.execute(con.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_accounting'"
-                ).fetchone()[0])
-                count += _copy_rows(archive, con.execute(
-                    f"SELECT * FROM task_accounting WHERE {_accounting_of_days(1)}", (day,)
-                ), "task_accounting")
-                for start in range(0, len(orphan_ids), 500):
-                    chunk = orphan_ids[start:start + 500]
-                    marks = ",".join("?" * len(chunk))
-                    count += _copy_rows(archive, con.execute(
-                        f"SELECT * FROM task_accounting WHERE job_id IN ({marks})", chunk
-                    ), "task_accounting")
-            for table in ("task_profile", "meta"):
-                schema = con.execute(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-                    (table,),
-                ).fetchone()[0]
-                archive.execute(schema)
-            archive.executemany("INSERT INTO meta VALUES(?,?)", con.execute(
-                "SELECT key, value FROM meta"
-            ))
-            archive.execute(
-                "INSERT OR REPLACE INTO meta VALUES('archive_day',?)", (day,)
-            )
-            import sys
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cluster-intel"))
-            import rollup
-            rollup._rebuild_task_profile(archive)
+            count = telemetry_archive.write_day(con, archive, day, orphan_ids)
             archive.commit()
             if archive.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError("summary backup failed integrity check")
@@ -216,11 +142,7 @@ def _summary_backups() -> list[tuple[str, Path]]:
 
 
 def _attribute_orphans(con) -> dict[str, list[str]]:
-    if not _has_accounting(con):
-        return {}
-    orphans = {job for (job,) in con.execute(
-        "SELECT job_id FROM task_accounting WHERE job_id NOT IN (SELECT job_id FROM task_run)"
-    )}
+    orphans = telemetry_archive.orphan_accounting(con)
     backups = _summary_backups() if orphans else []
     if not backups:
         return {}
@@ -233,7 +155,7 @@ def _attribute_orphans(con) -> dict[str, list[str]]:
                     shutil.copyfileobj(src, out)
                 backup = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
                 try:
-                    ids = {job for (job,) in backup.execute("SELECT job_id FROM task_run")}
+                    ids = telemetry_archive.task_run_job_ids(backup)
                 finally:
                     backup.close()
                 for job in ids & orphans:
@@ -256,28 +178,7 @@ def _prune_db(days: list[str], orphan_ids=()) -> None:
     try:
         con = sqlite3.connect(tmp)
         try:
-            accounting = _has_accounting(con)
-            for batch_start in range(0, len(days), 500):
-                batch = days[batch_start:batch_start + 500]
-                marks = ",".join("?" * len(batch))
-                if accounting:
-                    # Before task_run: the selection needs that day's task rows.
-                    con.execute(f"DELETE FROM task_accounting WHERE {_accounting_of_days(len(batch))}", batch)
-                for table, column in TABLE_DATES.items():
-                    con.execute(
-                        f"DELETE FROM {table} WHERE substr({column},1,10) IN ({marks})",
-                        batch,
-                    )
-            for start in range(0, len(orphan_ids) if accounting else 0, 500):
-                chunk = orphan_ids[start:start + 500]
-                marks = ",".join("?" * len(chunk))
-                con.execute(f"DELETE FROM task_accounting WHERE job_id IN ({marks}) AND job_id NOT IN (SELECT job_id FROM task_run)", chunk)
-            con.execute("DELETE FROM task_profile")
-            # task_profile is derived from task_run. Rebuild it after the cut.
-            import sys
-            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cluster-intel"))
-            import rollup
-            rollup._rebuild_task_profile(con)
+            telemetry_archive.prune_days(con, days, orphan_ids)
             con.commit()
             con.execute("VACUUM")
             if con.execute("PRAGMA integrity_check").fetchone()[0] != "ok":

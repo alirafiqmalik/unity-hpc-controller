@@ -27,9 +27,10 @@ from pathlib import Path
 resource.setrlimit(resource.RLIMIT_AS, (128 * 1024**2, 128 * 1024**2))
 sys.path.insert(0, str(Path(sys.argv[1]) / 'cluster-intel'))
 import rollup
+from lib import telemetry_archive
 connection = sqlite3.connect(':memory:')
 connection.create_function('is_terminal', 1, lambda state: int(state == 'COMPLETED'))
-connection.executescript(rollup.SCHEMA)
+telemetry_archive.ensure(connection)
 rollup._process_day(connection, '2026-01-01', Path(sys.argv[2]))
 assert connection.execute('SELECT COUNT(*) FROM task_run').fetchone()[0] == 1
 assert connection.execute('SELECT state FROM task_run').fetchone()[0] == 'COMPLETED'
