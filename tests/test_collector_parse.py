@@ -455,3 +455,9 @@ def test_untyped_gres_still_counts_as_a_gpu_job():
     t = parse_task_runs(row)[0]
     assert t["gpu_type"] is None and t["req"].get("gpus") == 1
     assert derive_hardware(t["gpu_type"], t["req"]) == GPU_UNSPECIFIED
+
+
+def test_the_three_terminal_state_sets_agree():
+    sys.path.insert(0, str(REPO_ROOT))
+    from controller import campaigns, snapshot
+    assert cp.TERMINAL_STATES == snapshot._TERMINAL_STATES == frozenset(campaigns.SLURM_TERMINAL)

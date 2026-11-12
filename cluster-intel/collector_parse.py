@@ -383,7 +383,9 @@ def _parse_tres(tres: str) -> tuple[str | None, dict]:
 # NOT fork a second, subtly-different list). A state whose FIRST token is in
 # this set is terminal, so uid-suffixed rows (`CANCELLED by <uid>`) that
 # predate state normalization are still classified correctly.
+# tests/test_collector_parse.py holds this set equal to the controller's two copies.
 TERMINAL_STATES = frozenset({
+    "BOOT_FAIL", "DEADLINE", "REVOKED",
     "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT",
     "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED",
 })

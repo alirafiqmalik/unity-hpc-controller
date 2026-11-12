@@ -262,17 +262,18 @@ def test_upsert_upgrades_non_terminal_row_to_terminal(tmp_data_dir):
     assert row["end"] == "2026-07-20T03:40:00Z"
 
 
-def test_upsert_never_downgrades_terminal_to_non_terminal(tmp_data_dir):
+@pytest.mark.parametrize("state", ["COMPLETED", "BOOT_FAIL", "DEADLINE", "REVOKED"])
+def test_upsert_never_downgrades_terminal_to_non_terminal(tmp_data_dir, state):
     _write_day(paths.telemetry_dir(), "2026-07-20",
                resource=_slots_for_day("2026-07-20", 4),
-               task_runs=[_one_run(state="COMPLETED", end="2026-07-20T03:40:00Z",
+               task_runs=[_one_run(state=state, end="2026-07-20T03:40:00Z",
                                    exit_code=0)])
     rollup.run()
     # A stale/out-of-order RUNNING re-observation must NOT clobber the terminal row.
     _write_day(paths.telemetry_dir(), "2026-07-20",
                resource=_slots_for_day("2026-07-20", 4), task_runs=[_one_run()])
     rollup.run()
-    assert _task_row()["state"] == "COMPLETED"
+    assert _task_row()["state"] == state
 
 
 def test_upsert_terminal_to_terminal_keeps_fresh_seff_enrichment(tmp_data_dir):
