@@ -1,7 +1,7 @@
 """Durable portable campaigns: stage, submit, reconcile, retry, and return files.
 
 This module is the controller's small public interface. Scientific commands
-and evaluations remain opaque. Its SSH adapter can be replaced in tests.
+and evaluations remain opaque. Tests replace its Slurm adapter or the Cluster access transport under it.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 from lib import paths
 from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store, events, hardware_class
 from controller.campaign_slurm import SlurmAdapter
-from controller.cluster_session import clean_ssh_host, clean_ssh_identity
+from controller.cluster_access import clean_ssh_host, clean_ssh_identity
 
 DEFAULTS = {"ssh_host": "unity", "ssh_identity": "", "account": "", "remote_root": "", "allowed_partitions": ["gpu", "gpu-preempt"],
             "cpu_partitions": ["cpu", "cpu-preempt"], "qos": "normal", "mail_user": "", "poll_seconds": 30, "catalog_max_age_seconds": 3600,
@@ -85,11 +85,21 @@ def configure(changes):
     return value
 
 
+def slurm_adapter(campaign=None, live=None):
+    """The Slurm adapter for one campaign now: the campaign's frozen backend (alias,
+    identity, account, remote root) with the current mail policy. Without a
+    campaign: the current backend settings, for the catalog refresh."""
+    live = settings() if live is None else live
+    if campaign is None:
+        return SlurmAdapter(live)
+    return SlurmAdapter({**campaign["spec"]["backend"], "mail_user": live["mail_user"]})
+
+
 def probe(adapter=None):
     value = settings()
     if not value["account"]:
         raise contract.CampaignError("configure backend.account before probing")
-    observed = (adapter or SlurmAdapter(value)).probe()
+    observed = (adapter or slurm_adapter(live=value)).probe()
     _write_json(paths.controller_dir() / "backend-catalog.json", observed)
     return observed
 
@@ -321,7 +331,7 @@ def tick(identity=None, adapter=None, clock=None):
         for campaign_id in identities:
             try:
                 campaign = store.read(campaign_id)
-                _reconcile(campaign, adapter or SlurmAdapter(campaign["spec"]["backend"]), clock)
+                _reconcile(campaign, adapter or slurm_adapter(campaign, controller_limits), clock)
                 store.roll_up(campaign_id)
                 _resolved(campaign, "reconcile")
             except Exception as exc:
@@ -349,7 +359,7 @@ def tick(identity=None, adapter=None, clock=None):
                 backend = campaign["spec"]["backend"]
                 # Mail is current service policy, including for waiting tasks and
                 # retries in campaigns accepted before notifications were enabled.
-                transport = adapter or SlurmAdapter({**backend, "mail_user": controller_limits["mail_user"]})
+                transport = adapter or slurm_adapter(campaign, controller_limits)
                 states = {t["task_id"]: t["state"] for t in campaign["tasks"]}
                 running = sum(t["state"] in lifecycle.ACTIVE for t in campaign["tasks"])
                 cancelling = campaign["state"] == lifecycle.CANCELLING
@@ -399,8 +409,7 @@ def tick(identity=None, adapter=None, clock=None):
                             _campaign_failed(campaign_id, "stage", exc)
                             break
                         evidence = {"elapsed_seconds": round(clock.monotonic() - staged_at, 3)}
-                        if isinstance(staged_receipt, dict):
-                            evidence.update(staged_receipt)
+                        evidence.update(staged_receipt)
                         store.record_staged(campaign["id"], evidence)
                         campaign["staged"] = 1
                         _resolved(campaign, "stage")
@@ -427,14 +436,14 @@ def tick(identity=None, adapter=None, clock=None):
                 "continue_immediately": bool(admission_progress and deferred_eligible)}
 
 
-def cancel(identity):
+def cancel(identity, adapter=None):
     with lock():
         campaign = store.read(identity)
         state = lifecycle.cancel_campaign(campaign["state"])
         if state is None:
             return campaign
         store.record_cancel_request(identity, state)
-        transport = SlurmAdapter(campaign["spec"]["backend"])
+        transport = adapter or slurm_adapter(campaign)
         jobs = [t["job_id"] for t in campaign["tasks"] if t["state"] in lifecycle.ACTIVE and t["job_id"]]
         transport.cancel(jobs)
         for task in campaign["tasks"]:
@@ -470,7 +479,7 @@ class Worker:
 
     def __init__(self, *, clock=None, adapter=None, refresh_catalog=None, stop=None):
         self.clock = Clock() if clock is None else clock
-        self.adapter = adapter  # None: a SlurmAdapter for each campaign
+        self.adapter = adapter  # None: slurm_adapter() for each campaign
         self.refresh_catalog = probe if refresh_catalog is None else refresh_catalog
         self.stop = threading.Event() if stop is None else stop
         self.catalog_due = self.clock.monotonic()  # the first pass with work refreshes the catalog

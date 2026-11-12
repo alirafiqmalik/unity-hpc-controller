@@ -74,6 +74,22 @@ Each job script carries its text as a here-document on the standard input of `py
 The controller imports the same match rule from that file, so the job and the controller compare devices with one function.
 The journal keeps the SQL for hardware locks and asks `hardware_class` for the rule.
 
+## Cluster access
+
+`controller/cluster_access.py` owns how the controller reaches the cluster: the SSH alias and identity checks, the one set of SSH options, the agent that holds the unlocked key (with the desktop keyring and the askpass helper), a bounded remote command, and file transfer with rsync.
+A transport offers three operations: run a command line, run a script on the standard input of `bash`, and transfer files to or from the cluster.
+The production transport runs `ssh` and `rsync` through the saved alias.
+The local-shell transport runs the same command text in local `bash`, treats a remote path as a local path, and transfers with local `rsync`, so tests run the real staging, receipt, cancel, and retrieval protocols without a cluster.
+
+`controller/campaign_slurm.py` keeps the Slurm protocol (stage, submit, observe, collect, cancel, probe) and takes its transport from Cluster access.
+`campaigns.slurm_adapter()` gives the Worker, cancellation, and the catalog refresh the adapter for a campaign now: the campaign's frozen backend with the current mail policy.
+`controller/cluster_session.py` keeps the tmux protocol of the Cluster session and sends it through the same transport.
+`cluster-intel/sync-telemetry.sh` runs the pull; the controller gives it `RSYNC_RSH`, built by Cluster access, and `lib/retention.py` uses that variable for the remote prune.
+
+Every command line is the one the controller sent before this module existed.
+The Slurm commands put the options before `-i` and use the agent socket that the alias's `IdentityAgent` names; the Cluster session and the pull put `-i` first and inherit the controller's environment; the settings panel's SSH test sets no keep-alive.
+`GET /api/v1/health` reads the identity state with four local tool calls (`ssh -G`, `ssh-add -l`, `ssh-keygen -l`, `busctl`), opens no cluster connection, and caches nothing.
+
 ## Data
 
 `$UNITY_HPC_DATA/controller/campaigns.db` is the campaign journal: campaigns, tasks, attempts, hardware locks, and result events.

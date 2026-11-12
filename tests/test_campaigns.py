@@ -1,15 +1,16 @@
 """Portable campaign seam: faults and restarts must not duplicate compute."""
 import copy
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
-from controller import campaigns, campaign_lifecycle as lifecycle, campaign_store as store, events
+from controller import cluster_access, campaigns, campaign_lifecycle as lifecycle, campaign_store as store, events
 from controller.campaign_contract import CampaignError, Conflict
-from controller.campaign_slurm import script, parse_probe
+from controller.campaign_slurm import SlurmAdapter, script, parse_probe
 from controller.http import Request, handle
 
 
@@ -37,6 +38,7 @@ class FakeSlurm:
 
     def stage(self, campaign):
         self.staged += 1
+        return {}
 
     def submit(self, campaign, task, placement):
         self.submissions.append((task["job_name"], placement))
@@ -64,6 +66,21 @@ class FakeSlurm:
         self.observations[name] = {"job_id": job_id, "state": state, "exit_code": "0:0"}
 
 
+class Canned:
+    def __init__(self, stdout):
+        self.stdout, self.commands = stdout, []
+
+    def run(self, command, *, timeout, input=None):
+        self.commands.append(command)
+        return subprocess.CompletedProcess([], 0, self.stdout, "")
+
+    def run_script(self, *args, **kwargs):
+        raise AssertionError("unexpected script")
+
+    def transfer(self, *args, **kwargs):
+        raise AssertionError("unexpected transfer")
+
+
 class FakeClock:
     """The Worker's clock in tests: time stays where the test sets it."""
     def __init__(self, wall=0.0, monotonic=0.0):
@@ -82,8 +99,7 @@ def test_cancel_fences_waiting_tasks_and_ends_live_jobs(setup, monkeypatch):
     campaigns.create(spec)
     fake = FakeSlurm()
     campaigns.tick("study", fake)
-    monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
-    value = campaigns.cancel("study")
+    value = campaigns.cancel("study", adapter=fake)
     assert value["state"] == "cancelling"
     assert [task["state"] for task in value["tasks"]] == ["accepted", "cancelled"]
     assert fake.cancelled == [["123"]]
@@ -536,16 +552,12 @@ def test_accounting_reconciliation_crosses_midnight_utc_safely(setup):
     campaign = campaigns.create(spec)
     campaign["created_at"] = "2026-10-06T00:05:00+00:00"
     task = campaigns._intent(campaign, campaign["tasks"][0])
-    commands = []
-    class MidnightAdapter(SlurmAdapter):
-        def command(self, command, **kwargs):
-            commands.append(command)
-            output = f"QUEUE\nACCOUNTING\n123|{task['job_name']}|COMPLETED|0:0|gpu013|300|2026-10-06T00:05:01|2026-10-06T00:05:05|2026-10-06T00:10:05|gres/gpu:a100=1|||\n"
-            return subprocess.CompletedProcess([], 0, output, "")
-    adapter = MidnightAdapter(campaign["spec"]["backend"])
+    output = f"QUEUE\nACCOUNTING\n123|{task['job_name']}|COMPLETED|0:0|gpu013|300|2026-10-06T00:05:01|2026-10-06T00:05:05|2026-10-06T00:10:05|gres/gpu:a100=1|||\n"
+    transport = Canned(output)
+    adapter = SlurmAdapter(campaign["spec"]["backend"], transport=transport)
     observed = adapter.observe(campaign, [task])
     assert observed[task["job_name"]]["state"] == "COMPLETED"
-    assert "-S 2026-10-05T00:05:00 -E now" in commands[0]
+    assert "-S 2026-10-05T00:05:00 -E now" in transport.commands[0]
 
 
 @pytest.mark.parametrize("live_state,accounting_state,reason,estimate", [
@@ -559,11 +571,9 @@ def test_live_queue_owns_state_and_keeps_accounting_details(setup, live_state, a
     campaign = campaigns.create(spec)
     task = campaigns._intent(campaign, campaign["tasks"][0])
     live_node = "(null)" if live_state == "PENDING" else "gpu019"
-    class MixedAdapter(SlurmAdapter):
-        def command(self, command, **kwargs):
-            output = f"QUEUE\n123|{task['job_name']}|{live_state}|{reason}|{live_node}|{estimate}\nACCOUNTING\n123|{task['job_name']}|{accounting_state}|0:0|None assigned|300|2026-10-06T00:05:01|Unknown|Unknown|gres/gpu:a100=1|128M|00:04:00|gres/gpuutil=42\n"
-            return subprocess.CompletedProcess([], 0, output, "")
-    record = MixedAdapter(campaign["spec"]["backend"]).observe(campaign, [task])[task["job_name"]]
+    output = f"QUEUE\n123|{task['job_name']}|{live_state}|{reason}|{live_node}|{estimate}\nACCOUNTING\n123|{task['job_name']}|{accounting_state}|0:0|None assigned|300|2026-10-06T00:05:01|Unknown|Unknown|gres/gpu:a100=1|128M|00:04:00|gres/gpuutil=42\n"
+    transport = Canned(output)
+    record = SlurmAdapter(campaign["spec"]["backend"], transport=transport).observe(campaign, [task])[task["job_name"]]
     assert record["state"] == live_state
     assert record["node_list"] == live_node
     assert record["accounting_state"] == accounting_state
@@ -578,11 +588,9 @@ def test_accounting_terminal_state_releases_only_after_queue_disappears(setup):
     spec, _ = setup
     campaign = campaigns.create(spec)
     task = campaigns._intent(campaign, campaign["tasks"][0])
-    class FinishedAdapter(SlurmAdapter):
-        def command(self, command, **kwargs):
-            output = f"QUEUE\nACCOUNTING\n123|{task['job_name']}|COMPLETED|0:0|gpu019|300|2026-10-06T00:05:01|2026-10-06T00:05:05|2026-10-06T00:10:05|gres/gpu:a100=1|||\n"
-            return subprocess.CompletedProcess([], 0, output, "")
-    record = FinishedAdapter(campaign["spec"]["backend"]).observe(campaign, [task])[task["job_name"]]
+    output = f"QUEUE\nACCOUNTING\n123|{task['job_name']}|COMPLETED|0:0|gpu019|300|2026-10-06T00:05:01|2026-10-06T00:05:05|2026-10-06T00:10:05|gres/gpu:a100=1|||\n"
+    transport = Canned(output)
+    record = SlurmAdapter(campaign["spec"]["backend"], transport=transport).observe(campaign, [task])[task["job_name"]]
     assert record["state"] == "COMPLETED" and record["source"] == "ACCOUNTING"
     assert record["sources"] == ["ACCOUNTING"]
 
@@ -628,7 +636,7 @@ def test_retrieves_older_completed_campaign_before_staging_newer_campaign(setup)
     class OrderedSlurm(FakeSlurm):
         def stage(self, campaign):
             calls.append(("stage", campaign["id"]))
-            super().stage(campaign)
+            return super().stage(campaign)
         def collect(self, campaign, task):
             calls.append(("collect", campaign["id"]))
             return super().collect(campaign, task)
@@ -675,7 +683,7 @@ def test_admission_time_budget_finishes_inflight_submission_then_reconciles_befo
         def stage(self, campaign):
             calls.append("stage")
             clock.elapsed += 11
-            super().stage(campaign)
+            return super().stage(campaign)
         def observe(self, campaign, tasks):
             calls.append("observe")
             return super().observe(campaign, tasks)
@@ -808,14 +816,7 @@ def test_replaying_remote_submit_intent_consumes_one_sbatch(setup, tmp_path):
     counter = tmp_path / "submissions"
     (bin_dir / "sbatch").write_text('#!/bin/sh\necho accepted >>"' + str(counter) + '"\necho 123\n')
     (bin_dir / "sbatch").chmod(0o755)
-    class LocalAdapter(SlurmAdapter):
-        def __init__(self):
-            self.settings = {**campaign["spec"]["backend"], "remote_root": str(remote)}
-        def command(self, command, timeout=90, input=None):
-            import os
-            return subprocess.run(["bash", "-c", command], input=input, capture_output=True, text=True, timeout=timeout,
-                                  env={**os.environ, "PATH": str(bin_dir) + ":" + os.environ["PATH"]})
-    adapter = LocalAdapter()
+    adapter = SlurmAdapter({**campaign["spec"]["backend"], "remote_root": str(remote)}, transport=cluster_access.LocalShell(path=[bin_dir]))
     placement = campaigns.planner.select(task["spec"]["resources"], campaigns.settings())
     assert adapter.submit(campaign, task, placement) == {"outcome": "accepted", "job_id": "123"}
     assert adapter.submit(campaign, task, placement) == {"outcome": "accepted", "job_id": "123"}
@@ -845,12 +846,6 @@ def test_identical_retry_does_not_wait_for_worker_lock(setup, monkeypatch):
     with pytest.raises(Conflict): campaigns.create(changed)
 
 
-def test_slurm_adapter_uses_the_shared_ssh_keepalive(monkeypatch):
-    from controller import campaign_slurm
-    monkeypatch.setattr(campaign_slurm, "_agent_env", lambda host: {})
-    adapter = campaign_slurm.SlurmAdapter({"ssh_host": "unity"})
-    assert "ServerAliveInterval=15" in adapter.ssh
-    assert "ServerAliveCountMax=3" in adapter.ssh
 
 
 @pytest.mark.parametrize("nodelist", ["gpu[5-1]", "gpu[1-a]"])
@@ -937,8 +932,7 @@ def test_cancel_transport_failure_is_contained_to_its_campaign(setup, monkeypatc
     campaigns.create(newer)
     assert store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL) == ["newer", "study"]
     campaigns.tick("newer", fake)
-    monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
-    campaigns.cancel("newer")
+    campaigns.cancel("newer", adapter=fake)
     fake.observations[fake.submissions[1][0]] = {"job_id": "124", "state": "RUNNING"}
     fake.observations[fake.submissions[0][0]] = {"job_id": "123", "state": "COMPLETED", "exit_code": "0:0"}
     fake.cancel_failure = True
@@ -1096,3 +1090,59 @@ def test_failure_that_the_journal_cannot_record_ends_the_pass(setup, monkeypatch
     assert fake.submissions == []
     messages = [entry["message"] for entry in events.recent(50) if entry["kind"] == "campaign-error"]
     assert "newer: stage: shared storage unavailable" in messages
+
+
+def test_slurm_cancel_runs_scancel_through_the_local_shell(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "cancelled"
+    scancel = bin_dir / "scancel"
+    scancel.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >>"' + str(log) + '"\n')
+    scancel.chmod(0o755)
+    adapter = SlurmAdapter({}, transport=cluster_access.LocalShell(path=[bin_dir]))
+    adapter.cancel(["123", "456"])
+    adapter.cancel([])
+    assert log.read_text().splitlines() == ["123 456"]
+    with pytest.raises(CampaignError, match="invalid scheduler identity"):
+        adapter.cancel(["12a"])
+    assert log.read_text().splitlines() == ["123 456"]
+    scancel.write_text('#!/bin/sh\necho "scancel: Unable to contact slurm controller" >&2\nexit 1\n')
+    with pytest.raises(RuntimeError, match="scancel: Unable to contact slurm controller"):
+        adapter.cancel(["123"])
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync is not installed")
+def test_slurm_collect_retrieves_declared_outputs_and_evidence_through_the_local_shell(tmp_data_dir, tmp_path):
+    remote = tmp_path / "remote"
+    base = remote / "campaigns/study"
+    output = base / "outputs/model-a"
+    (output / "sub").mkdir(parents=True)
+    (output / ".controller").mkdir()
+    files = ["results.jsonl", "sub/summary.json", "a[1].txt", "a1.txt", "secret.txt", ".controller/hardware-1.json"]
+    for name in files:
+        (output / name).write_text(name + "\n")
+    (base / "logs").mkdir()
+    (base / "logs/job-a.out").write_text("job log\n")
+    task = {"task_id": "model-a", "job_name": "job-a", "attempt": 1,
+            "spec": {"outputs": ["results.jsonl", "sub/summary.json", "a[1].txt"]}}
+    adapter = SlurmAdapter({"remote_root": str(remote)}, transport=cluster_access.LocalShell())
+    local = adapter.collect({"id": "study"}, task)
+    assert sorted(str(p.relative_to(local)) for p in local.rglob("*") if p.is_file()) == [
+        ".controller/hardware-1.json", "a[1].txt", "job-a.out", "results.jsonl", "sub/summary.json",
+    ]
+    for name in ["results.jsonl", "sub/summary.json", "a[1].txt", ".controller/hardware-1.json"]:
+        assert (local / name).read_bytes() == (output / name).read_bytes()
+    assert (local / "job-a.out").read_text() == "job log\n"
+
+
+def test_slurm_adapter_provider_freezes_backend_and_takes_current_mail(setup, ssh_tools):
+    spec, _ = setup
+    campaigns.create(spec)
+    campaigns.configure({"mail_user": "operator@example.edu", "remote_root": "/work/elsewhere"})
+    adapter = campaigns.slurm_adapter(store.read("study"))
+    assert adapter.settings["remote_root"] == "/work/pi_test/controller"
+    assert adapter.settings["mail_user"] == "operator@example.edu"
+    assert campaigns.slurm_adapter().settings["remote_root"] == "/work/elsewhere"
+    assert isinstance(adapter.transport, cluster_access.Ssh)
+    assert adapter.transport.host == "unity"
+    assert ssh_tools.calls() == []

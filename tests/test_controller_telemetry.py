@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from controller import cluster_session
+from controller import cluster_access, cluster_session
 from controller import http as chttp
 from controller import telemetry
 from lib import paths
@@ -566,7 +566,7 @@ def test_ssh_unlock_refuses_an_empty_passphrase():
 
 def test_ssh_unlock_does_not_echo_the_passphrase(monkeypatch):
     monkeypatch.setattr(
-        cluster_session, "unlock_identity",
+        cluster_access, "unlock_identity",
         lambda identity, passphrase, **_k: {
             "ok": True, "key_path": identity, "unlocked": True,
         },
@@ -751,3 +751,24 @@ def test_the_schedule_opens_no_port_and_no_remote_process():
     source = Path(telemetry.__file__).read_text()
     for banned in ("0.0.0.0", "socket", "tailscale funnel", "tmux", "ssh "):
         assert banned not in source, f"telemetry.py must not use {banned!r}"
+
+
+def test_health_reads_the_identity_with_four_local_tool_calls(ssh_tools, tmp_path):
+    key = tmp_path / "cluster"
+    key.write_text("dummy-key\n")
+    ssh_tools.respond("ssh -G", {"stdout": f"identityfile {key}\nidentityagent {tmp_path}/a.sock\n"})
+    reply = {"stdout": "256 SHA256:h1 k (ED25519)\n"}
+    ssh_tools.respond("ssh-add -l", reply)
+    ssh_tools.respond("ssh-keygen", reply)
+    ssh_tools.respond("busctl", {"stdout": "b false\n"})
+    response = _req("GET", "/api/v1/health")
+    assert response.status == 200
+    ssh = _payload(response)["ssh"]
+    assert ssh["unlocked"] is True
+    assert ssh["needs_passphrase"] is False
+    assert [c["argv"] for c in ssh_tools.calls()] == [
+        ["ssh", "-G", "unity"],
+        ["ssh-add", "-l"],
+        ["ssh-keygen", "-l", "-f", str(key)],
+        ["busctl", "--user", "get-property", "org.freedesktop.secrets", "/org/freedesktop/secrets/aliases/default", "org.freedesktop.Secret.Collection", "Locked"],
+    ]

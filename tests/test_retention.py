@@ -110,20 +110,19 @@ def test_split_source_separates_a_remote_host_from_a_local_path():
     assert retention.split_source("/tmp/cluster") == (None, "/tmp/cluster")
 
 
-def test_remote_prune_uses_the_pull_ssh_transport(monkeypatch):
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="2026-05-01\n", stderr="")
-
+def test_remote_prune_uses_the_pull_ssh_transport(monkeypatch, ssh_tools):
+    ssh_tools.respond("ssh", {"stdout": "2026-05-01\n"})
     monkeypatch.setenv("RSYNC_RSH", "ssh -i '/tmp/key with space' -o BatchMode=yes")
-    monkeypatch.setattr(retention.subprocess, "run", fake_run)
     assert retention.list_source_days("unity-alias:/work/a/telemetry/") == {"2026-05-01"}
     assert retention.drop_source_days("unity-alias:/work/a/telemetry/", ["2026-05-01"])["ok"]
-    assert all(call[:5] == ["ssh", "-i", "/tmp/key with space", "-o", "BatchMode=yes"]
-               for call in calls)
-    assert all(call[5:7] == ["unity-alias", "bash"] for call in calls)
+    calls = ssh_tools.calls()
+    assert [c["argv"] for c in calls] == [
+        ["ssh", "-i", "/tmp/key with space", "-o", "BatchMode=yes", "unity-alias", "bash", "-s"],
+        ["ssh", "-i", "/tmp/key with space", "-o", "BatchMode=yes", "unity-alias", "bash", "-s"],
+    ]
+    assert [c["stdin"] for c in calls] == [
+        "ls -1 /work/a/telemetry\n", "rm -rf -- /work/a/telemetry/2026-05-01\n",
+    ]
 
 
 def test_remote_prune_keeps_today_and_unarchived_days(tmp_data_dir):

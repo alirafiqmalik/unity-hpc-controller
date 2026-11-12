@@ -20,14 +20,13 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import shlex
 import subprocess
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import cluster_session, events
+from controller import cluster_access, cluster_session, events
 from lib import paths
 
 REPO = Path(__file__).resolve().parent.parent
@@ -122,11 +121,11 @@ def settings() -> dict:
     except ValueError:
         out["script_mode"] = DEFAULTS["script_mode"]
     try:
-        out["ssh_host"] = cluster_session.clean_ssh_host(out.get("ssh_host"))
+        out["ssh_host"] = cluster_access.clean_ssh_host(out.get("ssh_host"))
     except ValueError:
         out["ssh_host"] = DEFAULTS["ssh_host"]
     try:
-        out["ssh_identity"] = cluster_session.clean_ssh_identity(
+        out["ssh_identity"] = cluster_access.clean_ssh_identity(
             out.get("ssh_identity")
         )
     except ValueError:
@@ -190,9 +189,9 @@ def save_settings(**changes) -> dict:
     if "script_mode" in changes:
         current["script_mode"] = cluster_session.clean_mode(changes["script_mode"])
     if "ssh_host" in changes:
-        current["ssh_host"] = cluster_session.clean_ssh_host(changes["ssh_host"])
+        current["ssh_host"] = cluster_access.clean_ssh_host(changes["ssh_host"])
     if "ssh_identity" in changes:
-        current["ssh_identity"] = cluster_session.clean_ssh_identity(
+        current["ssh_identity"] = cluster_access.clean_ssh_identity(
             changes["ssh_identity"]
         )
     if "session_name" in changes:
@@ -410,19 +409,13 @@ def _execute(run: dict, cfg: dict | None = None) -> dict:
     env["UNITY_HPC_DATA"] = str(paths.data_dir())
     if cluster_session.parse_remote_source(run["source"]) is not None:
         cfg = cfg or settings()
-        host = cluster_session.clean_ssh_host(cfg.get("ssh_host"))
-        identity = cluster_session.clean_ssh_identity(cfg.get("ssh_identity"))
-        cluster_session.restore_identity(host, identity)
-        if identity:
-            identity = str(Path(identity).expanduser())
+        host = cluster_access.clean_ssh_host(cfg.get("ssh_host"))
+        identity = cluster_access.clean_ssh_identity(cfg.get("ssh_identity"))
+        cluster_access.restore_identity(host, identity)
         # The sample and the pull must use the same SSH alias and identity.
         # Keep the source path intact; only its host prefix changes.
         env["UNITY_TELEMETRY_SRC"] = host + ":" + run["source"].partition(":")[2]
-        ssh_cmd = cluster_session.ssh_argv(host, identity)[:-1]
-        env["RSYNC_RSH"] = shlex.join([
-            *ssh_cmd, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
-        ])
+        env["RSYNC_RSH"] = cluster_access.rsync_rsh(identity)
     started = _now()
     try:
         timeout = int(os.environ.get("UNITY_HPC_SYNC_TIMEOUT") or SYNC_TIMEOUT)
@@ -543,7 +536,7 @@ def _finish_script(run: dict, report: dict) -> dict:
 def _execute_script(run: dict) -> dict:
     """Run the saved cluster script, then the local pull. Never raises."""
     cfg = settings()
-    cluster_session.restore_identity(cfg["ssh_host"], cfg["ssh_identity"])
+    cluster_access.restore_identity(cfg["ssh_host"], cfg["ssh_identity"])
     try:
         report = cluster_session.collect(
             cfg, run["source"], mode=run.get("mode") or "once",
@@ -782,28 +775,27 @@ def status(limit: int = 10) -> dict:
 def probe_ssh() -> dict:
     """Run the saved alias once so the panel can test access."""
     cfg = settings()
-    cluster_session.restore_identity(cfg["ssh_host"], cfg["ssh_identity"])
-    return cluster_session.probe(cfg["ssh_host"], cfg["ssh_identity"])
+    cluster_access.restore_identity(cfg["ssh_host"], cfg["ssh_identity"])
+    return cluster_access.check_access(cfg["ssh_host"], cfg["ssh_identity"])
 
 
 def ssh_status() -> dict:
     """The saved alias, and whether its key still needs a passphrase."""
     cfg = settings()
-    cluster_session.restore_identity(cfg["ssh_host"], cfg["ssh_identity"])
-    report = cluster_session.agent_status(cfg["ssh_host"], cfg["ssh_identity"])
+    report = dict(cluster_access.restore_identity(cfg["ssh_host"], cfg["ssh_identity"]))
     report["host"] = cfg["ssh_host"]
     report["identity"] = cfg["ssh_identity"]
-    report["command"] = cluster_session.ssh_command(
+    report["command"] = cluster_access.ssh_command(
         cfg["ssh_host"], cfg["ssh_identity"]
     )
-    report["keyring_unlocked"] = cluster_session.keyring_unlocked()
+    report["keyring_unlocked"] = cluster_access.keyring_unlocked()
     return report
 
 
 def unlock_ssh(passphrase: str) -> dict:
     """Load the saved identity. The passphrase is never stored or logged."""
     cfg = settings()
-    report = cluster_session.unlock_identity(
+    report = cluster_access.unlock_identity(
         cfg["ssh_identity"], passphrase, host=cfg["ssh_host"],
     )
     if report.get("ok"):

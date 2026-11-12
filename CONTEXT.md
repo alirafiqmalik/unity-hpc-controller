@@ -89,6 +89,11 @@ A tmux session on the login node that the controller opens to run one scheduled 
 It closes after a quiet period. It is not a resident collector.
 _Avoid_: collector, daemon
 
+**Cluster access**:
+How the controller reaches the login node: one SSH alias and identity, the agent that holds the unlocked key, a bounded remote command, and file transfer.
+The Worker, the Cluster session, and the telemetry pull reach the cluster only through it.
+_Avoid_: connection, tunnel, SSH session
+
 **Telemetry archive**:
 The local `summaries.db`, enriched accounting records, and raw sampled days under `$UNITY_HPC_DATA`.
 Allocation counts in it are not time-weighted utilization.

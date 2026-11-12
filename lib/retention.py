@@ -83,7 +83,7 @@ def split_source(source: str) -> tuple[str | None, str]:
 
 
 def _remote_shell() -> list[str]:
-    """Use the same SSH transport as the rsync pull when one is configured."""
+    """The ssh command of the rsync pull: the controller sets RSYNC_RSH from cluster_access.rsync_rsh."""
     return shlex.split(os.environ.get("RSYNC_RSH") or "ssh")
 
 
@@ -134,7 +134,7 @@ def remote_prune_decision(
     return drop, warnings
 
 
-def list_source_days(source: str, run=None) -> set[str]:
+def list_source_days(source: str) -> set[str]:
     """YYYY-MM-DD directories on the telemetry source."""
     host, path = split_source(source)
     if host is None:
@@ -147,12 +147,8 @@ def list_source_days(source: str, run=None) -> set[str]:
         except OSError:
             return set()
     script = f"ls -1 {shlex.quote(path)}\n"
-    runner = run or (lambda h, s: subprocess.run(
-        [*_remote_shell(), h, "bash", "-s"],
-        input=s, capture_output=True, text=True,
-    ))
     try:
-        proc = runner(host, script)
+        proc = subprocess.run([*_remote_shell(), host, "bash", "-s"], input=script, capture_output=True, text=True)
     except OSError:
         return set()
     if getattr(proc, "returncode", 1) != 0:
@@ -165,7 +161,7 @@ def list_source_days(source: str, run=None) -> set[str]:
     return days
 
 
-def drop_source_days(source: str, days: list[str], run=None) -> dict:
+def drop_source_days(source: str, days: list[str]) -> dict:
     """Remove validated day directories from the source. Never touches local."""
     safe = [d for d in days if _DAY_NAME.fullmatch(d)]
     if not safe:
@@ -182,12 +178,8 @@ def drop_source_days(source: str, days: list[str], run=None) -> dict:
         return {"ok": True, "dropped": dropped}
     targets = " ".join(shlex.quote(f"{path}/{day}") for day in safe)
     script = f"rm -rf -- {targets}\n"
-    runner = run or (lambda h, s: subprocess.run(
-        [*_remote_shell(), h, "bash", "-s"],
-        input=s, capture_output=True, text=True,
-    ))
     try:
-        proc = runner(host, script)
+        proc = subprocess.run([*_remote_shell(), host, "bash", "-s"], input=script, capture_output=True, text=True)
     except OSError as exc:
         return {"ok": False, "dropped": [], "error": str(exc)}
     if getattr(proc, "returncode", 1) != 0:
@@ -198,12 +190,12 @@ def drop_source_days(source: str, days: list[str], run=None) -> dict:
 
 
 def prune_source(source: str, *, today: str | None = None,
-                 force: bool = False, run=None) -> dict:
+                 force: bool = False) -> dict:
     """Drop archived days from the cluster staging tree."""
-    remote_days = list_source_days(source, run=run)
+    remote_days = list_source_days(source)
     drop, warnings = remote_prune_decision(
         remote_days, today=today, force=force,
     )
-    result = drop_source_days(source, drop, run=run)
+    result = drop_source_days(source, drop)
     result["warnings"] = warnings
     return result

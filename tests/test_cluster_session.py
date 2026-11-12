@@ -1,6 +1,6 @@
 """The cluster session: idle timeout, and the remote command the schedule sends.
 
-No SSH. The runner is a fake, so these tests hold the command the controller
+No SSH. The runner is a fake transport, so these tests hold the command the controller
 would send and the decision to skip a local source.
 """
 
@@ -9,6 +9,16 @@ import subprocess
 from pathlib import Path
 
 from controller import cluster_session
+
+
+class Recorded:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+        self.calls = []
+
+    def run_script(self, script, *, timeout):
+        self.calls.append((script, timeout))
+        return subprocess.CompletedProcess([], self.returncode, self.stdout, self.stderr)
 
 
 def test_thirty_minutes_closes_the_session_after_forty_five():
@@ -24,34 +34,6 @@ def test_a_remote_source_splits_into_host_and_cluster_dir():
     assert cluster_session.parse_remote_source(
         "unity:/work/a/b/telemetry/"
     ) == ("unity", "/work/a/b")
-
-
-def test_ssh_argv_is_the_config_alias_with_no_extra_options():
-    """The panel and the schedule run `ssh unity`, the same command a shell does.
-
-    Per-call options may override individual settings, but retain the Host
-    entry's hostname, user, key, and agent selection.
-    """
-    assert cluster_session.ssh_argv("unity") == ["ssh", "unity"]
-    assert "BatchMode" not in cluster_session.ssh_argv("unity")
-    assert cluster_session.ssh_command("unity") == "ssh unity"
-
-
-def test_ssh_argv_can_pin_an_identity_file():
-    assert cluster_session.ssh_argv("unity", "~/.ssh/cluster") == [
-        "ssh", "-i", "~/.ssh/cluster", "unity",
-    ]
-
-
-def test_ssh_host_must_be_an_alias():
-    try:
-        cluster_session.clean_ssh_host("user@login.example.edu")
-    except ValueError as exc:
-        assert "alias" in str(exc)
-    else:
-        raise AssertionError("a user@host value was accepted")
-    assert cluster_session.clean_ssh_host("") == "unity"
-    assert cluster_session.clean_ssh_host("unity") == "unity"
 
 
 def test_a_local_source_has_no_session():
@@ -83,23 +65,19 @@ def test_controller_sessions_use_separate_remote_completion_files():
 
 
 def test_collect_and_close_use_only_the_configured_session():
-    commands = []
-
-    def run(host, script, timeout_s):
-        commands.append(script)
-        return subprocess.CompletedProcess([], 0, "", "")
+    access = Recorded()
 
     cfg = {"interval_minutes": 15, "session_name": "backend-isolated"}
-    report = cluster_session.collect(cfg, "unity:/work/isolated/telemetry", run=run)
+    report = cluster_session.collect(cfg, "unity:/work/isolated/telemetry", access=access)
     assert report["session"] == "backend-isolated"
     closed = cluster_session.close_session(
-        "unity:/work/isolated/telemetry", run=run,
+        "unity:/work/isolated/telemetry", access=access,
         session_name=cfg["session_name"],
     )
     assert closed["session"] == "backend-isolated"
-    assert "tmux kill-session -t backend-isolated" in commands[1]
-    assert "/tmp/backend-isolated-sample.rc" in commands[1]
-    assert "/tmp/unity-hpc-sample." not in "\n".join(commands)
+    assert "tmux kill-session -t backend-isolated" in access.calls[1][0]
+    assert "/tmp/backend-isolated-sample.rc" in access.calls[1][0]
+    assert "/tmp/unity-hpc-sample." not in "\n".join(script for script, _ in access.calls)
 
 
 def test_session_names_cannot_inject_commands_or_tmux_targets():
@@ -164,181 +142,37 @@ def test_loop_is_not_a_panel_script():
 
 
 def test_collect_skips_a_local_source_without_calling_ssh():
-    calls = []
+    class NoAccess:
+        def run_script(self, *args, **kwargs):
+            raise AssertionError("local source reached cluster access")
+
     report = cluster_session.collect(
-        {"interval_minutes": 30}, "/tmp/telemetry",
-        run=lambda *args: calls.append(args),
+        {"interval_minutes": 30}, "/tmp/telemetry", access=NoAccess(),
     )
     assert report == {"ok": True, "skipped": "local"}
-    assert calls == []
 
 
 def test_collect_reports_a_remote_failure():
-    def run(host, script, timeout_s):
-        assert host == "unity"
-        assert "TMOUT=2700" in script
-        return type("P", (), {"returncode": 255, "stdout": "", "stderr": "no route"})()
+    access = Recorded(returncode=255, stderr="no route")
 
     report = cluster_session.collect(
-        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", run=run,
+        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", access=access,
     )
+    assert "TMOUT=2700" in access.calls[0][0]
+    assert access.calls[0][1] == 630
     assert report["ok"] is False
     assert report["rc"] == 255
     assert "no route" in report["error"]
 
 
-def test_collect_uses_the_configured_ssh_alias_not_the_source_prefix():
-    seen = []
-
-    def run(host, script, timeout_s):
-        seen.append(host)
-        return type("P", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
-
-    report = cluster_session.collect(
-        {"interval_minutes": 30, "ssh_host": "unity"},
-        "other:/work/a/b/telemetry/",
-        run=run,
-    )
-    assert report["ok"] is True
-    assert report["host"] == "unity"
-    assert seen == ["unity"]
-
-
-def test_a_key_not_in_the_agent_needs_a_passphrase(tmp_path):
-    key = tmp_path / "cluster"
-    key.write_text("dummy-key\n")
-
-    def run(argv, **_kwargs):
-        if argv[:2] == ["ssh-add", "-l"]:
-            return type("P", (), {
-                "returncode": 1, "stdout": "",
-                "stderr": "The agent has no identities.\n",
-            })()
-        raise AssertionError(argv)
-
-    status = cluster_session.agent_status("unity", str(key), run=run)
-    assert status["needs_passphrase"] is True
-    assert status["unlocked"] is False
-    assert status["key_path"] == str(key)
-
-
-def test_a_key_already_in_the_agent_does_not_need_a_passphrase(tmp_path):
-    key = tmp_path / "cluster"
-    key.write_text("dummy-key\n")
-
-    def run(argv, **_kwargs):
-        if argv[:2] == ["ssh-add", "-l"]:
-            return type("P", (), {
-                "returncode": 0,
-                "stdout": "256 SHA256:abc cluster (ED25519)\n",
-                "stderr": "",
-            })()
-        if argv[:2] == ["ssh-keygen", "-l"]:
-            return type("P", (), {
-                "returncode": 0,
-                "stdout": "256 SHA256:abc cluster (ED25519)\n",
-                "stderr": "",
-            })()
-        raise AssertionError(argv)
-
-    status = cluster_session.agent_status("unity", str(key), run=run)
-    assert status["needs_passphrase"] is False
-    assert status["unlocked"] is True
-
-
-def test_unlock_adds_the_key_and_never_returns_the_passphrase(tmp_path):
-    key = tmp_path / "cluster"
-    key.write_text("dummy-key\n")
-    seen = []
-
-    def run(argv, **kwargs):
-        seen.append(argv)
-        env = kwargs.get("env") or {}
-        assert "secret-pass" not in argv
-        assert "secret-pass" not in str(env)
-        return type("P", (), {
-            "returncode": 0, "stdout": "Identity added: cluster\n", "stderr": "",
-        })()
-
-    report = cluster_session.unlock_identity(
-        str(key), "secret-pass", run=run,
-    )
-    assert report["ok"] is True
-    assert "secret-pass" not in str(report)
-    assert seen[0][0] == "ssh-add"
-    assert seen[0][-1] == str(key)
-
-
-def test_unlock_refuses_an_empty_passphrase(tmp_path):
-    key = tmp_path / "cluster"
-    key.write_text("dummy-key\n")
-    try:
-        cluster_session.unlock_identity(str(key), "")
-    except ValueError as exc:
-        assert "empty" in str(exc)
-    else:
-        raise AssertionError("an empty passphrase was accepted")
-
-
-def test_existing_empty_agent_is_reused(monkeypatch):
-    calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if argv == ["ssh-add", "-l"]:
-            return type("P", (), {"returncode": 1})()
-        raise AssertionError(argv)
-
-    monkeypatch.setattr(cluster_session.subprocess, "run", fake_run)
-    assert cluster_session._ensure_agent() is True
-    assert calls == [["ssh-add", "-l"]]
-
-
-def test_remembered_key_is_restored_into_the_agent(tmp_path, monkeypatch):
-    key = tmp_path / "cluster"
-    key.write_text("dummy-key\n")
-    calls = []
-
-    monkeypatch.setattr(cluster_session, "agent_status", lambda *_a, **_k: {
-        "unlocked": False, "needs_passphrase": True,
-    })
-    monkeypatch.setattr(cluster_session, "keyring_unlocked", lambda: True)
-    monkeypatch.setattr(cluster_session, "_identity_fingerprint", lambda _p: "SHA256:abc")
-    monkeypatch.setattr(cluster_session, "_keyring_lookup", lambda _fp: "secret-pass")
-    monkeypatch.setattr(cluster_session, "unlock_identity", lambda *a, **k: (
-        calls.append((a, k)) or {"ok": True, "unlocked": True}
-    ))
-
-    assert cluster_session.restore_identity("unity", str(key)) is True
-    assert calls == [((str(key), "secret-pass"), {"host": "unity", "remember": False})]
-
-
-def test_locked_keyring_does_not_try_to_lookup_a_secret(tmp_path, monkeypatch):
-    key = tmp_path / "cluster"
-    key.write_text("dummy-key\n")
-    monkeypatch.setattr(cluster_session, "agent_status", lambda *_a, **_k: {
-        "unlocked": False, "needs_passphrase": True,
-    })
-    monkeypatch.setattr(cluster_session, "_identity_fingerprint", lambda _p: "SHA256:abc")
-    monkeypatch.setattr(cluster_session, "keyring_unlocked", lambda: False)
-    monkeypatch.setattr(cluster_session, "_keyring_lookup", lambda _fp: (_ for _ in ()).throw(
-        AssertionError("lookup would prompt for the locked keyring")
-    ))
-    assert cluster_session.restore_identity("unity", str(key)) is False
-
-
 def test_close_session_wipes_the_remote_sample_files():
-    seen = []
-
-    def run(host, script, timeout_s):
-        seen.append(script)
-        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    access = Recorded()
 
     report = cluster_session.close_session(
-        "unity:/work/a/b/telemetry/", run=run, host="unity",
+        "unity:/work/a/b/telemetry/", access=access, host="unity",
     )
     assert report["ok"] is True
-    assert "rm -f /tmp/unity-hpc-sample.rc /tmp/unity-hpc-sample.log" in seen[0]
+    assert "rm -f /tmp/unity-hpc-sample.rc /tmp/unity-hpc-sample.log" in access.calls[0][0]
 
 
 def test_collect_keeps_the_sample_log_on_this_machine(tmp_data_dir):
@@ -349,11 +183,10 @@ def test_collect_keeps_the_sample_log_on_this_machine(tmp_data_dir):
         "--- unity-hpc-session-log-end ---\n"
     )
 
-    def run(host, script, timeout_s):
-        return type("P", (), {"returncode": 0, "stdout": body, "stderr": ""})()
+    access = Recorded(returncode=0, stdout=body)
 
     report = cluster_session.collect(
-        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", run=run,
+        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", access=access,
     )
     assert report["ok"] is True
     assert report["session_log"]
@@ -371,30 +204,12 @@ def test_collect_keeps_a_partial_log_when_the_remote_command_times_out(tmp_data_
         "--- unity-hpc-session-log-end ---\n"
     )
 
-    def run(host, script, timeout_s):
-        return type("P", (), {"returncode": 124, "stdout": body, "stderr": ""})()
+    access = Recorded(returncode=124, stdout=body)
 
     report = cluster_session.collect(
-        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", run=run,
+        {"interval_minutes": 30}, "unity:/work/a/b/telemetry/", access=access,
     )
     assert report["ok"] is False
     assert report["rc"] == 124
     assert "sacct is still running" in report["error"]
     assert "sacct is still running" in Path(report["session_log"]).read_text()
-
-
-def test_probe_runs_echo_on_the_alias():
-    seen = []
-
-    def run(argv):
-        seen.append(argv)
-        return type("P", (), {"returncode": 0, "stdout": "unity-ok\n", "stderr": ""})()
-
-    report = cluster_session.probe("unity", run=run)
-    assert report["ok"] is True
-    assert report["command"] == "ssh unity"
-    assert seen[0][-2:] == ["unity", "echo"] or "unity-ok" in " ".join(seen[0])
-    assert "ssh" in seen[0]
-    assert "unity" in seen[0]
-    assert "BatchMode=yes" in seen[0]
-    assert "ConnectTimeout=10" in seen[0]

@@ -55,21 +55,22 @@ def test_scheduler_receives_mail_headers_for_cpu_and_gpu(campaign, monkeypatch, 
     task = copy.deepcopy(task)
     task["spec"]["resources"].update(gpu_count=gpu_count, gpu_type="a100")
     settings = {**campaign["spec"]["backend"], "mail_user": "operator@example.edu"}
-    monkeypatch.setattr(campaign_slurm, "_agent_env", lambda host: {})
-    adapter = campaign_slurm.SlurmAdapter(settings)
-    calls = []
+    class Recorder:
+        def __init__(self):
+            self.calls = []
 
-    def command(code, **kwargs):
-        calls.append((code, kwargs.get("input")))
-        return subprocess.CompletedProcess([], 0, stdout="123\n", stderr="")
+        def run(self, command, *, timeout, input=None):
+            self.calls.append((command, input))
+            return subprocess.CompletedProcess([], 0, "123\n", "")
 
-    monkeypatch.setattr(adapter, "command", command)
+    recorder = Recorder()
+    adapter = campaign_slurm.SlurmAdapter(settings, transport=recorder)
     receipt = adapter.submit(campaign, task, {"selected_partitions": ["cpu"], "qos": "normal"})
     assert receipt["job_id"] == "123"
-    uploaded = calls[0][1]
+    uploaded = recorder.calls[0][1]
     assert "#SBATCH --mail-user=operator@example.edu\n" in uploaded
     assert "#SBATCH --mail-type=END,FAIL,TIME_LIMIT,REQUEUE\n" in uploaded
-    assert "sbatch --parsable" in calls[1][0]
+    assert "sbatch --parsable" in recorder.calls[1][0]
 
 
 def test_mail_is_opt_in_for_other_controller_deployments(campaign):
@@ -93,7 +94,7 @@ def test_existing_campaign_and_retry_use_current_mail_policy(campaign, monkeypat
             self.settings = settings
 
         def stage(self, campaign):
-            pass
+            return {}
 
         def observe(self, campaign, tasks):
             return {t["job_name"]: {"job_id": t["job_id"], "state": "PREEMPTED"} for t in tasks}
@@ -105,7 +106,8 @@ def test_existing_campaign_and_retry_use_current_mail_policy(campaign, monkeypat
             captured.append((dict(self.settings), task["attempt"]))
             return {"outcome": "accepted", "job_id": str(100 + task["attempt"])}
 
-    monkeypatch.setattr(campaigns, "SlurmAdapter", Adapter)
+    original = campaigns.slurm_adapter
+    monkeypatch.setattr(campaigns, "slurm_adapter", lambda campaign=None, live=None: Adapter(original(campaign, live).settings))
     campaigns.configure({"mail_user": "operator@example.edu"})
     campaigns.tick(campaign["id"], clock=FakeClock(0))
     campaigns.configure({"mail_user": next_recipient, "remote_root": "/work/elsewhere"})

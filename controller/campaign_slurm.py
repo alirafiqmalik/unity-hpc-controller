@@ -1,4 +1,4 @@
-"""SSH adapter for portable campaigns. No caller-side run.sh or registry.
+"""Slurm protocol for portable campaigns over Cluster access. No caller-side run.sh or registry.
 
 Every remote command is bounded. Submission receipts are written under a
 remote flock; a missing receipt after an SSH failure is an uncertain outcome.
@@ -11,12 +11,10 @@ import hashlib
 import json
 import re
 import shlex
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import campaign_store as store, hardware_class
-from controller.cluster_session import _agent_env, ssh_argv
+from controller import campaign_store as store, cluster_access, hardware_class
 from controller.campaign_contract import CampaignError
 
 
@@ -71,25 +69,17 @@ def script(settings, campaign, task, placement):
 
 
 class SlurmAdapter:
-    def __init__(self, settings):
+    """The Slurm protocol over one Cluster access transport: stage, submit, observe, collect, cancel, probe."""
+
+    def __init__(self, settings, transport=None):
         self.settings = settings
-        self.host = settings["ssh_host"]
-        self.ssh = ssh_argv(self.host, settings.get("ssh_identity", ""))
-        self.ssh[1:1] = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
-        self.env = _agent_env(self.host)
+        self.transport = transport if transport is not None else cluster_access.Ssh(settings["ssh_host"], settings.get("ssh_identity", ""))
 
     def command(self, command, timeout=90, input=None):
-        return subprocess.run([*self.ssh, "export PAGER=NONE TZ=UTC LC_ALL=C; " + command], input=input, capture_output=True, text=True, timeout=timeout, env=self.env)
+        return self.transport.run("export PAGER=NONE TZ=UTC LC_ALL=C; " + command, timeout=timeout, input=input)
 
     def transfer(self, source, remote, pull=False, include=None):
-        remote_spec = self.host + ":" + remote
-        endpoints = [remote_spec, str(source)] if pull else [str(source), remote_spec]
-        filters = []
-        if include:
-            for pattern in include:
-                filters.extend(["--include", pattern])
-            filters.extend(["--exclude", "*"])
-        result = subprocess.run(["rsync", "-a", "--safe-links", "--protect-args", *filters, "-e", shlex.join(self.ssh[:-1]), *endpoints], capture_output=True, text=True, timeout=300, env=self.env)
+        result = self.transport.transfer(source, remote, pull=pull, include=include or ())
         if result.returncode:
             raise RuntimeError("artifact transfer failed: " + result.stderr[-1500:])
 

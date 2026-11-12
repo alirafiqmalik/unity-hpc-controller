@@ -28,16 +28,17 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | `campaign_contract.py` | Portable declaration checks and immutable bundle snapshots |
 | `campaign_store.py` | Campaign journal: the only code that opens `campaigns.db`; one transaction for each named operation; snapshot reads; schema setup once per process |
 | `campaign_planner.py` | Exact hardware fit, access, ceilings, and historical placement signals |
-| `campaign_slurm.py` | Bounded SSH, atomic staging, job scripts that carry the Attestation, Slurm receipts, and artifact transfer |
+| `cluster_access.py` | Cluster access: SSH alias and identity, the one SSH option set, agent and keyring restore, remote commands and rsync transfer; a local-shell transport for tests |
+| `campaign_slurm.py` | Slurm protocol over Cluster access: atomic staging, job scripts that carry the Attestation, Slurm receipts, and artifact retrieval |
 | `hardware_class.py` | Hardware class: fingerprint, hardware lock and bind rule, evidence file names, and the controller check of an Attestation; no IO after import |
 | `attestation.py` | In-job Attestation and the match rule that the controller also uses; standard library only; job scripts carry its text |
 | `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions, retry budget, backoff, and Result event payloads; no IO |
-| `campaigns.py` | Worker passes: reconciliation, admission, retrieval, and cancellation; a campaign's failure is recorded on it and the pass goes on; one clock for the pass |
+| `campaigns.py` | Worker passes: reconciliation, admission, retrieval, and cancellation; a campaign's failure is recorded on it and the pass goes on; one clock for the pass; slurm_adapter() gives a campaign its Slurm adapter |
 | `campaign_cli.py` | HTTP-only operator client |
 | `telemetry.py` | Existing optional telemetry archive schedule |
 | `http.py` | HTTP request seam |
 | `serve.py` | Socket adapter and process lifecycle |
-| `cluster_session.py` | Login-node tmux session for scheduled telemetry samples |
+| `cluster_session.py` | Cluster session: the login-node tmux protocol for scheduled telemetry samples |
 | `snapshot.py` | Read-only cluster, queue, and usage views over the local archive |
 | `node_runtime.py`, `runtime_integrity.py` | Compute-node runtime staging and digest checks |
 | `events.py` | Controller event log |
