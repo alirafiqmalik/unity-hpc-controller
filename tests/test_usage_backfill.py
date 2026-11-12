@@ -128,3 +128,17 @@ def test_zero_allocations_are_observed_hours_not_missing_hours(tmp_data_dir):
     assert all(cell["value"] == 0 and cell["samples"] == 1
                for cell in usage["heatmap"])
     assert usage["avg_allocated"] == 0
+
+
+def test_live_backfill_ssh_sets_the_shared_keepalive(tmp_data_dir, tmp_path):
+    import os
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSH_ARGV_LOG\"\n")
+    ssh.chmod(0o755)
+    log = tmp_path / "argv"
+    subprocess.run([sys.executable, str(SCRIPT), "--host", "backfill-test.invalid", "--days", "1"],
+                   env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "SSH_ARGV_LOG": str(log)}, capture_output=True)
+    assert "ServerAliveInterval=15" in log.read_text().splitlines()
+    assert "ServerAliveCountMax=3" in log.read_text().splitlines()

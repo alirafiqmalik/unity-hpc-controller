@@ -167,7 +167,7 @@ def main() -> int:
                 "-E", slurm_stamp(end), "-o", "JobID,Start,End,AllocTRES",
             ])
             with subprocess.Popen(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
                  args.host, remote], stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True,
             ) as proc:

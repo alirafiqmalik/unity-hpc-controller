@@ -138,7 +138,7 @@ class SlurmAdapter:
         self.settings = settings
         self.host = settings["ssh_host"]
         self.ssh = ssh_argv(self.host, settings.get("ssh_identity", ""))
-        self.ssh[1:1] = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2"]
+        self.ssh[1:1] = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
         self.env = _agent_env(self.host)
 
     def command(self, command, timeout=90, input=None):

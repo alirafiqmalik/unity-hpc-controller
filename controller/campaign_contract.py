@@ -52,6 +52,33 @@ def _positive(value, label, maximum, minimum=1):
     return value
 
 
+def expand_nodes(expression):
+    """Expand bounded Slurm nodelists without a controller-side shell call."""
+    if not expression:
+        return set()
+    result = set()
+    for token in re.findall(r"[^,\[\]]+(?:\[[^\]]+\])?", expression):
+        match = re.fullmatch(r"([^\[]+)\[([^\]]+)\]", token)
+        if not match:
+            result.add(token)
+            continue
+        prefix, ranges = match.groups()
+        for item in ranges.split(","):
+            bounds = item.split("-")
+            if len(bounds) == 1:
+                result.add(prefix + bounds[0])
+            elif len(bounds) == 2 and all(b.isdigit() for b in bounds):
+                start, end = map(int, bounds)
+                if end < start:
+                    raise CampaignError("nodelist range end is before its start")
+                if end - start > 10000:
+                    raise CampaignError("nodelist range exceeds 10000 nodes")
+                result.update(prefix + str(i).zfill(len(bounds[0])) for i in range(start, end + 1))
+            else:
+                raise CampaignError("invalid nodelist expression")
+    return result
+
+
 def validate(raw):
     if not isinstance(raw, dict) or type(raw.get("schema_version")) is not int or raw["schema_version"] != 1:
         raise CampaignError("campaign schema_version must be 1")
@@ -103,6 +130,8 @@ def validate(raw):
             raise CampaignError("constraint supports exact features joined with '&'")
         if resources.get("nodelist") is not None and (not isinstance(resources["nodelist"], str) or (resources["nodelist"] and not re.fullmatch(r"[A-Za-z0-9_.\[\],-]+", resources["nodelist"]))):
             raise CampaignError("nodelist must be a Slurm node list")
+        if resources.get("nodelist"):
+            expand_nodes(resources["nodelist"])
         if resources.get("expected_gpu_uuid") is not None and (not isinstance(resources["expected_gpu_uuid"], str) or (resources["expected_gpu_uuid"] and not TOKEN.fullmatch(resources["expected_gpu_uuid"]))):
             raise CampaignError("expected_gpu_uuid must be a device identifier")
         if resources["gpu_count"]:

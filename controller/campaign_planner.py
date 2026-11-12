@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from lib import paths
-from controller.campaign_contract import CampaignError, validate, inventory
+from controller.campaign_contract import expand_nodes, inventory, validate
 
 
 def seconds(value):
@@ -156,32 +156,6 @@ def select(resources, settings, observed=None):
     return {"partitions": proposed, "selected_partitions": [p["partition"] for p in proposed if p["eligible"]], "warnings": warnings,
             "account_limits": association, "qos_limits": qos, "qos": qos_name, "observed_at": observed.get("observed_at"),
             "gpu_utilization": None, "estimate_note": "Accounting wait percentiles describe prior workloads, not a guarantee. Submit now; Slurm backfill decides start time."}
-
-
-def expand_nodes(expression):
-    """Expand bounded Slurm nodelists without a controller-side shell call."""
-    import re
-    if not expression:
-        return set()
-    result = set()
-    for token in re.findall(r"[^,\[\]]+(?:\[[^\]]+\])?", expression):
-        match = re.fullmatch(r"([^\[]+)\[([^\]]+)\]", token)
-        if not match:
-            result.add(token)
-            continue
-        prefix, ranges = match.groups()
-        for item in ranges.split(","):
-            bounds = item.split("-")
-            if len(bounds) == 1:
-                result.add(prefix + bounds[0])
-            elif len(bounds) == 2 and all(b.isdigit() for b in bounds):
-                start, end = map(int, bounds)
-                if end < start or end - start > 10000:
-                    raise CampaignError("nodelist range exceeds 10000 nodes")
-                result.update(prefix + str(i).zfill(len(bounds[0])) for i in range(start, end + 1))
-            else:
-                raise CampaignError("invalid nodelist expression")
-    return result
 
 
 def plan(raw, settings):

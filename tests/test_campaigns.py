@@ -761,3 +761,26 @@ def test_identical_retry_does_not_wait_for_worker_lock(setup, monkeypatch):
     changed = copy.deepcopy(spec)
     changed['tasks'][0]['argv'] = ['python3', 'different.py']
     with pytest.raises(Conflict): campaigns.create(changed)
+
+
+def test_slurm_adapter_uses_the_shared_ssh_keepalive(monkeypatch):
+    from controller import campaign_slurm
+    monkeypatch.setattr(campaign_slurm, "_agent_env", lambda host: {})
+    adapter = campaign_slurm.SlurmAdapter({"ssh_host": "unity"})
+    assert "ServerAliveInterval=15" in adapter.ssh
+    assert "ServerAliveCountMax=3" in adapter.ssh
+
+
+@pytest.mark.parametrize("nodelist", ["gpu[5-1]", "gpu[1-a]"])
+def test_unexpandable_nodelist_is_rejected_before_acceptance(setup, nodelist):
+    spec, _ = setup
+    spec["tasks"][0]["resources"]["nodelist"] = nodelist
+    for route in ("/api/v1/campaigns/plan", "/api/v1/campaigns"):
+        response = handle(Request("POST", route, body=json.dumps(spec).encode()))
+        assert response.status == 400
+        assert "nodelist" in str(response.body)
+    with pytest.raises(FileNotFoundError):
+        store.read("study")
+    spec["tasks"][0]["resources"]["nodelist"] = "gpu[013-013]"
+    assert handle(Request("POST", "/api/v1/campaigns/plan", body=json.dumps(spec).encode())).status == 200
+    assert handle(Request("POST", "/api/v1/campaigns", body=json.dumps(spec).encode())).status == 202
