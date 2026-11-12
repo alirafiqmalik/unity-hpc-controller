@@ -19,14 +19,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from lib import paths
-from controller import campaign_contract as contract, campaign_planner as planner, campaign_store as store
+from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store
 from controller.campaign_slurm import SlurmAdapter
 from controller.cluster_session import clean_ssh_host, clean_ssh_identity
 
-ACTIVE = {"submitting", "uncertain", "accepted", "running", "fetching", "cancelling"}
-TERMINAL = {"completed", "failed", "rejected", "cancelled", "blocked"}
-SLURM_TERMINAL = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "OUT_OF_MEMORY", "DEADLINE", "REVOKED"}
-RETRYABLE = {"NODE_FAIL", "PREEMPTED", "BOOT_FAIL"}
 DEFAULTS = {"ssh_host": "unity", "ssh_identity": "", "account": "", "remote_root": "", "allowed_partitions": ["gpu", "gpu-preempt"],
             "cpu_partitions": ["cpu", "cpu-preempt"], "qos": "normal", "mail_user": "", "poll_seconds": 30, "catalog_max_age_seconds": 3600,
             "max_active_tasks": 32, "max_active_gpus": 32, "max_new_tasks_per_pass": 4, "admission_budget_seconds": 10, "allow_preemptible": True, "sample_gpu_metrics": True, "retry_backoff_seconds": 60, "max_fetch_attempts": 5}
@@ -156,10 +152,10 @@ def create(raw):
                 specification["bundle_manifest"] = bundle
                 specification["backend"] = backend
                 _write_json(directory / "declaration.json", specification)
-                con.execute("INSERT INTO campaigns(id,spec,request_hash,state,created_at) VALUES(?,?,?,?,?)", (identity, json.dumps(specification, sort_keys=True), request_hash, "accepted", store.now()))
+                con.execute("INSERT INTO campaigns(id,spec,request_hash,state,created_at) VALUES(?,?,?,?,?)", (identity, json.dumps(specification, sort_keys=True), request_hash, lifecycle.ACCEPTED, store.now()))
                 for task in specification["tasks"]:
-                    con.execute("INSERT INTO tasks(campaign_id,task_id,spec,state) VALUES(?,?,?,?)", (identity, task["task_id"], json.dumps(task, sort_keys=True), "waiting"))
-                store.event(con, identity, None, "accepted", {"source_sha256": bundle["sha256"], "task_count": len(specification["tasks"])})
+                    con.execute("INSERT INTO tasks(campaign_id,task_id,spec,state) VALUES(?,?,?,?)", (identity, task["task_id"], json.dumps(task, sort_keys=True), lifecycle.WAITING))
+                store.event(con, identity, None, lifecycle.ACCEPTED, {"source_sha256": bundle["sha256"], "task_count": len(specification["tasks"])})
     value = store.read(identity)
     value["idempotent"] = already
     return value
@@ -171,11 +167,13 @@ def _intent(campaign, task):
     # Keep Slurm names readable while retaining a collision-resistant attempt ID.
     # The 97-character bound also fits the accounting query's JobName%100 field.
     name = f"{campaign['id'][:64]}-{task['task_id'][:10]}-{digest}"
+    step = lifecycle.intent(attempt, name)
+    fields = step.fields
     with store.database() as con:
-        con.execute("INSERT INTO attempts(campaign_id,task_id,attempt,job_name,state,created_at) VALUES(?,?,?,?,?,?)", (campaign["id"], task["task_id"], attempt, name, "submitting", store.now()))
-        con.execute("UPDATE tasks SET attempt=?,job_name=?,job_id=NULL,state='submitting',error=NULL,observation=NULL,eligible_at=0 WHERE campaign_id=? AND task_id=?", (attempt, name, campaign["id"], task["task_id"]))
-        store.event(con, campaign["id"], task["task_id"], "submitting", {"attempt": attempt, "job_name": name})
-    return {**task, "attempt": attempt, "job_name": name, "state": "submitting", "job_id": None,
+        con.execute("INSERT INTO attempts(campaign_id,task_id,attempt,job_name,state,created_at) VALUES(?,?,?,?,?,?)", (campaign["id"], task["task_id"], attempt, name, lifecycle.attempt_outcome(step.state, None), store.now()))
+        con.execute("UPDATE tasks SET attempt=?,job_name=?,job_id=?,state=?,error=?,observation=?,eligible_at=? WHERE campaign_id=? AND task_id=?", (fields["attempt"], fields["job_name"], fields["job_id"], step.state, fields["error"], fields["observation"], fields["eligible_at"], campaign["id"], task["task_id"]))
+        store.event(con, campaign["id"], task["task_id"], step.state, step.event)
+    return {**task, "attempt": attempt, "job_name": name, "state": step.state, "job_id": None,
             "observation": None, "eligible_at": 0.0}
 
 
@@ -256,26 +254,24 @@ def _collect(campaign, task, adapter, successful):
             continue
         artifacts.append(receipt)
     metadata = {"files": artifacts, "controller_files": controller_artifacts(campaign, task),
-                "missing": missing, "hardware": hardware, "attempt": task["attempt"], "job_id": task["job_id"], "complete": successful and not missing}
-    store.change(campaign["id"], task["task_id"], "completed" if metadata["complete"] else "failed", artifacts=metadata, error=None if metadata["complete"] else "scheduler failed or required outputs missing")
+                "missing": missing, "hardware": hardware, "attempt": task["attempt"], "job_id": task["job_id"]}
+    step = lifecycle.delivered(metadata, successful=successful)
+    store.change(campaign["id"], task["task_id"], step.state, **step.fields)
 
 
 def _finish_campaign(identity):
     value = store.read(identity)
-    states = {t["state"] for t in value["tasks"]}
-    if states <= TERMINAL:
-        state = "completed" if states == {"completed"} else "cancelled" if states <= {"completed", "cancelled"} else "failed"
-    else:
-        state = "cancelling" if value["state"] == "cancelling" else "running"
+    state = lifecycle.campaign_state(value["state"], [t["state"] for t in value["tasks"]])
     with store.database() as con:
-        if state != value["state"]:
+        if state:
             con.execute("UPDATE campaigns SET state=? WHERE id=?", (state, identity))
             store.event(con, identity, None, state)
 
 
 def _reconcile(campaign, transport, clock):
     backend = campaign["spec"]["backend"]
-    active = [t for t in campaign["tasks"] if t["state"] in ACTIVE and t.get("job_name")]
+    cancelling = campaign["state"] == lifecycle.CANCELLING
+    active = [t for t in campaign["tasks"] if t["state"] in lifecycle.ACTIVE and t.get("job_name")]
     if active:
         try:
             observations = transport.observe(campaign, active)
@@ -284,54 +280,42 @@ def _reconcile(campaign, transport, clock):
                 con.execute("UPDATE campaigns SET error=? WHERE id=?", (str(exc), campaign["id"]))
             return False
         for task in active:
-            observation = observations.get(task["job_name"])
-            if not observation:
-                if task["state"] == "submitting":
-                    store.change(campaign["id"], task["task_id"], "uncertain", error="interrupted submission; reconcile by unique job name before any retry")
-                continue
-            task["job_id"] = observation["job_id"]
-            fetch_attempts = (task.get("observation") or {}).get("fetch_attempts", 0)
-            observation["fetch_attempts"] = fetch_attempts
-            state = observation["state"]
-            if campaign["state"] == "cancelling" and state not in SLURM_TERMINAL:
+            raw = observations.get(task["job_name"])
+            if raw:
+                task["job_id"] = raw["job_id"]
+            decision = lifecycle.observed(task, raw, cancelling=cancelling,
+                                          max_attempts=campaign["spec"]["max_attempts"], now=clock())
+            if decision.effect == lifecycle.CANCEL_JOB:
                 transport.cancel([task["job_id"]])
-                store.change(campaign["id"], task["task_id"], "cancelling", job_id=task["job_id"], observation=observation)
+            if decision.step:
+                store.change(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
+            if decision.effect not in (lifecycle.SALVAGE, lifecycle.RETRIEVE):
                 continue
-            if state in SLURM_TERMINAL:
-                store.change(campaign["id"], task["task_id"], "fetching", job_id=task["job_id"], observation=observation)
-                if state == "CANCELLED" or campaign["state"] == "cancelling":
-                    try:
-                        transport.collect(campaign, task)
-                        record_controller_artifacts(campaign, task)
-                    except Exception:
-                        pass
-                    store.change(campaign["id"], task["task_id"], "cancelled", observation=observation)
-                elif state in RETRYABLE and task["attempt"] < campaign["spec"]["max_attempts"]:
-                    # Checkpoints share one task output path. A retry never changes hardware.
-                    try:
-                        transport.collect(campaign, task)
-                        record_controller_artifacts(campaign, task)
-                    except Exception:
-                        pass
-                    store.change(campaign["id"], task["task_id"], "waiting", eligible_at=clock() + backend["retry_backoff_seconds"] * 2 ** (task["attempt"] - 1), observation=observation, error=f"infrastructure failure: {state}; bounded retry scheduled")
-                else:
-                    if task["state"] == "fetching" and task["eligible_at"] > clock():
-                        continue
-                    try:
-                        _collect(campaign, task, transport, state == "COMPLETED" and observation.get("exit_code", "0:0") == "0:0")
-                    except contract.Conflict as exc:
-                        store.change(campaign["id"], task["task_id"], "failed", error=str(exc))
-                    except Exception as exc:
-                        # Fetch failure is recoverable independently of compute. No resubmit.
-                        observation["fetch_attempts"] += 1
-                        store.change(campaign["id"], task["task_id"], "failed" if observation["fetch_attempts"] >= backend["max_fetch_attempts"] else "fetching", error=str(exc), observation=observation,
-                                     eligible_at=clock() + backend["retry_backoff_seconds"])
+            observation = decision.step.fields["observation"]
+            if decision.effect == lifecycle.SALVAGE:
+                # Checkpoints share one task output path. A retry never changes hardware.
+                try:
+                    transport.collect(campaign, task)
+                    record_controller_artifacts(campaign, task)
+                except Exception:
+                    pass
+                step = lifecycle.salvaged(task, observation, cancelling=cancelling,
+                                          retry_backoff_seconds=backend["retry_backoff_seconds"], now=clock())
             else:
-                store.change(campaign["id"], task["task_id"], "running" if state in ("RUNNING", "COMPLETING") else "accepted", job_id=task["job_id"], observation=observation, error=None)
-    if campaign["state"] == "cancelling":
+                try:
+                    _collect(campaign, task, transport, lifecycle.scheduler_succeeded(observation))
+                    continue
+                except Exception as exc:
+                    # Fetch failure is recoverable independently of compute. No resubmit.
+                    step = lifecycle.undelivered(observation, str(exc), conflict=isinstance(exc, contract.Conflict),
+                                                 max_fetch_attempts=backend["max_fetch_attempts"],
+                                                 retry_backoff_seconds=backend["retry_backoff_seconds"], now=clock())
+            store.change(campaign["id"], task["task_id"], step.state, **step.fields)
+    if cancelling:
         for task in campaign["tasks"]:
-            if task["state"] == "waiting":
-                store.change(campaign["id"], task["task_id"], "cancelled")
+            step = lifecycle.cancel_request(task)
+            if step:
+                store.change(campaign["id"], task["task_id"], step.state, **step.fields)
     return True
 
 
@@ -341,7 +325,7 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
         # Capacity is service policy, so changes apply to every campaign on the
         # next pass. Execution locations and per-campaign behavior stay frozen.
         controller_limits = settings()
-        campaigns = [store.read(identity)] if identity else [store.read(cid) for cid in store.identities_excluding(TERMINAL)]
+        campaigns = [store.read(identity)] if identity else [store.read(cid) for cid in store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL)]
         reconciled = set()
         for campaign in campaigns:
             transport = adapter or SlurmAdapter(campaign["spec"]["backend"])
@@ -356,30 +340,26 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
         # The campaign lock fences concurrent creation/cancellation. Reconcile
         # first, then count active tasks once and append each accepted intent.
         # Historical bundle manifests must not consume the admission window.
-        global_active = store.tasks_in_states(ACTIVE)
+        global_active = store.tasks_in_states(lifecycle.ACTIVE)
         for original in campaigns:
             if original["id"] not in reconciled:
                 continue
             campaign = store.read(original["id"])
-            if campaign["state"] in TERMINAL:
+            if campaign["state"] in lifecycle.CAMPAIGN_TERMINAL:
                 continue
             backend = campaign["spec"]["backend"]
             # Mail is current service policy, including for waiting tasks and
             # retries in campaigns accepted before notifications were enabled.
             transport = adapter or SlurmAdapter({**backend, "mail_user": controller_limits["mail_user"]})
             states = {t["task_id"]: t["state"] for t in campaign["tasks"]}
-            running = sum(t["state"] in ACTIVE for t in campaign["tasks"])
+            running = sum(t["state"] in lifecycle.ACTIVE for t in campaign["tasks"])
+            cancelling = campaign["state"] == lifecycle.CANCELLING
             for task in campaign["tasks"]:
-                if task["state"] != "waiting" or task["eligible_at"] > clock():
+                decision = lifecycle.admission(task, states, cancelling=cancelling, now=clock())
+                if decision.step:
+                    store.change(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
                     continue
-                if campaign["state"] == "cancelling":
-                    store.change(campaign["id"], task["task_id"], "cancelled")
-                    continue
-                deps = task["spec"]["depends_on"]
-                if any(states[d] in TERMINAL - {"completed"} for d in deps):
-                    store.change(campaign["id"], task["task_id"], "blocked", error="a required task did not complete")
-                    continue
-                if any(states[d] != "completed" for d in deps):
+                if decision.effect != lifecycle.ADMIT:
                     continue
                 if running >= campaign["spec"]["max_concurrent"] or len(global_active) >= controller_limits["max_active_tasks"]:
                     break
@@ -428,13 +408,12 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
                 try:
                     receipt = transport.submit(campaign, task, placement)
                 except Exception as exc:
-                    receipt = {"outcome": "uncertain", "error": str(exc)}
-                outcome = receipt.get("outcome", "uncertain")
-                state = "accepted" if outcome == "accepted" and str(receipt.get("job_id", "")).isdigit() else "rejected" if outcome == "rejected" else "uncertain"
-                store.change(campaign["id"], task["task_id"], state, job_id=receipt.get("job_id"), error=receipt.get("error"))
+                    receipt = lifecycle.uncertain_receipt(str(exc))
+                step = lifecycle.submitted(receipt)
+                store.change(campaign["id"], task["task_id"], step.state, **step.fields)
                 with store.database() as con:
-                    con.execute("UPDATE attempts SET receipt=?,state=? WHERE campaign_id=? AND task_id=? AND attempt=?", (json.dumps(receipt), state, campaign["id"], task["task_id"], task["attempt"]))
-                if state in ACTIVE:
+                    con.execute("UPDATE attempts SET receipt=? WHERE campaign_id=? AND task_id=? AND attempt=?", (json.dumps(receipt), campaign["id"], task["task_id"], task["attempt"]))
+                if step.state in lifecycle.ACTIVE:
                     admission_progress += 1
                     running += 1
                     global_active.append(task)
@@ -450,17 +429,19 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
 def cancel(identity):
     with lock():
         campaign = store.read(identity)
-        if campaign["state"] in TERMINAL:
+        state = lifecycle.cancel_campaign(campaign["state"])
+        if state is None:
             return campaign
         with store.database() as con:
-            con.execute("UPDATE campaigns SET state='cancelling' WHERE id=?", (identity,))
-            store.event(con, identity, None, "cancelling")
+            con.execute("UPDATE campaigns SET state=? WHERE id=?", (state, identity))
+            store.event(con, identity, None, state)
         transport = SlurmAdapter(campaign["spec"]["backend"])
-        jobs = [t["job_id"] for t in campaign["tasks"] if t["state"] in ACTIVE and t["job_id"]]
+        jobs = [t["job_id"] for t in campaign["tasks"] if t["state"] in lifecycle.ACTIVE and t["job_id"]]
         transport.cancel(jobs)
         for task in campaign["tasks"]:
-            if task["state"] == "waiting":
-                store.change(identity, task["task_id"], "cancelled")
+            step = lifecycle.cancel_request(task)
+            if step:
+                store.change(identity, task["task_id"], step.state, **step.fields)
     _finish_campaign(identity)
     return store.read(identity)
 
@@ -497,7 +478,7 @@ def _loop():
 
 def worker_pass(last_probe=0, *, with_progress=False):
     """Catalog failure must never suppress receipt reconciliation or fetch."""
-    pending = bool(store.identities_excluding(TERMINAL))
+    pending = bool(store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL))
     if pending and (last_probe == 0 or time.monotonic() - last_probe >= 900):
         # Bound unsuccessful refreshes too, so catalog downtime cannot cause
         # one expensive policy survey on every 30-second task poll.

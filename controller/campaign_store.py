@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from lib import paths
+from controller import campaign_lifecycle as lifecycle
 from controller.campaign_contract import Conflict, safe_id
 
 SCHEMA = """
@@ -27,15 +28,6 @@ def now():
 
 def root(identity):
     return paths.controller_dir() / "campaigns" / safe_id(identity, "campaign_id")
-
-
-def _attempt_state(task_state, observation):
-    # The task waits for a new attempt after these terminal scheduler outcomes.
-    # Keep that outcome on the finished attempt, including cancellation in backoff.
-    scheduler_state = (observation or {}).get("state")
-    if task_state in ("waiting", "cancelled", "blocked") and scheduler_state in ("PREEMPTED", "NODE_FAIL", "BOOT_FAIL"):
-        return scheduler_state
-    return task_state
 
 
 @contextmanager
@@ -61,7 +53,7 @@ def database():
                 task = decode(row)
                 observation = task.get("observation")
                 connection.execute("UPDATE attempts SET state=?,observation=? WHERE campaign_id=? AND task_id=? AND attempt=?",
-                                   (_attempt_state(task["state"], observation), json.dumps(observation, sort_keys=True) if observation else None,
+                                   (lifecycle.attempt_outcome(task["state"], observation), json.dumps(observation, sort_keys=True) if observation else None,
                                     task["campaign_id"], task["task_id"], task["attempt"]))
         connection.execute("INSERT OR REPLACE INTO meta VALUES('schema_version','2')")
         connection.commit()
@@ -136,6 +128,8 @@ def results(identity, after=0, limit=100):
 
 
 def change(identity, task_id, state, **updates):
+    if state not in lifecycle.TASK_STATES:
+        raise ValueError("unknown task state")
     allowed = {"attempt", "job_id", "job_name", "eligible_at", "error", "observation", "artifacts"}
     if updates.keys() - allowed:
         raise ValueError("unknown task update")
@@ -163,7 +157,7 @@ def change(identity, task_id, state, **updates):
         current = {**previous, "state": state, **updates}
         observation = current.get("observation")
         con.execute("UPDATE attempts SET job_id=?,state=?,observation=? WHERE campaign_id=? AND task_id=? AND attempt=?",
-                    (current.get("job_id"), _attempt_state(state, observation),
+                    (current.get("job_id"), lifecycle.attempt_outcome(state, observation),
                      json.dumps(observation, sort_keys=True) if observation else None,
                      identity, task_id, current["attempt"]))
 

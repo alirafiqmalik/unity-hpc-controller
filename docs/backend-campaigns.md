@@ -319,6 +319,30 @@ Accounting supplies detailed measurements and terminal state after the job leave
 Slurm start hints can change.
 Missing estimates remain unknown.
 
+## Task and campaign states
+
+| Task state | Meaning | Can become |
+|---|---|---|
+| `waiting` | Accepted, or backing off after an infrastructure failure. Waits for dependencies, `eligible_at`, and capacity | `submitting`, `blocked`, `cancelled` |
+| `submitting` | Submission intent recorded; the Slurm call is in progress or was interrupted | `accepted`, `running`, `uncertain`, `rejected`, `fetching`, `cancelling` |
+| `uncertain` | No proof of the submission outcome. Never resubmitted blindly | `accepted`, `running`, `fetching`, `cancelling` |
+| `accepted` | Slurm holds the job, pending or in another non-running state | `running`, `fetching`, `cancelling` |
+| `running` | Slurm reports `RUNNING` or `COMPLETING` | `accepted`, `fetching`, `cancelling` |
+| `fetching` | Slurm ended the job; outputs are being retrieved within the transfer budget | `completed`, `failed`, `cancelled`, `waiting`; `accepted`, `running`, or `cancelling` if Slurm lists the job as live again |
+| `cancelling` | Campaign cancellation asked Slurm to end the job | `fetching` |
+| `completed` | Declared outputs and hardware evidence were retrieved | — |
+| `failed` | Scheduler failure, missing outputs, invalid hardware evidence, or an exhausted retry or transfer budget | — |
+| `rejected` | Slurm or the remote host refused the submission | — |
+| `cancelled` | Cancelled before submission, or the job ended by cancellation | — |
+| `blocked` | A dependency ended without `completed` | — |
+
+A campaign is `accepted` until the first worker pass, then `running`, or `cancelling` after a cancel request.
+It ends `completed` when every task is `completed`, `cancelled` when every task is `completed` or `cancelled`, and `failed` when every task has ended and any is `failed`, `rejected`, or `blocked`.
+
+Each task transition adds a Result event whose kind is the new task state.
+Each campaign transition adds an event without `task_id` whose kind is the new campaign state.
+The kinds `accepted`, `running`, `cancelling`, `completed`, `failed`, and `cancelled` therefore occur at both levels.
+
 ## Failure and recovery
 
 The controller commits a submission intent before SSH.

@@ -30,6 +30,19 @@ Missing required outputs prevent successful task completion.
 An uncertain submit never causes a blind duplicate submission.
 Retries preserve output identity and remain within the declared budget.
 
+## Task lifecycle
+
+`controller/campaign_lifecycle.py` owns the task, attempt, and campaign states and every transition between them.
+It performs no IO and reads no clock; the worker passes the time in.
+Given a task record and one input (a submission receipt, a scheduler observation, a retrieval outcome, dependency states, or a cancel request), it returns the next state, the fields to record, and the Result event payload.
+The worker performs the remote effects, and the journal records the fields.
+The journal refuses a task state that the lifecycle does not name.
+
+Task states: `waiting`; the active states `submitting`, `uncertain`, `accepted`, `running`, `fetching`, `cancelling`; and the terminal states `completed`, `failed`, `rejected`, `cancelled`, `blocked`.
+Campaign states: `accepted`, `running`, `cancelling`, and the terminal states `completed`, `failed`, `cancelled`.
+An attempt records its task's state.
+When `NODE_FAIL`, `PREEMPTED`, or `BOOT_FAIL` sends a task back to `waiting`, the finished attempt keeps that scheduler state, also if the task is then cancelled or blocked.
+
 ## Data
 
 `$UNITY_HPC_DATA/controller/campaigns.db` stores campaigns, tasks, attempts, hardware locks, and result events.

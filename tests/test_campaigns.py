@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from controller import campaigns, campaign_store as store
+from controller import campaigns, campaign_lifecycle as lifecycle, campaign_store as store
 from controller.campaign_contract import CampaignError, Conflict
 from controller.campaign_slurm import script, parse_probe
 from controller.http import Request, handle
@@ -32,6 +32,7 @@ class FakeSlurm:
         self.submissions, self.observations, self.staged = [], {}, 0
         self.receipt = {"outcome": "accepted", "job_id": "123"}
         self.missing, self.fetch_failure, self.gpu_name = False, False, "NVIDIA A100-SXM4-80GB"
+        self.cancelled = []
 
     def stage(self, campaign):
         self.staged += 1
@@ -42,6 +43,9 @@ class FakeSlurm:
 
     def observe(self, campaign, tasks):
         return self.observations
+
+    def cancel(self, job_ids):
+        self.cancelled.append(list(job_ids))
 
     def collect(self, campaign, task):
         if self.fetch_failure:
@@ -57,6 +61,61 @@ class FakeSlurm:
     def terminal(self, state="COMPLETED", job_id="123"):
         name = self.submissions[-1][0]
         self.observations[name] = {"job_id": job_id, "state": state, "exit_code": "0:0"}
+
+
+def test_cancel_fences_waiting_tasks_and_ends_live_jobs(setup, monkeypatch):
+    spec, _ = setup
+    dependent = copy.deepcopy(spec["tasks"][0])
+    dependent.update(task_id="model-b", depends_on=["model-a"])
+    spec["tasks"].append(dependent)
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
+    value = campaigns.cancel("study")
+    assert value["state"] == "cancelling"
+    assert [task["state"] for task in value["tasks"]] == ["accepted", "cancelled"]
+    assert fake.cancelled == [["123"]]
+    fake.observations[fake.submissions[0][0]] = {"job_id": "123", "state": "RUNNING"}
+    campaigns.tick("study", fake)
+    assert store.read("study")["tasks"][0]["state"] == "cancelling"
+    assert fake.cancelled == [["123"], ["123"]]
+    fake.terminal("CANCELLED")
+    campaigns.tick("study", fake)
+    value = store.read("study")
+    assert value["state"] == "cancelled"
+    assert value["tasks"][0]["state"] == "cancelled"
+    assert value["attempts"][0]["state"] == "cancelled"
+    assert campaigns.cancel("study")["state"] == "cancelled"
+    pairs = {(event["task_id"], event["kind"]) for event in store.results("study")["events"]}
+    assert {(None, "cancelling"), (None, "cancelled"), ("model-b", "cancelled")} <= pairs
+
+
+def test_failed_dependency_blocks_dependent_task(setup):
+    spec, _ = setup
+    dependent = copy.deepcopy(spec["tasks"][0])
+    dependent.update(task_id="model-b", depends_on=["model-a"])
+    spec["tasks"].append(dependent)
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    fake.terminal("FAILED")
+    campaigns.tick("study", fake)
+    value = store.read("study")
+    assert [task["state"] for task in value["tasks"]] == ["failed", "blocked"]
+    assert value["tasks"][1]["error"] == "a required task did not complete"
+    assert value["state"] == "failed"
+    assert len(fake.submissions) == 1
+
+
+def test_store_change_rejects_unknown_task_state(setup):
+    spec, _ = setup
+    value = campaigns.create(spec)
+    cursor = value["result_cursor"]
+    with pytest.raises(ValueError, match="unknown task state"):
+        store.change("study", "model-a", "done")
+    assert store.read("study")["tasks"][0]["state"] == "waiting"
+    assert store.results("study", after=cursor)["events"] == []
 
 
 def test_source_freeze_idempotency_and_persistent_hardware_lock(setup):
@@ -645,8 +704,8 @@ def test_admission_ignores_completed_bundles_and_preserves_global_capacity(setup
     fake.submissions.clear()
     first = campaigns.tick(adapter=fake)
     assert first["admission_progress"] == 1 and len(fake.submissions) == 1
-    assert len(store.tasks_in_states(campaigns.ACTIVE)) == 1
-    assert set(store.identities_excluding(campaigns.TERMINAL)) == {"waiting-a", "waiting-b"}
+    assert len(store.tasks_in_states(lifecycle.ACTIVE)) == 1
+    assert set(store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL)) == {"waiting-a", "waiting-b"}
     # An accepted task in another campaign still consumes the GPU ceiling.
     monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
     campaigns.worker_pass(float("inf"))

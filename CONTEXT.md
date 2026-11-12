@@ -23,6 +23,11 @@ One submission intention and its scheduler outcome for a task.
 An uncertain attempt cannot establish that no job exists.
 _Avoid_: retry, try, submission
 
+**Lifecycle**:
+The rules that move a task between its twelve states, record each attempt's outcome, and derive the campaign state from its tasks.
+A task waits, is submitted, runs, is fetched, and ends `completed`, `failed`, `rejected`, `cancelled`, or `blocked`; an infrastructure failure can return it to waiting within the retry budget.
+_Avoid_: workflow, status, phase
+
 **Experiment bundle**:
 An immutable snapshot of portable scientific code, configuration, and selected input data.
 The controller records its digest before execution.

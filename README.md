@@ -21,7 +21,7 @@ and retrieves results—even after the submitting client exits.
 | Frozen source | Snapshot the experiment bundle before execution; identical declarations reuse campaign identity. | [Declaration and bundle contract](controller/campaign_contract.py) |
 | Hardware consistency | Persist a model class's GPU fingerprint and check assigned device evidence before accepting results. | [Hardware journal](controller/campaign_store.py), [Slurm attestation](controller/campaign_slurm.py) |
 | Recoverable attempts | Persist submission intent before SSH; reconcile uncertain outcomes before another submission. | [Campaign worker](controller/campaigns.py) |
-| Bounded recovery | Retry declared infrastructure failures within a durable budget; transfer retries do not repeat compute. | [Campaign lifecycle](controller/campaigns.py) |
+| Bounded recovery | Retry declared infrastructure failures within a durable budget; transfer retries do not repeat compute. | [Campaign lifecycle](controller/campaign_lifecycle.py) |
 | Incremental results | Require declared output files and expose durable result-event cursors. | [HTTP interface](controller/http.py), [result journal](controller/campaign_store.py) |
 | Evidence-aware placement | Filter hardware and policy first, then rank compatible partitions using measured wait history. | [Planner](controller/campaign_planner.py) |
 
