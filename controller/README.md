@@ -28,7 +28,9 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | `campaign_contract.py` | Portable declaration checks and immutable bundle snapshots |
 | `campaign_store.py` | Campaign journal: the only code that opens `campaigns.db`; one transaction for each named operation; snapshot reads; schema setup once per process |
 | `campaign_planner.py` | Exact hardware fit, access, ceilings, and historical placement signals |
-| `campaign_slurm.py` | Bounded SSH, atomic staging, Slurm receipts, device checks, and artifact transfer |
+| `campaign_slurm.py` | Bounded SSH, atomic staging, job scripts that carry the Attestation, Slurm receipts, and artifact transfer |
+| `hardware_class.py` | Hardware class: fingerprint, hardware lock and bind rule, evidence file names, and the controller check of an Attestation; no IO after import |
+| `attestation.py` | In-job Attestation and the match rule that the controller also uses; standard library only; job scripts carry its text |
 | `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions, retry budget, backoff, and Result event payloads; no IO |
 | `campaigns.py` | Worker passes: reconciliation, admission, retrieval, and cancellation; a campaign's failure is recorded on it and the pass goes on; one clock for the pass |
 | `campaign_cli.py` | HTTP-only operator client |

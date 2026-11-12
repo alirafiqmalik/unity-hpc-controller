@@ -15,6 +15,8 @@ import re
 import tarfile
 from pathlib import Path, PurePosixPath
 
+from controller import hardware_class
+
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,100}$")
 TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -149,7 +151,7 @@ def validate(raw):
                 raise CampaignError("GPU tasks require expected_gpu_name for in-job attestation")
             resources["expected_gpu_memory_mb"] = _positive(resources.get("expected_gpu_memory_mb"), "expected_gpu_memory_mb", 1048576)
             resources["gpu_memory_tolerance_mb"] = _positive(resources.get("gpu_memory_tolerance_mb", 1024), "gpu_memory_tolerance_mb", 2048, 0)
-            fingerprint = hardware_fingerprint(resources)
+            fingerprint = hardware_class.fingerprint(resources)
             cls = task["model_class"]
             if cls in locks and locks[cls] != fingerprint:
                 raise Conflict(f"model_class {cls} cannot use different hardware within a campaign")
@@ -178,11 +180,6 @@ def validate(raw):
     value["max_concurrent"] = _positive(value.get("max_concurrent", 4), "max_concurrent", 128)
     value["max_attempts"] = _positive(value.get("max_attempts", 2), "max_attempts", 10)
     return value
-
-
-def hardware_fingerprint(resources):
-    keys = ("gpu_type", "gpu_count", "constraint", "expected_gpu_name", "expected_gpu_memory_mb", "gpu_memory_tolerance_mb", "nodelist", "expected_gpu_uuid")
-    return {key: resources.get(key) for key in keys}
 
 
 def digest(value):

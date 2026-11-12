@@ -65,6 +65,15 @@ If the lock were released during a remote call, a cancel request could fence a t
 So accepting a new campaign and cancelling one wait for the current pass to end.
 Journal reads, listings, results, plans, and an identical resend of an accepted campaign do not wait.
 
+## Hardware class
+
+`controller/hardware_class.py` owns the Hardware class: the fingerprint that a Model class is locked to, the text that the journal stores for the lock and for the bound devices, the rule that a locked class conflicts with a different fingerprint, and the controller check of a retrieved Attestation.
+The match rule and the evidence file names live in `controller/attestation.py`, the in-job check.
+That file uses only the standard library and imports nothing from this repository.
+Each job script carries its text as a here-document on the standard input of `python3`, so nothing is installed on the cluster.
+The controller imports the same match rule from that file, so the job and the controller compare devices with one function.
+The journal keeps the SQL for hardware locks and asks `hardware_class` for the rule.
+
 ## Data
 
 `$UNITY_HPC_DATA/controller/campaigns.db` is the campaign journal: campaigns, tasks, attempts, hardware locks, and result events.

@@ -15,75 +15,12 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import campaign_store as store
+from controller import campaign_store as store, hardware_class
 from controller.cluster_session import _agent_env, ssh_argv
 from controller.campaign_contract import CampaignError
 
 
 MAIL_TYPES = "END,FAIL,TIME_LIMIT,REQUEUE"
-
-
-PREFLIGHT = r'''
-import csv,ctypes,json,os,subprocess,sys
-from pathlib import Path
-r=json.loads(sys.argv[1]); out=Path(os.environ['HPC_OUTPUT_DIR']);out.mkdir(parents=True,exist_ok=True)
-metadata={'task_id':os.environ['HPC_TASK_ID'],'attempt':int(os.environ['HPC_ATTEMPT']),'job_id':os.environ.get('SLURM_JOB_ID'),'node':os.environ.get('SLURMD_NODENAME'),'requested':r,'gpus':[],'verified':False}
-try:
-    if r['gpu_count']:
-        p=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,name,memory.total,driver_version','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=15)
-        rows=list(csv.reader(p.stdout.splitlines(),skipinitialspace=True))
-        visible_cuda=os.environ.get('CUDA_VISIBLE_DEVICES','').split(',')
-        if any(value.startswith('MIG-') for value in visible_cuda):
-            # nvidia-smi --query-gpu reports the parent board's full memory.
-            # Query the allocated MIG UUIDs through NVML instead; never attest
-            # the parent's memory as the capacity of a partitioned device.
-            if not all(value.startswith('MIG-') for value in visible_cuda):
-                raise ValueError('mixed MIG and full GPU visibility is unsupported')
-            nvml=ctypes.CDLL('libnvidia-ml.so.1')
-            def nvcall(name,*args):
-                code=getattr(nvml,name)(*args)
-                if code: raise ValueError('NVML '+name+' failed: '+str(code))
-            class Memory(ctypes.Structure):
-                _fields_=[('total',ctypes.c_ulonglong),('free',ctypes.c_ulonglong),('used',ctypes.c_ulonglong)]
-            nvcall('nvmlInit_v2')
-            try:
-                rows=[]
-                driver=ctypes.create_string_buffer(128)
-                nvcall('nvmlSystemGetDriverVersion',driver,128)
-                for index,uuid in enumerate(visible_cuda):
-                    handle=ctypes.c_void_p()
-                    nvcall('nvmlDeviceGetHandleByUUID',uuid.encode(),ctypes.byref(handle))
-                    name=ctypes.create_string_buffer(256); memory=Memory()
-                    nvcall('nvmlDeviceGetName',handle,name,256)
-                    nvcall('nvmlDeviceGetMemoryInfo',handle,ctypes.byref(memory))
-                    rows.append([str(index),uuid,name.value.decode(),str(memory.total//(1024*1024)),driver.value.decode()])
-            finally:
-                nvml.nvmlShutdown()
-        # Device cgroups may expose an already restricted list. Slurm GPU ids
-        # are global; CUDA ordinals can be remapped inside that list.
-        if len(rows)!=r['gpu_count']:
-            visible=os.environ.get('SLURM_STEP_GPUS') or os.environ.get('SLURM_JOB_GPUS') or os.environ.get('CUDA_VISIBLE_DEVICES','')
-            ids=[]
-            for item in visible.split(','):
-                if '-' in item and all(x.isdigit() for x in item.split('-')):
-                    a,b=map(int,item.split('-'));ids.extend(str(x) for x in range(a,b+1))
-                else: ids.append(item)
-            rows=[x for x in rows if x[0].strip() in ids or x[1].strip() in ids]
-        if len(rows)!=r['gpu_count']: raise ValueError('visible GPU count differs from declared GPU count')
-        for x in rows:
-            gpu={'uuid':x[1].strip(),'name':x[2].strip(),'memory_mb':int(float(x[3])),'driver_version':x[4].strip()}
-            if gpu['name']!=r['expected_gpu_name']: raise ValueError('GPU model mismatch: '+gpu['name'])
-            if abs(gpu['memory_mb']-r['expected_gpu_memory_mb'])>r['gpu_memory_tolerance_mb']: raise ValueError('GPU memory mismatch')
-            if r.get('expected_gpu_uuid') and gpu['uuid']!=r['expected_gpu_uuid']: raise ValueError('physical GPU UUID mismatch')
-            metadata['gpus'].append(gpu)
-    metadata['verified']=True
-except Exception as exc:
-    metadata['error']=str(exc)
-finally:
-    dest=out/'.controller';dest.mkdir(exist_ok=True)
-    (dest/('hardware-'+os.environ['HPC_ATTEMPT']+'.json')).write_text(json.dumps(metadata,sort_keys=True))
-if not metadata['verified']: sys.exit(86)
-'''
 
 
 def remote_root(settings, campaign):
@@ -122,10 +59,10 @@ def script(settings, campaign, task, placement):
            "HPC_CAMPAIGN_ID": campaign["id"], "HPC_HARDWARE_PROFILE_ID": spec.get("model_class", "cpu"),
            "HPC_EXPECT_GPU_NAME": resources.get("expected_gpu_name", ""), "HPC_EXPECT_GPU_MEMORY_MB": str(resources.get("expected_gpu_memory_mb", ""))}
     lines.extend(f"export {key}={shlex.quote(value)}" for key, value in env.items())
-    lines.extend(["cd " + shlex.quote(base + "/source"), "mkdir -p " + shlex.quote(output), "python3 - " + shlex.quote(json.dumps(resources)) + " <<'HPC_PREFLIGHT'", PREFLIGHT.strip(), "HPC_PREFLIGHT"])
+    lines.extend(["cd " + shlex.quote(base + "/source"), "mkdir -p " + shlex.quote(output), "python3 - " + shlex.quote(json.dumps(resources)) + " <<'HPC_PREFLIGHT'", hardware_class.ATTESTATION_PROGRAM, "HPC_PREFLIGHT"])
     if resources["gpu_count"] and settings.get("sample_gpu_metrics", True):
-        metrics = output + "/.controller/gpu-samples-" + str(task["attempt"]) + ".csv"
-        hardware = output + "/.controller/hardware-" + str(task["attempt"]) + ".json"
+        metrics = output + "/" + hardware_class.gpu_samples(task["attempt"])
+        hardware = output + "/" + hardware_class.hardware_evidence(task["attempt"])
         lines.extend(["HPC_GPU_IDS=$(python3 -c " + shlex.quote("import json,sys;print(','.join(g['uuid'] for g in json.load(open(sys.argv[1]))['gpus']))") + " " + shlex.quote(hardware) + ")",
                       "nvidia-smi --id=\"${HPC_GPU_IDS}\" --query-gpu=timestamp,index,uuid,utilization.gpu,memory.used,power.draw --format=csv --loop=30 >" + shlex.quote(metrics) + " 2>/dev/null &", "HPC_SAMPLE_PID=$!", "trap 'kill \"${HPC_SAMPLE_PID}\" 2>/dev/null || true' EXIT"])
     argv = [a.replace("{output_dir}", output).replace("{task_id}", task["task_id"]) for a in spec["argv"]]
@@ -306,7 +243,7 @@ class SlurmAdapter:
     def collect(self, campaign, task):
         local = store.root(campaign["id"]) / "results" / task["task_id"]
         local.mkdir(parents=True, exist_ok=True)
-        includes = ["/.controller/", "/.controller/***"]
+        includes = ["/" + hardware_class.EVIDENCE_DIR + "/", "/" + hardware_class.EVIDENCE_DIR + "/***"]
         for output in task["spec"]["outputs"]:
             path = Path(output)
             for parent in reversed(path.parents):

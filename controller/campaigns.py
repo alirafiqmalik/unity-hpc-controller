@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from lib import paths
-from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store, events
+from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store, events, hardware_class
 from controller.campaign_slurm import SlurmAdapter
 from controller.cluster_session import clean_ssh_host, clean_ssh_identity
 
@@ -129,16 +129,15 @@ def create(raw):
         accepted["idempotent"] = True
         return accepted
     with lock():
-        hardware = [(task["model_class"], json.dumps(contract.hardware_fingerprint(task["resources"]), sort_keys=True))
-                    for task in specification["tasks"] if task["resources"]["gpu_count"]]
+        hardware = hardware_class.class_locks(specification["tasks"])
         existing, locked = store.prior_acceptance(identity, [model_class for model_class, _ in hardware])
         if existing is not None and existing != request_hash:
             raise contract.Conflict("campaign_id already identifies a different declaration or source")
         already = existing is not None
         if not already:
-            for model_class, fingerprint in hardware:
-                if locked.get(model_class, fingerprint) != fingerprint:
-                    raise contract.Conflict(f"model_class {model_class} is locked to different hardware; use an explicit new scientific regime")
+            conflict = hardware_class.conflicting_class(hardware, locked)
+            if conflict is not None:
+                raise contract.Conflict(f"model_class {conflict} is locked to different hardware; use an explicit new scientific regime")
             directory = store.root(identity)
             directory.mkdir(parents=True, exist_ok=True)
             contract.snapshot(specification["bundle"], bundle, directory / "bundle.tar.gz")
@@ -191,7 +190,7 @@ def controller_artifacts(campaign, task):
     for attempt in attempts:
         number = attempt.get("attempt", 0)
         if isinstance(number, int) and 0 < number <= task["attempt"]:
-            names.update((f".controller/hardware-{number}.json", f".controller/gpu-samples-{number}.csv"))
+            names.update((hardware_class.hardware_evidence(number), hardware_class.gpu_samples(number)))
         if attempt.get("job_name"):
             names.update(attempt["job_name"] + "." + suffix for suffix in ("out", "err"))
     return [receipt for name in sorted(names)
@@ -209,21 +208,15 @@ def _collect(campaign, task, adapter, successful):
     local = adapter.collect(campaign, task)
     record_controller_artifacts(campaign, task)
     spec = task["spec"]
-    hardware_path = local / ".controller" / f"hardware-{task['attempt']}.json"
+    hardware_path = local / hardware_class.hardware_evidence(task["attempt"])
     if not hardware_path.is_file():
         raise contract.Conflict("job ended without hardware attestation; outputs cannot be marked complete")
     hardware = json.loads(hardware_path.read_text())
-    if not hardware.get("verified") or hardware.get("task_id") != task["task_id"] or hardware.get("attempt") != task["attempt"]:
-        raise contract.Conflict("hardware attestation is missing, invalid, or belongs to another attempt")
+    problem = hardware_class.attestation_problem(spec["resources"], task["task_id"], task["attempt"], hardware)
+    if problem:
+        raise contract.Conflict(problem)
     if spec["resources"]["gpu_count"]:
-        resources = spec["resources"]
-        if len(hardware.get("gpus", [])) != resources["gpu_count"]:
-            raise contract.Conflict("GPU count in attestation differs from the scientific hardware lock")
-        for gpu in hardware["gpus"]:
-            if gpu["name"] != resources["expected_gpu_name"] or abs(gpu["memory_mb"] - resources["expected_gpu_memory_mb"]) > resources["gpu_memory_tolerance_mb"]:
-                raise contract.Conflict("GPU attestation does not satisfy the scientific hardware lock")
-        actual = [{"name": gpu["name"], "memory_mb": gpu["memory_mb"]} for gpu in hardware["gpus"]]
-        store.bind_observed(spec["model_class"], actual)
+        store.bind_observed(spec["model_class"], hardware_class.observed(hardware["gpus"]))
     artifacts, missing = [], []
     for output in spec["outputs"]:
         receipt = _file_receipt(campaign, task, local, output)

@@ -274,6 +274,17 @@ Argument values can contain `{output_dir}` and `{task_id}` placeholders.
 CPU tasks use `gpu_count: 0` and omit GPU identity fields.
 Dependencies release only after required files and hardware evidence pass the controller checks.
 
+### Hardware attestation
+
+Each job script carries the in-job check, `controller/attestation.py`, as a here-document on the standard input of `python3`.
+It runs on the compute node before the scientific command and needs only the Python standard library.
+It compares each assigned GPU with `expected_gpu_name`, with `expected_gpu_memory_mb` within `gpu_memory_tolerance_mb`, and with `expected_gpu_uuid` when one is declared.
+On a MIG allocation it reads the memory of the allocated slice through NVML, not the memory of the parent board.
+It writes `.controller/hardware-<attempt>.json` under `HPC_OUTPUT_DIR`; when a device differs, it exits with status 86 and the job ends before the scientific command.
+After retrieval, the controller applies the same match rule to that file before it marks outputs complete.
+The first accepted result binds the reported device name and memory to the model class.
+`controller/hardware_class.py` owns the fingerprint, this match rule, the evidence file names, and the hardware lock rule.
+
 ## Submit and retrieve
 
 Review placement, then submit the same request:

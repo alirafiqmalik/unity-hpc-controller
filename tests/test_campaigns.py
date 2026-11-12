@@ -144,6 +144,30 @@ def test_source_freeze_idempotency_and_persistent_hardware_lock(setup):
         campaigns.create(spec)
 
 
+def test_evidence_from_a_job_submitted_before_the_change_completes_the_task(setup, tmp_data_dir):
+    import sqlite3
+
+    spec, _ = setup
+    spec["tasks"][0]["resources"]["expected_gpu_uuid"] = "GPU-5f0c3a52-8d1e-4b7a-9c2f-000000000001"
+    campaigns.create(spec)
+
+    class OldJobSlurm(FakeSlurm):
+        def collect(self, campaign, task):
+            local = super().collect(campaign, task)
+            fixture = Path(__file__).parent / "fixtures/hardware-evidence-plain.json"
+            (local / ".controller/hardware-1.json").write_text(fixture.read_text())
+            return local
+
+    fake = OldJobSlurm()
+    campaigns.tick("study", fake)
+    fake.terminal()
+    campaigns.tick("study", fake)
+    assert store.read("study")["tasks"][0]["state"] == "completed"
+    with sqlite3.connect(tmp_data_dir / "controller/campaigns.db") as con:
+        assert con.execute("SELECT observed FROM hardware_locks").fetchone()[0] == (
+            '[{"memory_mb": 81151, "name": "NVIDIA A100-SXM4-80GB"}]')
+
+
 def test_uncertain_submit_and_restart_never_submit_twice(setup):
     spec, _ = setup
     campaigns.create(spec)

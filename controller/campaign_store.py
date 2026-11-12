@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from lib import paths
-from controller import campaign_lifecycle as lifecycle
+from controller import campaign_lifecycle as lifecycle, hardware_class
 from controller.campaign_contract import Conflict, safe_id
 
 SCHEMA = """
@@ -230,15 +230,15 @@ def record_transition(identity, task_id, state, **updates):
         _transition(con, identity, task_id, state, updates)
 
 
-def bind_observed(model_class, actual):
-    encoded = json.dumps(actual, sort_keys=True)
+def bind_observed(model_class, observed):
+    """Bind the devices that the Model class's first accepted result reported (hardware_class.observed text)."""
     with _write() as con:
         lock = con.execute("SELECT observed FROM hardware_locks WHERE model_class=?", (model_class,)).fetchone()
         if lock is None:
             raise Conflict("hardware class has no durable lock")
-        if lock[0] and lock[0] != encoded:
+        if hardware_class.observed_differs(lock[0], observed):
             raise Conflict("observed GPU model or memory differs from this hardware class")
-        con.execute("UPDATE hardware_locks SET observed=? WHERE model_class=?", (encoded, model_class))
+        con.execute("UPDATE hardware_locks SET observed=? WHERE model_class=?", (observed, model_class))
 
 
 def prior_acceptance(identity, model_classes):
