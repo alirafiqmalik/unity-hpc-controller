@@ -47,7 +47,7 @@ When `NODE_FAIL`, `PREEMPTED`, or `BOOT_FAIL` sends a task back to `waiting`, th
 
 `controller/campaigns.py` runs the Worker: one thread that runs one pass at a time.
 A pass runs every `poll_seconds`, or at once when the previous pass admitted work and deferred more.
-While campaigns need work, a pass first refreshes the catalog when 15 minutes have passed since the last attempt; this runs before the campaign lock is taken.
+While campaigns need work, a pass first refreshes the Catalog when the Catalog module says a refresh is due (the first pass with work, then 15 minutes after the last attempt); this runs before the campaign lock is taken.
 Under the campaign lock it then reconciles every unfinished campaign (observe Slurm, cancel the live jobs of a cancelling campaign, retrieve outputs), and then admits new work (placement, staging, submission intent, submit).
 
 One clock gives the pass its time.
@@ -90,6 +90,16 @@ Every command line is the one the controller sent before this module existed.
 The Slurm commands put the options before `-i` and use the agent socket that the alias's `IdentityAgent` names; the Cluster session and the pull put `-i` first and inherit the controller's environment; the settings panel's SSH test sets no keep-alive.
 `GET /api/v1/health` reads the identity state with four local tool calls (`ssh -G`, `ssh-add -l`, `ssh-keygen -l`, `busctl`), opens no cluster connection, and caches nothing.
 
+## Catalog
+
+`controller/catalog.py` owns the Catalog.
+It turns the survey output into a Catalog, writes `backend-catalog.json` atomically, reads it, and decides freshness and when a refresh is due.
+The survey is the bounded set of Slurm queries that `SlurmAdapter.probe` runs over Cluster access; its command text did not change when the module was made.
+A Catalog is fresh when its `observed_at` is at most `catalog_max_age_seconds` old at the wall time that the caller passes; an absent, unreadable, or undated Catalog is stale.
+The refresh schedule takes monotonic time: the first Worker pass with work refreshes, and then at most one refresh runs each 15 minutes, also after a failure.
+A pass reads the Catalog once, at its first placement, and checks every task of that pass against that copy; a plan request reads it once.
+The Planner and the Worker ask this module; neither reads the file nor judges age itself.
+
 ## Data
 
 `$UNITY_HPC_DATA/controller/campaigns.db` is the campaign journal: campaigns, tasks, attempts, hardware locks, and result events.
@@ -98,7 +108,7 @@ Writes take `BEGIN IMMEDIATE`. Reads use a snapshot on a `query_only` connection
 Only one listing runs at a time, to bound memory; a second listing waits for the first.
 Schema setup and the version 1 migration run once for each process and database path.
 Campaign directories hold immutable bundles, scripts, receipts, and retrieved artifacts.
-`backend-catalog.json` records live hardware and policy observations with timestamps.
+`backend-catalog.json` is the stored Catalog: live hardware and policy observations and their observation time. `controller/catalog.py` is the only code that reads or writes it.
 `summaries.db` is the Telemetry archive: collected job and resource history.
 `lib/telemetry_archive.py` owns it: the schema and the `ensure` step, which creates missing tables, adds missing `task_run` columns, and writes nothing on a current archive; the five dated tables and how a day's rows are selected, with `task_accounting` rows following their day's `task_run` rows; the content of a per-day summary backup and the prune that local retention uses; the `task_profile` rebuild; and the reads that production uses (the accounting route, the fully-summarised gate of the remote prune, the Planner's wait and runtime history, and the rollup stamp in telemetry status).
 `cluster-intel/rollup.py` computes rows from raw days and is the one other writer; its upserts stay next to the computation.

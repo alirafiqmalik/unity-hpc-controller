@@ -6,27 +6,14 @@ queue estimates; they never justify waiting for a predicted quiet hour.
 
 from __future__ import annotations
 
-import json
 import math
 import sqlite3
-from datetime import datetime, timezone
+import time
 
-from lib import paths, telemetry_archive
+from lib import telemetry_archive
 from lib.cluster_config import canonical_gpu_type
+from controller import catalog
 from controller.campaign_contract import expand_nodes, inventory, validate
-
-
-def seconds(value):
-    if value is None or str(value).upper() in ("UNLIMITED", "INFINITE", "NONE", "N/A", ""):
-        return None
-    text = str(value)
-    days, _, text = text.rpartition("-") if "-" in text else ("0", "", text)
-    fields = [int(x) for x in text.split(":")]
-    if len(fields) == 1:
-        return int(days) * 86400 + fields[0] * 60
-    if len(fields) == 2:
-        fields.insert(0, 0)
-    return int(days) * 86400 + fields[0] * 3600 + fields[1] * 60 + fields[2]
 
 
 def _percentile(values, fraction):
@@ -41,14 +28,6 @@ def tres_limits(expression):
         if name in ("cpu", "node", "gres/gpu") and value.isdigit():
             values[name] = int(value)
     return values
-
-
-def catalog():
-    location = paths.controller_dir() / "backend-catalog.json"
-    try:
-        return json.loads(location.read_text())
-    except (OSError, ValueError):
-        return {}
 
 
 def _history_hardware(gpu_type):
@@ -76,7 +55,8 @@ def historical_profile(partition, gpu_type):
 
 
 def select(resources, settings, observed=None, *, now=None):
-    observed = catalog() if observed is None else observed
+    observed = catalog.load() if observed is None else observed
+    now = time.time() if now is None else now
     partitions = observed.get("partitions", {})
     default_partitions = settings.get("allowed_partitions") or ["gpu", "gpu-preempt"] if resources.get("gpu_count") else settings.get("cpu_partitions") or ["cpu"]
     candidates = resources.get("partitions") or default_partitions
@@ -86,15 +66,9 @@ def select(resources, settings, observed=None, *, now=None):
     account = settings.get("account", "")
     required = set(filter(None, resources.get("constraint", "").split("&")))
     proposed = []
-    age = None
-    try:
-        stamp = datetime.fromisoformat(observed.get("observed_at", "").replace("Z", "+00:00"))
-        current = datetime.now(timezone.utc) if now is None else datetime.fromtimestamp(now, timezone.utc)
-        age = max(0, (current - stamp).total_seconds())
-    except ValueError:
-        pass
+    age = catalog.age(observed, now)
     warnings = []
-    if age is None or age > settings.get("catalog_max_age_seconds", 3600):
+    if not catalog.is_fresh(observed, settings.get("catalog_max_age_seconds", 3600), now):
         warnings.append("hardware and policy catalog is absent or stale; refresh the backend probe before dispatch")
     association = dict(observed.get("account", {}))
     if association.get("name") not in (None, account):
@@ -127,7 +101,7 @@ def select(resources, settings, observed=None, *, now=None):
             reasons.append("partition group restriction excludes current SSH user")
         if allowed_qos and qos_name not in allowed_qos:
             reasons.append("QOS is not allowed for this account")
-        for expression in (association.get("grp_tres"), qos.get("max_tres_per_user"), qos.get("max_tres_per_job"), qos.get("max_tres_per_account")):
+        for expression in (association.get("grp_tres"), qos.get("max_tres_per_user")):
             limits = tres_limits(expression)
             for metric, requested in (("cpu", resources["cpus"]), ("node", 1), ("gres/gpu", resources.get("gpu_count", 0))):
                 if metric in limits and requested > limits[metric]:
@@ -164,8 +138,9 @@ def select(resources, settings, observed=None, *, now=None):
 def plan(raw, settings):
     specification = validate(raw)
     bundle = inventory(specification["bundle"])
+    observed = catalog.load()
     tasks = [{"task_id": task["task_id"], "model_class": task.get("model_class"), "resources": task["resources"],
-              "placement": select(task["resources"], settings)} for task in specification["tasks"]]
+              "placement": select(task["resources"], settings, observed)} for task in specification["tasks"]]
     return {"schema_version": 1, "campaign_id": specification["campaign_id"], "bundle": bundle, "tasks": tasks,
             "ready": all(t["placement"]["selected_partitions"] and not t["placement"]["warnings"] for t in tasks),
             "max_concurrent": specification["max_concurrent"], "max_attempts": specification["max_attempts"]}

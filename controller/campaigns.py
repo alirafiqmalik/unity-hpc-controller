@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from lib import paths
-from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store, events, hardware_class
+from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store, catalog, events, hardware_class
 from controller.campaign_slurm import SlurmAdapter
 from controller.cluster_access import clean_ssh_host, clean_ssh_identity
 
@@ -99,9 +99,7 @@ def probe(adapter=None):
     value = settings()
     if not value["account"]:
         raise contract.CampaignError("configure backend.account before probing")
-    observed = (adapter or slurm_adapter(live=value)).probe()
-    _write_json(paths.controller_dir() / "backend-catalog.json", observed)
-    return observed
+    return catalog.refresh(adapter or slurm_adapter(live=value))
 
 
 def plan(raw):
@@ -349,6 +347,7 @@ def tick(identity=None, adapter=None, clock=None):
         # may have no recorded outcome and is still active.
         # Historical bundle manifests must not consume the admission window.
         global_active = store.tasks_in_states(lifecycle.ACTIVE)
+        observed = None  # the Catalog for this pass: read at the first placement, then kept
         for campaign_id in reconciled:
             if deferred_eligible:
                 break
@@ -376,7 +375,9 @@ def tick(identity=None, adapter=None, clock=None):
                     if sum(t["spec"]["resources"]["gpu_count"] for t in global_active) + gpu_count > controller_limits["max_active_gpus"]:
                         continue
                     try:
-                        placement = planner.select(task["spec"]["resources"], backend, now=clock.wall())
+                        if observed is None:
+                            observed = catalog.load()
+                        placement = planner.select(task["spec"]["resources"], backend, observed, now=clock.wall())
                     except Exception as exc:
                         _campaign_failed(campaign_id, "placement", exc)
                         break
@@ -430,6 +431,7 @@ def tick(identity=None, adapter=None, clock=None):
             except Exception as exc:
                 _campaign_failed(campaign_id, "admission", exc)
                 global_active = store.tasks_in_states(lifecycle.ACTIVE)
+        observed = None  # the Catalog for this pass: read at the first placement, then kept
         return {"admission_attempts": admission_attempts, "admission_progress": admission_progress,
                 "admission_seconds": round(clock.monotonic() - admission_started, 3),
                 "deferred_eligible": deferred_eligible,
@@ -471,9 +473,6 @@ def artifact(identity, task_id, output):
     return path
 
 
-CATALOG_REFRESH_SECONDS = 900
-
-
 class Worker:
     """The Worker thread: its clock, its catalog refresh schedule, and its stop signal."""
 
@@ -482,7 +481,7 @@ class Worker:
         self.adapter = adapter  # None: slurm_adapter() for each campaign
         self.refresh_catalog = probe if refresh_catalog is None else refresh_catalog
         self.stop = threading.Event() if stop is None else stop
-        self.catalog_due = self.clock.monotonic()  # the first pass with work refreshes the catalog
+        self.catalog_schedule = catalog.RefreshSchedule(self.clock.monotonic())  # the first pass with work refreshes the catalog
 
     def run_pass(self):
         """One pass: refresh the catalog when due, then tick. Catalog failure must never
@@ -490,11 +489,9 @@ class Worker:
         campaign needs work."""
         if not store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL):
             return None
-        now = self.clock.monotonic()
-        if now >= self.catalog_due:
+        if self.catalog_schedule.claim(self.clock.monotonic()):
             # Bound unsuccessful refreshes too, so catalog downtime cannot cause
             # one expensive policy survey on every 30-second task poll.
-            self.catalog_due = now + CATALOG_REFRESH_SECONDS
             try:
                 self.refresh_catalog()
             except Exception as exc:

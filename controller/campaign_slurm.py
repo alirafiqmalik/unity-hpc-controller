@@ -14,7 +14,7 @@ import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from controller import campaign_store as store, cluster_access, hardware_class
+from controller import campaign_store as store, catalog, cluster_access, hardware_class
 from controller.campaign_contract import CampaignError
 
 
@@ -263,41 +263,4 @@ class SlurmAdapter:
         result = self.command(command, timeout=150)
         if result.returncode:
             raise RuntimeError("backend probe failed: " + result.stderr[-1500:])
-        return parse_probe(result.stdout, self.settings["account"])
-
-
-def parse_probe(text, account):
-    from controller.campaign_planner import seconds
-    value = {"observed_at": store.now(), "nodes": [], "partitions": {}, "qos": {}, "associations": {}, "groups": [], "account": {"name": account}, "source": "bounded SSH Slurm commands"}
-    section = ""
-    for line in text.splitlines():
-        if line in ("NODES", "PARTITIONS", "QOS", "ASSOCIATIONS", "ACCOUNT_LIMITS", "GROUPS", "FAIRSHARE"):
-            section = line
-            continue
-        fields = dict(re.findall(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=([^\s]*)", line))
-        if section == "NODES" and "NodeName" in fields:
-            gpus = {name: int(count) for name, count in re.findall(r"gpu:([^:,()]+):(\d+)", fields.get("Gres", ""))}
-            value["nodes"].append({"name": fields["NodeName"], "cpus": int(fields.get("CPUTot", 0)), "memory_mb": int(fields.get("RealMemory", 0)), "features": fields.get("ActiveFeatures", "").split(","), "partitions": fields.get("Partitions", "").split(","), "gpus": gpus, "state": fields.get("State"), "alloc_tres": fields.get("AllocTRES"), "free_memory_mb": int(fields["FreeMem"]) if fields.get("FreeMem", "").isdigit() else None})
-        elif section == "PARTITIONS" and "PartitionName" in fields:
-            value["partitions"][fields["PartitionName"]] = {"state": fields.get("State"), "max_walltime_seconds": seconds(fields.get("MaxTime")), "priority_tier": int(fields.get("PriorityTier", 0)), "preempt_mode": fields.get("PreemptMode", "OFF"), **{key: fields.get(source, "").split(",") if fields.get(source) not in (None, "(null)", "") else [] for key, source in (("allow_accounts", "AllowAccounts"), ("deny_accounts", "DenyAccounts"), ("allow_groups", "AllowGroups"), ("allow_qos", "AllowQos"), ("deny_qos", "DenyQos"))}}
-        elif section == "QOS":
-            row = line.split("|")
-            if len(row) >= 5:
-                value["qos"][row[0]] = {"max_walltime_seconds": seconds(row[1]), "max_jobs": int(row[2]) if row[2].isdigit() else None, "max_submit_jobs": int(row[3]) if row[3].isdigit() else None, "max_tres_per_user": row[4] or None}
-        elif section == "ASSOCIATIONS":
-            row = line.split("|")
-            if len(row) >= 6:
-                value["associations"][row[0]] = {"qos": row[1].split(","), "max_jobs": int(row[2]) if row[2].isdigit() else None, "max_submit_jobs": int(row[3]) if row[3].isdigit() else None, "grp_tres": row[4] or None, "max_walltime_seconds": seconds(row[5])}
-                if row[0] == account:
-                    value["account"].update(value["associations"][row[0]])
-        elif section == "ACCOUNT_LIMITS":
-            row = line.split("|")
-            if len(row) >= 5 and row[0] == account and not row[1]:
-                value["account"].update(grp_tres=row[2] or None, grp_jobs=int(row[3]) if row[3].isdigit() else None, grp_submit_jobs=int(row[4]) if row[4].isdigit() else None)
-        elif section == "GROUPS":
-            value["groups"] = line.split()
-        elif section == "FAIRSHARE":
-            row = line.split("|")
-            if len(row) >= 4 and row[0] == account:
-                value["fairshare"] = {"factor": float(row[2]) if row[2] else None, "effective_usage": float(row[3]) if row[3] else None}
-    return value
+        return catalog.parse(result.stdout, self.settings["account"])

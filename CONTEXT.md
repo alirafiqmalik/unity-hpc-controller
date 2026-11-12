@@ -57,7 +57,8 @@ _Avoid_: probe, check
 
 **Catalog**:
 The controller's timestamped record of live nodes, partitions, access rules, QOS limits, and fairshare.
-A stale catalog blocks new submissions.
+A stale catalog blocks new submissions. It never blocks reconciliation or retrieval.
+`controller/catalog.py` owns it: it turns the survey (the bounded Slurm queries that the `probe` route and command start) into a Catalog, stores and reads `backend-catalog.json`, and decides freshness and when a refresh is due.
 _Avoid_: profile, recon, cluster config
 
 **Planner**:

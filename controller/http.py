@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from controller import events, snapshot, telemetry, campaigns, campaign_store
+from controller import events, snapshot, telemetry, campaigns, campaign_store, catalog
 from controller.campaign_contract import CampaignError
 
 DEFAULT_HOST = "127.0.0.1"
@@ -92,7 +92,7 @@ _RETIRED_PREFIXES = ("/api/v1/projects", "/api/v1/jobs/delete")
 
 def _route(method: str, path: str, req: Request) -> Response:
     if path == "/api/v1/backend" and method == "GET":
-        return _json(200, {"settings": campaigns.settings(), "catalog": campaigns.planner.catalog()})
+        return _json(200, {"settings": campaigns.settings(), "catalog": catalog.load()})
     if path == "/api/v1/backend" and method == "PATCH":
         return _json(200, {"settings": campaigns.configure(_read_json(req))})
     if path == "/api/v1/backend/probe" and method == "POST":

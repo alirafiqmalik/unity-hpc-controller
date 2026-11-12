@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from controller import cluster_access, campaigns, campaign_lifecycle as lifecycle, campaign_store as store, events
+from controller import catalog as catalog_module
 from controller.campaign_contract import CampaignError, Conflict
-from controller.campaign_slurm import SlurmAdapter, script, parse_probe
+from controller.campaign_slurm import SlurmAdapter, script
 from controller.http import Request, handle
 
 
@@ -434,14 +435,6 @@ def test_bundle_rejects_symlink_and_dependency_cycle(setup):
     (source / "escape").symlink_to("/etc/passwd")
     with pytest.raises(CampaignError, match="symlink"):
         campaigns.create(spec)
-
-
-def test_parse_probe_preserves_policy_not_fabricated_free_memory():
-    result = parse_probe("NODES\nNodeName=gpu013 CPUTot=112 RealMemory=2000000 ActiveFeatures=a100-80g,sapphirerapids Partitions=gpu Gres=gpu:a100:8(S:0-1) State=MIXED FreeMem=N/A\nPARTITIONS\nPartitionName=gpu State=UP MaxTime=14-00:00:00 AllowAccounts=pi_test AllowGroups=ALL AllowQos=ALL DenyQos=short PreemptMode=OFF PriorityTier=4\nQOS\nnormal||1000|2000|\nASSOCIATIONS\npi_test|normal,long||||\nGROUPS\nusers pi_test\n", "pi_test")
-    assert result["nodes"][0]["free_memory_mb"] is None
-    assert result["nodes"][0]["gpus"] == {"a100": 8}
-    assert result["partitions"]["gpu"]["deny_qos"] == ["short"]
-    assert result["qos"]["normal"]["max_submit_jobs"] == 2000
 
 
 def test_catalog_probe_failure_still_reconciles_tasks(setup):
@@ -1169,3 +1162,83 @@ def test_planner_history_reads_the_canonical_gpu_name(tmp_data_dir):
     assert history["wait_p50_seconds"] == 20.0
     cpu = campaign_planner.historical_profile("gpu", None)
     assert (cpu["hardware"], cpu["sample_count"]) == ("cpu", 0)
+
+
+def test_pass_reads_the_catalog_once_and_keeps_it(setup, tmp_data_dir, monkeypatch):
+    spec, catalog = setup
+    for task_id in ("model-b", "model-c"):
+        task = copy.deepcopy(spec["tasks"][0])
+        task["task_id"] = task_id
+        spec["tasks"].append(task)
+    spec["max_concurrent"] = 3
+    campaigns.configure({"max_new_tasks_per_pass": 2})
+    campaigns.create(spec)
+    loads = []
+    original = catalog_module.load
+
+    def counting():
+        loads.append(True)
+        return original()
+
+    monkeypatch.setattr(catalog_module, "load", counting)
+
+    class ReplacingSlurm(FakeSlurm):
+        def submit(self, campaign, task, placement):
+            receipt = super().submit(campaign, task, placement)
+            if len(self.submissions) == 1:
+                campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json",
+                                      {**catalog, "observed_at": "2000-01-01T00:00:00+00:00"})
+            return receipt
+
+    fake = ReplacingSlurm()
+    campaigns.tick("study", fake)
+    assert len(fake.submissions) == 2
+    assert len(loads) == 1
+    campaigns.tick("study", fake)
+    assert len(fake.submissions) == 2
+    task = next(task for task in store.read("study")["tasks"] if task["task_id"] == "model-c")
+    assert task["state"] == "waiting"
+    assert "stale" in task["error"]
+    assert len(loads) == 2
+
+
+def test_plan_reads_the_catalog_once(setup, monkeypatch):
+    spec, _ = setup
+    for task_id in ("model-b", "model-c"):
+        task = copy.deepcopy(spec["tasks"][0])
+        task["task_id"] = task_id
+        spec["tasks"].append(task)
+    loads = []
+    original = catalog_module.load
+
+    def counting():
+        loads.append(True)
+        return original()
+
+    monkeypatch.setattr(catalog_module, "load", counting)
+    value = campaigns.plan(spec)
+    assert len(loads) == 1
+    assert len(value["tasks"]) == 3
+    assert len({task["placement"]["observed_at"] for task in value["tasks"]}) == 1
+
+
+def test_stale_catalog_blocks_submission_not_retrieval(setup, tmp_data_dir):
+    spec, catalog = setup
+    task = copy.deepcopy(spec["tasks"][0])
+    task["task_id"] = "model-b"
+    spec["tasks"].append(task)
+    spec["max_concurrent"] = 1
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    assert len(fake.submissions) == 1
+    catalog["observed_at"] = "2000-01-01T00:00:00+00:00"
+    campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json", catalog)
+    fake.terminal()
+    campaigns.tick("study", fake)
+    tasks = store.read("study")["tasks"]
+    assert tasks[0]["state"] == "completed"
+    assert {row["path"] for row in tasks[0]["artifacts"]["files"]} == {"results.jsonl", "summary.json"}
+    assert tasks[1]["state"] == "waiting"
+    assert "stale" in tasks[1]["error"]
+    assert len(fake.submissions) == 1

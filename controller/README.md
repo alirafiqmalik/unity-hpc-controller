@@ -27,9 +27,10 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 |---|---|
 | `campaign_contract.py` | Portable declaration checks and immutable bundle snapshots |
 | `campaign_store.py` | Campaign journal: the only code that opens `campaigns.db`; one transaction for each named operation; snapshot reads; schema setup once per process |
-| `campaign_planner.py` | Exact hardware fit, access, ceilings, and historical placement signals |
+| `campaign_planner.py` | Exact hardware fit, access, ceilings, and historical placement signals, checked against the Catalog that the caller passes |
+| `catalog.py` | Catalog: turns the survey output into a Catalog, stores it atomically and reads it, freshness at a given time, and the refresh schedule |
 | `cluster_access.py` | Cluster access: SSH alias and identity, the one SSH option set, agent and keyring restore, remote commands and rsync transfer; a local-shell transport for tests |
-| `campaign_slurm.py` | Slurm protocol over Cluster access: atomic staging, job scripts that carry the Attestation, Slurm receipts, and artifact retrieval |
+| `campaign_slurm.py` | Slurm protocol over Cluster access: atomic staging, job scripts that carry the Attestation, Slurm receipts, artifact retrieval, and the Catalog survey command |
 | `hardware_class.py` | Hardware class: fingerprint, hardware lock and bind rule, evidence file names, and the controller check of an Attestation; no IO after import |
 | `attestation.py` | In-job Attestation and the match rule that the controller also uses; standard library only; job scripts carry its text |
 | `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions, retry budget, backoff, and Result event payloads; no IO |
@@ -44,7 +45,7 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | `events.py` | Controller event log |
 
 The task worker remains independent of a browser or agent session.
-Its catalog probe runs every 15 minutes while campaigns need work.
+Its catalog refresh runs at the first pass with work and then every 15 minutes while campaigns need work.
 Its default scheduler poll runs every 30 seconds.
 No controller process remains on a login node.
 Scientific commands run only inside Slurm allocations.
