@@ -2,11 +2,12 @@
 import copy
 import json
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
-from controller import campaigns, campaign_lifecycle as lifecycle, campaign_store as store
+from controller import campaigns, campaign_lifecycle as lifecycle, campaign_store as store, events
 from controller.campaign_contract import CampaignError, Conflict
 from controller.campaign_slurm import script, parse_probe
 from controller.http import Request, handle
@@ -61,6 +62,16 @@ class FakeSlurm:
     def terminal(self, state="COMPLETED", job_id="123"):
         name = self.submissions[-1][0]
         self.observations[name] = {"job_id": job_id, "state": state, "exit_code": "0:0"}
+
+
+class FakeClock:
+    """The Worker's clock in tests: time stays where the test sets it."""
+    def __init__(self, wall=0.0, monotonic=0.0):
+        self.now, self.elapsed = wall, monotonic
+    def wall(self):
+        return self.now
+    def monotonic(self):
+        return self.elapsed
 
 
 def test_cancel_fences_waiting_tasks_and_ends_live_jobs(setup, monkeypatch):
@@ -167,13 +178,13 @@ def test_fetch_failure_retries_fetch_without_compute_and_missing_output_fails(se
     spec, _ = setup
     campaigns.create(spec)
     slurm = FakeSlurm()
-    campaigns.tick("study", slurm, clock=lambda: 0)
+    campaigns.tick("study", slurm, clock=FakeClock(0))
     slurm.terminal()
     slurm.fetch_failure = True
-    campaigns.tick("study", slurm, clock=lambda: 0)
+    campaigns.tick("study", slurm, clock=FakeClock(0))
     assert store.read("study")["tasks"][0]["state"] == "fetching"
     slurm.fetch_failure, slurm.missing = False, True
-    campaigns.tick("study", slurm, clock=lambda: 2)
+    campaigns.tick("study", slurm, clock=FakeClock(2))
     assert store.read("study")["state"] == "failed"
     assert store.read("study")["tasks"][0]["artifacts"]["missing"] == ["summary.json"]
     assert len(slurm.submissions) == 1
@@ -204,21 +215,21 @@ def test_retry_retains_previous_attempt_scheduler_outcome_and_observation(setup,
     spec, _ = setup
     campaigns.create(spec)
     slurm = FakeSlurm()
-    campaigns.tick("study", slurm, clock=lambda: 0)
+    campaigns.tick("study", slurm, clock=FakeClock(0))
     slurm.terminal(failure)
     first_name = slurm.submissions[0][0]
     slurm.observations[first_name]["node_list"] = "gpu013"
-    campaigns.tick("study", slurm, clock=lambda: 0)
+    campaigns.tick("study", slurm, clock=FakeClock(0))
     campaign = store.read("study")
     assert campaign["tasks"][0]["state"] == "waiting"
     first = campaign["attempts"][0]
     assert first["state"] == failure
     assert first["observation"]["node_list"] == "gpu013"
     slurm.receipt = {"outcome": "accepted", "job_id": "124"}
-    campaigns.tick("study", slurm, clock=lambda: 2)
+    campaigns.tick("study", slurm, clock=FakeClock(2))
     assert store.read("study")["attempts"][1]["observation"] is None
     slurm.terminal("COMPLETED", job_id="124")
-    campaigns.tick("study", slurm, clock=lambda: 4)
+    campaigns.tick("study", slurm, clock=FakeClock(4))
     attempts = store.read("study")["attempts"]
     assert attempts[0] == first
     assert attempts[1]["state"] == "completed"
@@ -230,15 +241,15 @@ def test_only_bounded_infrastructure_retry_with_same_hardware(setup):
     spec, _ = setup
     campaigns.create(spec)
     slurm = FakeSlurm()
-    campaigns.tick("study", slurm, clock=lambda: 0)
+    campaigns.tick("study", slurm, clock=FakeClock(0))
     slurm.terminal("NODE_FAIL")
-    campaigns.tick("study", slurm, clock=lambda: 0)
+    campaigns.tick("study", slurm, clock=FakeClock(0))
     assert len(slurm.submissions) == 1
-    campaigns.tick("study", slurm, clock=lambda: 2)
+    campaigns.tick("study", slurm, clock=FakeClock(2))
     assert len(slurm.submissions) == 2
     assert slurm.submissions[0][0] != slurm.submissions[1][0]
     slurm.terminal("NODE_FAIL")
-    campaigns.tick("study", slurm, clock=lambda: 4)
+    campaigns.tick("study", slurm, clock=FakeClock(4))
     assert store.read("study")["state"] == "failed"
     assert store.read("study")["tasks"][0]["attempt"] == 2
 
@@ -393,24 +404,32 @@ def test_parse_probe_preserves_policy_not_fabricated_free_memory():
     assert result["qos"]["normal"]["max_submit_jobs"] == 2000
 
 
-def test_catalog_probe_failure_still_reconciles_tasks(setup, monkeypatch):
+def test_catalog_probe_failure_still_reconciles_tasks(setup):
     spec, _ = setup
-    campaigns.create(spec)
-    reconciled, probes = [], []
+    probes = []
     # A newly booted host can have less than 15 minutes of monotonic uptime.
-    monkeypatch.setattr(campaigns.time, "monotonic", lambda: 100.0)
+    clock = FakeClock(monotonic=100.0)
+    fake = FakeSlurm()
+
     def broken_probe():
         probes.append(True)
         raise RuntimeError("sacctmgr policy service unavailable")
-    monkeypatch.setattr(campaigns, "probe", broken_probe)
-    monkeypatch.setattr(campaigns, "tick", lambda: reconciled.append(True))
-    next_probe = campaigns.worker_pass(0)
-    assert reconciled == [True]
-    assert next_probe == 100.0
+
+    worker = campaigns.Worker(clock=clock, adapter=fake, refresh_catalog=broken_probe)
+    assert worker.run_pass() is None
+    assert probes == []
+    campaigns.create(spec)
+    report = worker.run_pass()
     assert probes == [True]
-    assert campaigns.worker_pass(next_probe) == next_probe
-    assert reconciled == [True, True]
+    assert report["admission_progress"] == 1
+    assert len(fake.submissions) == 1
+    clock.elapsed = 999.0
+    worker.run_pass()
     assert probes == [True]
+    clock.elapsed = 1000.0
+    worker.run_pass()
+    assert probes == [True, True]
+    assert any(entry["kind"] == "campaign-probe-error" for entry in events.recent(50))
 
 
 def test_known_qos_submit_limit_caps_admission(setup, tmp_data_dir):
@@ -471,9 +490,9 @@ def test_reduced_current_ceiling_applies_to_already_accepted_campaign(setup, cei
     campaigns.create(spec)
     store.record_transition("study", "model-b", "waiting", eligible_at=100)
     fake = FakeSlurm()
-    campaigns.tick("study", fake, clock=lambda: 0)
+    campaigns.tick("study", fake, clock=FakeClock(0))
     campaigns.configure({ceiling: 1, "remote_root": "/work/pi_test/new-location"})
-    campaigns.tick("study", fake, clock=lambda: 200)
+    campaigns.tick("study", fake, clock=FakeClock(200))
     assert len(fake.submissions) == 1
     assert store.read("study")["spec"]["backend"]["remote_root"] == "/work/pi_test/controller"
 
@@ -626,22 +645,22 @@ def test_admission_time_budget_finishes_inflight_submission_then_reconciles_befo
     another = copy.deepcopy(spec)
     another["campaign_id"] = "another-study"
     campaigns.create(another)
-    budget_clock = [0]
+    clock = FakeClock()
     calls = []
     class SlowStage(FakeSlurm):
         def stage(self, campaign):
             calls.append("stage")
-            budget_clock[0] += 11
+            clock.elapsed += 11
             super().stage(campaign)
         def observe(self, campaign, tasks):
             calls.append("observe")
             return super().observe(campaign, tasks)
     fake = SlowStage()
-    report = campaigns.tick(adapter=fake, admission_clock=lambda: budget_clock[0])
+    report = campaigns.tick(adapter=fake, clock=clock)
     assert len(fake.submissions) == 1 and report["continue_immediately"]
     assert report["admission_seconds"] == 11
     calls.clear()
-    campaigns.tick(adapter=fake, admission_clock=lambda: budget_clock[0])
+    campaigns.tick(adapter=fake, clock=clock)
     assert calls == ["observe", "stage"] and len(fake.submissions) == 2
 
 
@@ -673,7 +692,8 @@ def test_admission_ignores_completed_bundles_and_preserves_global_capacity(setup
     original_read = store.read
 
     def read_active_only(identity):
-        assert identity != "study", "completed bundle read during admission"
+        if identity == "study":
+            pytest.fail("completed bundle read during admission")
         return original_read(identity)
 
     def no_full_listing():
@@ -687,8 +707,7 @@ def test_admission_ignores_completed_bundles_and_preserves_global_capacity(setup
     assert len(store.tasks_in_states(lifecycle.ACTIVE)) == 1
     assert set(store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL)) == {"waiting-a", "waiting-b"}
     # An accepted task in another campaign still consumes the GPU ceiling.
-    monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
-    campaigns.worker_pass(float("inf"))
+    campaigns.Worker(adapter=fake, refresh_catalog=lambda: None).run_pass()
     assert len(fake.submissions) == 1
     campaigns.tick(adapter=fake)
     assert len(fake.submissions) == 1
@@ -706,8 +725,13 @@ def test_failed_staging_has_no_immediate_retry_loop(setup):
     assert not fake.submissions
 
 
-def test_worker_skips_sleep_only_for_progress_with_deferred_eligible_admission(setup, monkeypatch):
-    _, _ = setup
+def test_worker_skips_sleep_only_for_progress_with_deferred_eligible_admission(setup):
+    spec, _ = setup
+    spec["tasks"].append({**copy.deepcopy(spec["tasks"][0]), "task_id": "model-b"})
+    campaigns.configure({"max_new_tasks_per_pass": 1})
+    campaigns.create(spec)
+    fake = FakeSlurm()
+
     class Stop:
         stopped = False
         waits = []
@@ -716,16 +740,11 @@ def test_worker_skips_sleep_only_for_progress_with_deferred_eligible_admission(s
         def wait(self, duration):
             self.waits.append(duration)
             self.stopped = True
+
     stop = Stop()
-    passes = []
-    def worker(last_probe, *, with_progress=False):
-        assert with_progress
-        passes.append(last_probe)
-        return last_probe + 1, {"continue_immediately": len(passes) == 1}
-    monkeypatch.setattr(campaigns, "_stop", stop)
-    monkeypatch.setattr(campaigns, "worker_pass", worker)
-    campaigns._loop()
-    assert passes == [0, 1] and stop.waits == [30]
+    campaigns.Worker(clock=FakeClock(), adapter=fake, refresh_catalog=lambda: None, stop=stop).run()
+    assert len(fake.submissions) == 2
+    assert stop.waits == [30]
 
 
 @pytest.mark.parametrize("field,value", [
@@ -823,3 +842,233 @@ def test_unexpandable_nodelist_is_rejected_before_acceptance(setup, nodelist):
     spec["tasks"][0]["resources"]["nodelist"] = "gpu[013-013]"
     assert handle(Request("POST", "/api/v1/campaigns/plan", body=json.dumps(spec).encode())).status == 200
     assert handle(Request("POST", "/api/v1/campaigns", body=json.dumps(spec).encode())).status == 202
+
+
+def test_pass_judges_catalog_age_by_its_clock(setup):
+    spec, _ = setup
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake, clock=FakeClock(time.time() + 7200))
+    assert fake.submissions == []
+    assert "stale" in store.read("study")["tasks"][0]["error"]
+    campaigns.tick("study", fake, clock=FakeClock(time.time()))
+    assert len(fake.submissions) == 1
+
+
+def test_planner_failure_in_one_campaign_does_not_stop_the_pass(setup, monkeypatch):
+    spec, _ = setup
+    campaigns.create(spec)
+    pinned = copy.deepcopy(spec)
+    pinned["campaign_id"] = "pinned"
+    pinned["tasks"][0]["model_class"] = "pinned-a10080-v1"
+    pinned["tasks"][0]["resources"]["nodelist"] = "gpu013"
+    campaigns.create(pinned)
+    assert store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL) == ["pinned", "study"]
+    fake = FakeSlurm()
+
+    def expand_nodes(expression):
+        if expression:
+            raise CampaignError("nodelist cannot be expanded: " + expression)
+        return set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(campaigns.planner, "expand_nodes", expand_nodes)
+        campaigns.tick(adapter=fake)
+        assert len(fake.submissions) == 1
+        assert fake.submissions[0][0].startswith("study-")
+        assert fake.staged == 1
+        campaigns.tick(adapter=fake)
+        error = "placement: nodelist cannot be expanded: gpu013"
+        campaign = store.read("pinned")
+        assert campaign["error"] == error
+        assert campaign["tasks"][0]["state"] == "waiting"
+        assert json.loads(handle(Request("GET", "/api/v1/campaigns/pinned")).body)["campaign"]["error"] == error
+        assert store.read("study")["error"] is None
+        entries = [entry for entry in events.recent(50)
+                   if entry["kind"] == "campaign-error" and entry.get("campaign_id") == "pinned"]
+        assert len(entries) == 1
+        assert entries[0]["message"] == "pinned: placement: nodelist cannot be expanded: gpu013"
+    campaigns.tick(adapter=fake)
+    assert store.read("pinned")["error"] is None
+    assert len(fake.submissions) == 2
+
+
+def test_cancel_transport_failure_is_contained_to_its_campaign(setup, monkeypatch):
+    spec, _ = setup
+
+    class FlakyCancel(FakeSlurm):
+        cancel_failure = False
+
+        def cancel(self, job_ids):
+            if self.cancel_failure:
+                raise RuntimeError("scancel: Unable to contact slurm controller")
+            super().cancel(job_ids)
+
+    fake = FlakyCancel()
+    campaigns.create(spec)
+    campaigns.tick("study", fake)
+    fake.receipt = {"outcome": "accepted", "job_id": "124"}
+    newer = copy.deepcopy(spec)
+    newer["campaign_id"] = "newer"
+    campaigns.create(newer)
+    assert store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL) == ["newer", "study"]
+    campaigns.tick("newer", fake)
+    monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
+    campaigns.cancel("newer")
+    fake.observations[fake.submissions[1][0]] = {"job_id": "124", "state": "RUNNING"}
+    fake.observations[fake.submissions[0][0]] = {"job_id": "123", "state": "COMPLETED", "exit_code": "0:0"}
+    fake.cancel_failure = True
+    campaigns.tick(adapter=fake)
+    assert store.read("study")["state"] == "completed"
+    campaign = store.read("newer")
+    assert campaign["tasks"][0]["state"] == "accepted"
+    assert campaign["state"] == "cancelling"
+    assert campaign["error"] == "reconcile: scancel: Unable to contact slurm controller"
+    fake.cancel_failure = False
+    campaigns.tick(adapter=fake)
+    campaign = store.read("newer")
+    assert campaign["tasks"][0]["state"] == "cancelling"
+    assert campaign["error"] is None
+    assert fake.cancelled == [["124"], ["124"]]
+
+
+def test_failure_between_intent_and_outcome_stays_fenced_while_other_campaigns_advance(setup, monkeypatch):
+    spec, _ = setup
+    campaigns.create(spec)
+    newer = copy.deepcopy(spec)
+    newer["campaign_id"] = "newer"
+    campaigns.create(newer)
+    assert store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL) == ["newer", "study"]
+    fake = FakeSlurm()
+    original = store.record_submission
+
+    def record_submission(identity, *args):
+        if identity == "newer":
+            raise RuntimeError("journal unavailable")
+        return original(identity, *args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "record_submission", record_submission)
+        campaigns.tick(adapter=fake)
+    assert len(fake.submissions) == 2
+    campaign = store.read("newer")
+    assert campaign["tasks"][0]["state"] == "submitting"
+    assert campaign["attempts"][0]["state"] == "submitting"
+    assert campaign["error"] == "admission: journal unavailable"
+    assert store.read("study")["tasks"][0]["state"] == "accepted"
+    campaigns.tick(adapter=fake)
+    campaign = store.read("newer")
+    assert campaign["tasks"][0]["state"] == "uncertain"
+    assert len(fake.submissions) == 2
+    assert campaign["error"] is None
+    fake.observations[fake.submissions[0][0]] = {"job_id": "123", "state": "RUNNING"}
+    campaigns.tick(adapter=fake)
+    task = store.read("newer")["tasks"][0]
+    assert task["state"] == "running"
+    assert task["job_id"] == "123"
+    assert len(fake.submissions) == 2
+
+
+def test_failed_admission_keeps_its_submitting_task_in_the_capacity_count(setup, monkeypatch):
+    spec, _ = setup
+    campaigns.configure({"max_active_tasks": 1})
+    campaigns.create(spec)
+    newer = copy.deepcopy(spec)
+    newer["campaign_id"] = "newer"
+    campaigns.create(newer)
+    assert store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL) == ["newer", "study"]
+    fake = FakeSlurm()
+    original = store.record_submission
+
+    def record_submission(identity, *args):
+        if identity == "newer":
+            raise RuntimeError("journal unavailable")
+        return original(identity, *args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "record_submission", record_submission)
+        campaigns.tick(adapter=fake)
+    assert len(fake.submissions) == 1
+    assert fake.submissions[0][0].startswith("newer-")
+    assert store.read("study")["tasks"][0]["state"] == "waiting"
+    assert [task["campaign_id"] for task in store.tasks_in_states(lifecycle.ACTIVE)] == ["newer"]
+
+
+def test_observe_failure_is_shown_until_the_next_completed_reconcile(setup):
+    spec, _ = setup
+
+    class FlakyObserve(FakeSlurm):
+        observe_failure = False
+
+        def observe(self, campaign, tasks):
+            if self.observe_failure:
+                raise RuntimeError("scheduler observation failed: ssh timeout")
+            return super().observe(campaign, tasks)
+
+    campaigns.create(spec)
+    fake = FlakyObserve()
+    campaigns.tick("study", fake)
+    fake.observe_failure = True
+    campaigns.tick("study", fake)
+    assert store.read("study")["error"] == "reconcile: scheduler observation failed: ssh timeout"
+    fake.observe_failure = False
+    campaigns.tick("study", fake)
+    assert store.read("study")["error"] is None
+
+
+def test_staging_error_stays_until_staging_succeeds(setup):
+    spec, _ = setup
+
+    class FlakyStage(FakeSlurm):
+        stage_failure = False
+
+        def stage(self, campaign):
+            if self.stage_failure:
+                raise RuntimeError("shared storage unavailable")
+            return super().stage(campaign)
+
+    other = copy.deepcopy(spec)
+    other["campaign_id"] = "other"
+    campaigns.create(other)
+    fake = FlakyStage()
+    campaigns.tick("other", fake)
+    campaigns.create(spec)
+    fake.stage_failure = True
+    campaigns.tick("study", fake)
+    assert store.read("study")["error"] == "stage: shared storage unavailable"
+    campaigns.configure({"max_active_tasks": 1})
+    campaigns.tick("study", fake)
+    assert store.read("study")["error"] == "stage: shared storage unavailable"
+    assert fake.staged == 1
+    campaigns.configure({"max_active_tasks": 32})
+    fake.stage_failure = False
+    campaigns.tick("study", fake)
+    campaign = store.read("study")
+    assert campaign["error"] is None
+    assert campaign["tasks"][0]["state"] == "accepted"
+
+
+def test_failure_that_the_journal_cannot_record_ends_the_pass(setup, monkeypatch):
+    spec, _ = setup
+    campaigns.create(spec)
+    newer = copy.deepcopy(spec)
+    newer["campaign_id"] = "newer"
+    campaigns.create(newer)
+    assert store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL) == ["newer", "study"]
+
+    class FailedStage(FakeSlurm):
+        def stage(self, campaign):
+            if campaign["id"] == "newer":
+                raise RuntimeError("shared storage unavailable")
+            return super().stage(campaign)
+
+    def record_campaign_error(*args):
+        raise RuntimeError("journal is read-only")
+
+    fake = FailedStage()
+    monkeypatch.setattr(store, "record_campaign_error", record_campaign_error)
+    with pytest.raises(RuntimeError, match="journal is read-only"):
+        campaigns.tick(adapter=fake)
+    assert fake.submissions == []
+    messages = [entry["message"] for entry in events.recent(50) if entry["kind"] == "campaign-error"]
+    assert "newer: stage: shared storage unavailable" in messages

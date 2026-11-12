@@ -367,6 +367,23 @@ Missing required files or hardware evidence prevent completion.
 Controller completion means that the declared files exist and hardware evidence passes.
 The project remains responsible for record counts, dataset identity, and scientific evaluation checks.
 
+A failure that concerns a whole campaign appears in the campaign's `error` field.
+`GET /api/v1/campaigns/{id}`, the campaign listing, and `hpc-campaign queue` show it.
+The text starts with the Worker step that failed:
+
+| Prefix | Step |
+|---|---|
+| `reconcile:` | Reading the campaign, observing Slurm, cancelling a live job, or recording what Slurm reported |
+| `placement:` | Checking a task against the catalog raised an error |
+| `stage:` | Uploading the source snapshot |
+| `admission:` | Other admission work, including recording a submission |
+
+The Worker stops work on that campaign for the current pass and continues with the other campaigns.
+The error clears when the same step next succeeds for that campaign.
+A newer failure replaces an older one, and a campaign that ends keeps its last unresolved error.
+Task problems, such as no eligible partition or a failed transfer, appear in the task's `error` instead.
+The controller activity log (`GET /api/v1/events`) adds a `campaign-error` entry each time a campaign's error changes.
+
 ## State and backups
 
 The local store lives under `$UNITY_HPC_DATA/controller/`:
@@ -386,6 +403,9 @@ The public campaign schema remains version 1.
 
 The controller migrates a version 1 journal once, when it starts or first opens it, and restores recoverable observations for each current attempt.
 Campaign reads use a snapshot and do not wait for the worker's writes.
+Accepting a new campaign and cancelling one wait for the current Worker pass to finish.
+A pass usually takes seconds; a cold source upload or a large retrieval can hold it for many minutes, because each SSH operation can run to its own timeout.
+If a client gives up first, the controller still completes the request; resend the same declaration to read the accepted campaign.
 Restart the controller after you restore `campaigns.db` from a backup.
 No automatic deletion applies to campaign results.
 Remote source snapshots and checkpoint directories also remain available.

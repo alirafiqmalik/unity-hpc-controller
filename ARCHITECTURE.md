@@ -43,6 +43,28 @@ Campaign states: `accepted`, `running`, `cancelling`, and the terminal states `c
 An attempt records its task's state.
 When `NODE_FAIL`, `PREEMPTED`, or `BOOT_FAIL` sends a task back to `waiting`, the finished attempt keeps that scheduler state, also if the task is then cancelled or blocked.
 
+## Worker pass
+
+`controller/campaigns.py` runs the Worker: one thread that runs one pass at a time.
+A pass runs every `poll_seconds`, or at once when the previous pass admitted work and deferred more.
+While campaigns need work, a pass first refreshes the catalog when 15 minutes have passed since the last attempt; this runs before the campaign lock is taken.
+Under the campaign lock it then reconciles every unfinished campaign (observe Slurm, cancel the live jobs of a cancelling campaign, retrieve outputs), and then admits new work (placement, staging, submission intent, submit).
+
+One clock gives the pass its time.
+Wall time is for times that are stored or compared with stored times: `eligible_at` and the catalog age.
+Monotonic time is for durations inside the process: the admission budget, staging time, and the catalog refresh schedule.
+
+An exception while the Worker handles one campaign stops the work on that campaign for this pass, not the pass.
+The Worker records it as the campaign's `error`, which starts with the step that failed (`reconcile`, `placement`, `stage`, or `admission`), and writes a `campaign-error` line to `events.jsonl` when that error changes.
+The error clears when the same step next succeeds for that campaign; a success of another step leaves it.
+When the journal cannot record the failure, the pass ends, and the next pass starts again from the journal.
+A submission intent whose outcome was not recorded leaves the task `submitting`; the next pass reconciles it by job name and never submits it again.
+
+The campaign lock is held for a full pass because each step decides from journal records read under the lock and records its result under the same lock.
+If the lock were released during a remote call, a cancel request could fence a task between the Worker's read and its write, and the Worker would then submit or retry a task that had just been cancelled.
+So accepting a new campaign and cancelling one wait for the current pass to end.
+Journal reads, listings, results, plans, and an identical resend of an accepted campaign do not wait.
+
 ## Data
 
 `$UNITY_HPC_DATA/controller/campaigns.db` is the campaign journal: campaigns, tasks, attempts, hardware locks, and result events.

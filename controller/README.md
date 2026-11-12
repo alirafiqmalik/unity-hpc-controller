@@ -30,7 +30,7 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | `campaign_planner.py` | Exact hardware fit, access, ceilings, and historical placement signals |
 | `campaign_slurm.py` | Bounded SSH, atomic staging, Slurm receipts, device checks, and artifact transfer |
 | `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions, retry budget, backoff, and Result event payloads; no IO |
-| `campaigns.py` | Worker passes: reconciliation, admission, retrieval, and cancellation |
+| `campaigns.py` | Worker passes: reconciliation, admission, retrieval, and cancellation; a campaign's failure is recorded on it and the pass goes on; one clock for the pass |
 | `campaign_cli.py` | HTTP-only operator client |
 | `telemetry.py` | Existing optional telemetry archive schedule |
 | `http.py` | HTTP request seam |

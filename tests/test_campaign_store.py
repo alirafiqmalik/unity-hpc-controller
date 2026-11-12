@@ -170,12 +170,12 @@ def test_long_listing_does_not_fail_concurrent_reads_or_writes(tmp_data_dir, mon
         def concurrent_operations():
             before = store.read("study")
             store.record_transition("study", "a", "waiting", error="probe")
-            store.record_campaign_error("study", "probe")
+            store.record_campaign_error("study", "reconcile", "probe")
             return before, store.read("study")
 
         before, after = _joined(_start(concurrent_operations))
         assert before["error"] is None
-        assert after["error"] == "probe"
+        assert after["error"] == "reconcile: probe"
         assert after["tasks"][0]["error"] == "probe"
     finally:
         release.set()
@@ -382,3 +382,39 @@ def test_concurrent_conflicting_hardware_acceptance_admits_one(accepting, tmp_da
         assert connection.execute("SELECT COUNT(*) FROM hardware_locks").fetchone()[0] == 1
     finally:
         connection.close()
+
+
+def test_campaign_error_belongs_to_one_worker_step(tmp_data_dir):
+    _one_campaign()
+    cursor = store.results("study")["next_cursor"]
+    assert store.record_campaign_error("study", "stage", "rsync failed") is True
+    assert store.record_campaign_error("study", "stage", "rsync failed") is False
+    assert store.read("study")["error"] == "stage: rsync failed"
+    assert store.error_step("stage: rsync failed") == "stage"
+    assert store.error_step("scheduler observation failed: x") == "reconcile"
+    assert store.error_step(None) is None
+    store.clear_campaign_error("study", "reconcile: other")
+    assert store.read("study")["error"] == "stage: rsync failed"
+    store.clear_campaign_error("study", "stage: rsync failed")
+    assert store.read("study")["error"] is None
+    store.record_campaign_error("study", "placement", "x")
+    store.record_staged("study", {})
+    campaign = store.read("study")
+    assert campaign["staged"] == 1
+    assert campaign["error"] == "placement: x"
+    with pytest.raises(ValueError):
+        store.record_campaign_error("study", "observe", "x")
+    with pytest.raises(FileNotFoundError):
+        store.record_campaign_error("missing", "stage", "x")
+    assert [event["kind"] for event in store.results("study", after=cursor)["events"]] == ["source_staged"]
+
+
+def test_staging_commit_resolves_only_a_stage_error(tmp_data_dir):
+    _one_campaign()
+    store.record_campaign_error("study", "stage", "rsync failed")
+    store.record_staged("study", {})
+    staged = store.read("study")
+    assert staged["staged"] == 1 and staged["error"] is None
+    store.record_campaign_error("study", "placement", "no catalog")
+    store.record_staged("study", {})
+    assert store.read("study")["error"] == "placement: no catalog"

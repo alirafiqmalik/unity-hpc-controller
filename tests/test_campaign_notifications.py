@@ -11,6 +11,16 @@ from controller.campaign_contract import CampaignError
 from controller.http import Request, handle
 
 
+class FakeClock:
+    """The Worker's clock in tests: time stays where the test sets it."""
+    def __init__(self, wall=0.0, monotonic=0.0):
+        self.now, self.elapsed = wall, monotonic
+    def wall(self):
+        return self.now
+    def monotonic(self):
+        return self.elapsed
+
+
 @pytest.fixture
 def campaign(tmp_data_dir, tmp_path):
     source = tmp_path / "source"
@@ -97,10 +107,10 @@ def test_existing_campaign_and_retry_use_current_mail_policy(campaign, monkeypat
 
     monkeypatch.setattr(campaigns, "SlurmAdapter", Adapter)
     campaigns.configure({"mail_user": "operator@example.edu"})
-    campaigns.tick(campaign["id"], clock=lambda: 0)
+    campaigns.tick(campaign["id"], clock=FakeClock(0))
     campaigns.configure({"mail_user": next_recipient, "remote_root": "/work/elsewhere"})
-    campaigns.tick(campaign["id"], clock=lambda: 0)
-    campaigns.tick(campaign["id"], clock=lambda: 100)
+    campaigns.tick(campaign["id"], clock=FakeClock(0))
+    campaigns.tick(campaign["id"], clock=FakeClock(100))
     assert [(s["mail_user"], attempt) for s, attempt in captured] == [
         ("operator@example.edu", 1), (next_recipient, 2),
     ]

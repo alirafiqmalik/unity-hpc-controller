@@ -67,6 +67,7 @@ _Avoid_: scheduler (that is Slurm), dry run
 
 **Worker**:
 The controller thread that stages bundles, records submission intent, calls Slurm, observes state, retries infrastructure failures, and retrieves outputs.
+It works in passes. A failure while it handles one campaign is recorded on that campaign, and the pass goes on with the others.
 _Avoid_: daemon, agent, watcher
 
 **Result event**:

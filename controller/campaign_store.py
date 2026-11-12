@@ -312,14 +312,43 @@ def record_cancel_request(identity, state):
         _event(con, identity, None, state)
 
 
-def record_campaign_error(identity, message):
+ERROR_STEPS = ("reconcile", "placement", "stage", "admission")
+
+
+def error_step(error):
+    """The Worker step a campaign error belongs to, or None. Text without a known
+    step prefix predates the prefixes and belongs to reconcile."""
+    if not error:
+        return None
+    step, separator, _ = error.partition(": ")
+    return step if separator and step in ERROR_STEPS else "reconcile"
+
+
+def record_campaign_error(identity, step, message):
+    """Show a failed Worker step on the campaign as "<step>: <message>".
+    Returns True when the stored error changed."""
+    if step not in ERROR_STEPS:
+        raise ValueError("unknown worker step")
+    text = f"{step}: {message}"
     with _write() as con:
-        con.execute("UPDATE campaigns SET error=? WHERE id=?", (message, identity))
+        if con.execute("UPDATE campaigns SET error=? WHERE id=? AND error IS NOT ?", (text, identity, text)).rowcount:
+            return True
+        if con.execute("SELECT 1 FROM campaigns WHERE id=?", (identity,)).fetchone() is None:
+            raise FileNotFoundError(f"unknown campaign: {identity}")
+        return False
+
+
+def clear_campaign_error(identity, error):
+    """Clear the campaign error only if it is still exactly this text."""
+    with _write() as con:
+        con.execute("UPDATE campaigns SET error=NULL WHERE id=? AND error=?", (identity, error))
 
 
 def record_staged(identity, evidence):
     with _write() as con:
-        con.execute("UPDATE campaigns SET staged=1,error=NULL WHERE id=?", (identity,))
+        # This commit also resolves a stage error, so a crash right after it
+        # cannot leave an error that no later pass would clear.
+        con.execute("UPDATE campaigns SET staged=1,error=CASE WHEN substr(error,1,7)='stage: ' THEN NULL ELSE error END WHERE id=?", (identity,))
         _event(con, identity, None, "source_staged", evidence)
 
 

@@ -73,7 +73,7 @@ def historical_profile(partition, gpu_type):
     return value
 
 
-def select(resources, settings, observed=None):
+def select(resources, settings, observed=None, *, now=None):
     observed = catalog() if observed is None else observed
     partitions = observed.get("partitions", {})
     default_partitions = settings.get("allowed_partitions") or ["gpu", "gpu-preempt"] if resources.get("gpu_count") else settings.get("cpu_partitions") or ["cpu"]
@@ -87,7 +87,8 @@ def select(resources, settings, observed=None):
     age = None
     try:
         stamp = datetime.fromisoformat(observed.get("observed_at", "").replace("Z", "+00:00"))
-        age = max(0, (datetime.now(timezone.utc) - stamp).total_seconds())
+        current = datetime.now(timezone.utc) if now is None else datetime.fromtimestamp(now, timezone.utc)
+        age = max(0, (current - stamp).total_seconds())
     except ValueError:
         pass
     warnings = []
