@@ -2,6 +2,7 @@
 
 Read [the glossary](CONTEXT.md), [architecture](ARCHITECTURE.md), and
 [ADR 0009](docs/adr/0009-headless-campaign-controller.md) before changing behavior.
+[ADR 0011](docs/adr/0011-controller-module-ownership.md) names the module that owns each concept.
 The [documentation index](docs/README.md) links setup, operations, and evidence.
 
 ## Development

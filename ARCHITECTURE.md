@@ -1,6 +1,6 @@
 # Headless campaign architecture
 
-Version 0.16.3. The controller owns all cluster execution.
+Version 0.18.0. The controller owns all cluster execution.
 Projects provide portable argument vectors, source bundles, and scientific output declarations.
 Runner adapters translate experiment definitions into this contract.
 
@@ -13,6 +13,7 @@ Slurm owns allocation, priority, backfill, and preemption.
 
 The current contract supersedes the project dispatcher ownership described in ADRs 0001 and 0008.
 [ADR 0009](docs/adr/0009-headless-campaign-controller.md) records the migration; the old contracts were removed.
+[ADR 0011](docs/adr/0011-controller-module-ownership.md) records which module owns each concept inside the controller.
 
 ## Execution flow
 
@@ -86,7 +87,7 @@ The local-shell transport runs the same command text in local `bash`, treats a r
 `controller/cluster_session.py` keeps the tmux protocol of the Cluster session and sends it through the same transport.
 `cluster-intel/sync-telemetry.sh` runs the pull; the controller gives it `RSYNC_RSH`, built by Cluster access, and `lib/retention.py` uses that variable for the remote prune.
 
-Every command line is the one the controller sent before this module existed.
+The callers keep their own option order and environment on purpose (ADR 0011), and tests pin every command line.
 The Slurm commands put the options before `-i` and use the agent socket that the alias's `IdentityAgent` names; the Cluster session and the pull put `-i` first and inherit the controller's environment; the settings panel's SSH test sets no keep-alive.
 `GET /api/v1/health` reads the identity state with four local tool calls (`ssh -G`, `ssh-add -l`, `ssh-keygen -l`, `busctl`), opens no cluster connection, and caches nothing.
 
@@ -94,7 +95,7 @@ The Slurm commands put the options before `-i` and use the agent socket that the
 
 `controller/catalog.py` owns the Catalog.
 It turns the survey output into a Catalog, writes `backend-catalog.json` atomically, reads it, and decides freshness and when a refresh is due.
-The survey is the bounded set of Slurm queries that `SlurmAdapter.probe` runs over Cluster access; its command text did not change when the module was made.
+The survey is the bounded set of Slurm queries that `SlurmAdapter.probe` runs over Cluster access; a test pins its command text.
 A Catalog is fresh when its `observed_at` is at most `catalog_max_age_seconds` old at the wall time that the caller passes; an absent, unreadable, or undated Catalog is stale.
 The refresh schedule takes monotonic time: the first Worker pass with work refreshes, and then at most one refresh runs each 15 minutes, also after a failure.
 A pass reads the Catalog once, at its first placement, and checks every task of that pass against that copy; a plan request reads it once.
