@@ -27,6 +27,28 @@ RAW_TREES = ("telemetry", "telemetry-imported")
 DAY_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _accounting_of_days(count: int) -> str:
+    """Select accounting whose job has a task_run on the given days."""
+    return ("job_id IN (SELECT job_id FROM task_run WHERE substr(day_utc,1,10) IN ("
+            + ",".join("?" * count) + "))")
+
+
+def _has_accounting(con) -> bool:
+    """An archive that predates enriched accounting has no such table."""
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_accounting'"
+    ).fetchone() is not None
+
+
+def _copy_rows(archive, rows, table) -> int:
+    insert = f"INSERT INTO {table} VALUES({','.join('?' * len(rows.description))})"
+    count = 0
+    while batch := rows.fetchmany(1000):
+        archive.executemany(insert, batch)
+        count += len(batch)
+    return count
+
+
 def _valid_day(value: str) -> bool:
     if not DAY_NAME.fullmatch(value):
         return False
@@ -112,7 +134,7 @@ def _backup_raw(day: str, tree: str, folder: Path) -> Path | None:
         tmp.unlink(missing_ok=True)
 
 
-def _backup_summary(con: sqlite3.Connection, day: str, folder: Path) -> Path | None:
+def _backup_summary(con: sqlite3.Connection, day: str, folder: Path, orphan_ids=()) -> Path | None:
     fd, db_name = tempfile.mkstemp(prefix=".summary-", suffix=".sqlite", dir=folder)
     os.close(fd)
     db_tmp = Path(db_name)
@@ -129,11 +151,20 @@ def _backup_summary(con: sqlite3.Connection, day: str, folder: Path) -> Path | N
                 rows = con.execute(
                     f"SELECT * FROM {table} WHERE substr({column},1,10)=?", (day,),
                 )
-                width = len(rows.description)
-                insert = f"INSERT INTO {table} VALUES({','.join('?' * width)})"
-                while batch := rows.fetchmany(1000):
-                    archive.executemany(insert, batch)
-                    count += len(batch)
+                count += _copy_rows(archive, rows, table)
+            if _has_accounting(con):
+                archive.execute(con.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_accounting'"
+                ).fetchone()[0])
+                count += _copy_rows(archive, con.execute(
+                    f"SELECT * FROM task_accounting WHERE {_accounting_of_days(1)}", (day,)
+                ), "task_accounting")
+                for start in range(0, len(orphan_ids), 500):
+                    chunk = orphan_ids[start:start + 500]
+                    marks = ",".join("?" * len(chunk))
+                    count += _copy_rows(archive, con.execute(
+                        f"SELECT * FROM task_accounting WHERE job_id IN ({marks})", chunk
+                    ), "task_accounting")
             for table in ("task_profile", "meta"):
                 schema = con.execute(
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
@@ -175,7 +206,49 @@ def _backup_summary(con: sqlite3.Connection, day: str, folder: Path) -> Path | N
         db_tmp.unlink(missing_ok=True)
 
 
-def _prune_db(days: list[str]) -> None:
+def _summary_backups() -> list[tuple[str, Path]]:
+    root = _archive_root()
+    if not root.exists():
+        return []
+    return [(folder.name, path) for folder in sorted(root.iterdir())
+            if folder.is_dir() and not folder.is_symlink() and _valid_day(folder.name)
+            for path in sorted(folder.glob("summary-*.sqlite.gz"))]
+
+
+def _attribute_orphans(con) -> dict[str, list[str]]:
+    if not _has_accounting(con):
+        return {}
+    orphans = {job for (job,) in con.execute(
+        "SELECT job_id FROM task_accounting WHERE job_id NOT IN (SELECT job_id FROM task_run)"
+    )}
+    backups = _summary_backups() if orphans else []
+    if not backups:
+        return {}
+    owner = {}
+    with tempfile.TemporaryDirectory(prefix=".orphans-", dir=_archive_root()) as tmp:
+        db = Path(tmp) / "backup.sqlite"
+        for day, path in backups:
+            try:
+                with gzip.open(path, "rb") as src, db.open("wb") as out:
+                    shutil.copyfileobj(src, out)
+                backup = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+                try:
+                    ids = {job for (job,) in backup.execute("SELECT job_id FROM task_run")}
+                finally:
+                    backup.close()
+                for job in ids & orphans:
+                    owner[job] = day
+            except (OSError, EOFError, sqlite3.DatabaseError):
+                continue
+            finally:
+                db.unlink(missing_ok=True)
+    grouped = {}
+    for job, day in owner.items():
+        grouped.setdefault(day, []).append(job)
+    return {day: sorted(jobs) for day, jobs in grouped.items()}
+
+
+def _prune_db(days: list[str], orphan_ids=()) -> None:
     db = paths.summaries_db()
     tmp = db.with_suffix(".retention.tmp")
     tmp.unlink(missing_ok=True)
@@ -183,14 +256,22 @@ def _prune_db(days: list[str]) -> None:
     try:
         con = sqlite3.connect(tmp)
         try:
+            accounting = _has_accounting(con)
             for batch_start in range(0, len(days), 500):
                 batch = days[batch_start:batch_start + 500]
                 marks = ",".join("?" * len(batch))
+                if accounting:
+                    # Before task_run: the selection needs that day's task rows.
+                    con.execute(f"DELETE FROM task_accounting WHERE {_accounting_of_days(len(batch))}", batch)
                 for table, column in TABLE_DATES.items():
                     con.execute(
                         f"DELETE FROM {table} WHERE substr({column},1,10) IN ({marks})",
                         batch,
                     )
+            for start in range(0, len(orphan_ids) if accounting else 0, 500):
+                chunk = orphan_ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                con.execute(f"DELETE FROM task_accounting WHERE job_id IN ({marks}) AND job_id NOT IN (SELECT job_id FROM task_run)", chunk)
             con.execute("DELETE FROM task_profile")
             # task_profile is derived from task_run. Rebuild it after the cut.
             import sys
@@ -232,15 +313,18 @@ def _run_locked(cutoff: str, dry_run: bool) -> dict:
         days = _candidate_days(con, cutoff)
         if dry_run or not days:
             return {"cutoff": cutoff, "days": days, "archived": False}
+        orphans_by_day = _attribute_orphans(con)
         for day in days:
             folder = _archive_root() / day
             folder.mkdir(parents=True, exist_ok=True)
             for tree in RAW_TREES:
                 _backup_raw(day, tree, folder)
-            _backup_summary(con, day, folder)
+            _backup_summary(con, day, folder, orphans_by_day.get(day, ()))
+        for day in sorted(set(orphans_by_day) - set(days)):
+            _backup_summary(con, day, _archive_root() / day, orphans_by_day[day])
     finally:
         con.close()
-    _prune_db(days)
+    _prune_db(days, sorted(j for ids in orphans_by_day.values() for j in ids))
     for day in days:
         for tree in RAW_TREES:
             source = paths.data_dir() / tree / day

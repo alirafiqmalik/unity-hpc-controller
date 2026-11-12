@@ -17,6 +17,11 @@ That command writes two kinds of backup under
   trees when that day exists in them.
 - `summary-*.sqlite.gz` holds that day's rows from the five dated summary
   tables. It also has `meta` and a profile built from that day's task rows.
+  It also holds the `task_accounting` rows of that day's `task_run` jobs,
+  which leave the live database in the same step. An accounting row whose
+  task row left in an earlier run is matched to its day through the
+  existing summary backups and saved in an additional summary backup for
+  that day; a row that no backup names stays live.
 
 Each filename includes a content hash. A later copy of an old day adds a new
 file, so it cannot overwrite an earlier backup. The command reads each backup

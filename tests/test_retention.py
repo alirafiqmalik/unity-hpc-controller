@@ -291,3 +291,48 @@ def test_local_retention_keeps_live_data_when_a_backup_fails(
     con = sqlite3.connect(paths.summaries_db())
     assert con.execute("SELECT day_utc FROM day_index").fetchone() == (day,)
     con.close()
+
+
+def _accounting_backup_ids(folder, tmp_path):
+    ids = set()
+    for backup in folder.glob("summary-*.sqlite.gz"):
+        db = tmp_path / "backup.sqlite"
+        db.write_bytes(gzip.decompress(backup.read_bytes()))
+        with sqlite3.connect(db) as con:
+            if con.execute("SELECT name FROM sqlite_master WHERE name='task_accounting'").fetchone():
+                ids.update(row[0] for row in con.execute("SELECT job_id FROM task_accounting"))
+    return ids
+
+
+def test_local_retention_moves_accounting_rows_with_their_day(retention_sample, tmp_path):
+    old, recent = retention_sample
+    with sqlite3.connect(paths.summaries_db()) as con:
+        con.executemany("INSERT INTO task_accounting(job_id, details_json) VALUES (?, '{}')", [(old,), (recent,)])
+    local_retention.run(90, today=date(2026, 9, 25))
+    assert _accounting_backup_ids(local_retention._archive_root() / old, tmp_path) == {old}
+    with sqlite3.connect(paths.summaries_db()) as con:
+        assert con.execute("SELECT job_id FROM task_accounting").fetchall() == [(recent,)]
+
+
+def test_local_retention_archives_orphan_accounting_under_its_backed_up_day(retention_sample, tmp_path):
+    old, _ = retention_sample
+    local_retention.run(90, today=date(2026, 9, 25))
+    with sqlite3.connect(paths.summaries_db()) as con:
+        con.executemany("INSERT INTO task_accounting(job_id, details_json) VALUES (?, '{}')", [(old,), ('no-backup-job',)])
+        con.execute("INSERT INTO task_run(job_id, day_utc, state) VALUES ('2026-05-02','2026-05-02','COMPLETED')")
+    local_retention.run(90, today=date(2026, 9, 25))
+    folder = local_retention._archive_root() / old
+    assert len(list(folder.glob('summary-*.sqlite.gz'))) == 2
+    assert _accounting_backup_ids(folder, tmp_path) == {old}
+    with sqlite3.connect(paths.summaries_db()) as con:
+        assert con.execute("SELECT job_id FROM task_accounting").fetchall() == [('no-backup-job',)]
+
+
+def test_local_retention_works_on_an_archive_without_accounting(retention_sample):
+    old, recent = retention_sample
+    with sqlite3.connect(paths.summaries_db()) as con:
+        con.execute("DROP TABLE task_accounting")
+    local_retention.run(90, today=date(2026, 9, 25))
+    with sqlite3.connect(paths.summaries_db()) as con:
+        assert con.execute("SELECT day_utc FROM day_index").fetchall() == [(recent,)]
+    assert list((local_retention._archive_root() / old).glob("summary-*.sqlite.gz"))
