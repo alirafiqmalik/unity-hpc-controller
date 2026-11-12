@@ -26,6 +26,7 @@ import shutil
 import sqlite3
 import statistics
 import sys
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,18 +83,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _read_jsonl(path: Path) -> list[dict]:
+def _iter_jsonl(path: Path) -> Iterator[dict]:
+    """Stream accounting records without retaining a whole day's raw file."""
     if not path.exists():
-        return []
-    out = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line:
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return out
+        return
+    with path.open() as stream:
+        for line in stream:
+            line = line.strip()
+            if line:
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    pass
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return list(_iter_jsonl(path))
 
 
 def slot_floor(ts: str) -> str:
@@ -163,9 +168,9 @@ def _day_sources() -> tuple[dict[str, Path], list[str]]:
 
 
 def _process_day(conn, day: str, src: Path) -> None:
-    resource = _read_jsonl(src / "resource_state.jsonl")
+    resource = _iter_jsonl(src / "resource_state.jsonl")
     events = _read_jsonl(src / "events.jsonl")
-    task_runs = _read_jsonl(src / "task_runs.jsonl")
+    task_runs = _iter_jsonl(src / "task_runs.jsonl")
 
     # ---- resource: hourly + daily ----
     all_slots: set[str] = set()
