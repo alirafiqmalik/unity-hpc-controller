@@ -11,7 +11,6 @@ import os
 import re
 import shlex
 from datetime import datetime, timezone
-from pathlib import Path
 
 from lib import paths
 from controller import cluster_access

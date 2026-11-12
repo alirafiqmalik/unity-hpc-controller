@@ -263,6 +263,7 @@ def accept(identity, specification, request_hash, hardware_locks, event):
 
 
 def record_intent(identity, task_id, step):
+    _check(step.state, step.fields)
     fields = step.fields
     attempt, name = fields["attempt"], fields["job_name"]
     with _write() as con:

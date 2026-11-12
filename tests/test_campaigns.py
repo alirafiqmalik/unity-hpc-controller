@@ -1242,3 +1242,53 @@ def test_stale_catalog_blocks_submission_not_retrieval(setup, tmp_data_dir):
     assert tasks[1]["state"] == "waiting"
     assert "stale" in tasks[1]["error"]
     assert len(fake.submissions) == 1
+
+
+def test_null_catalog_document_is_read_once_and_blocks_the_pass(setup, tmp_data_dir, monkeypatch):
+    spec, catalog = setup
+    for task_id in ("model-b", "model-c"):
+        task = copy.deepcopy(spec["tasks"][0])
+        task["task_id"] = task_id
+        spec["tasks"].append(task)
+    spec["max_concurrent"] = 3
+    campaigns.create(spec)
+    stored = tmp_data_dir / "controller/backend-catalog.json"
+    stored.write_text("null\n")
+    loads = []
+    original = catalog_module.load
+
+    def replacing_after_the_read():
+        value = original()
+        loads.append(value)
+        # Another writer stores a complete, fresh Catalog right after this read.
+        campaigns._write_json(stored, catalog)
+        return value
+
+    monkeypatch.setattr(catalog_module, "load", replacing_after_the_read)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    assert loads == [None]
+    assert fake.submissions == []
+    campaign = store.read("study")
+    assert [task["state"] for task in campaign["tasks"]] == ["waiting"] * 3
+    assert campaign["attempts"] == []
+    assert campaign["error"].startswith("placement: ")
+
+
+def test_null_catalog_document_fails_a_plan_after_one_read(setup, tmp_data_dir, monkeypatch):
+    spec, catalog = setup
+    stored = tmp_data_dir / "controller/backend-catalog.json"
+    stored.write_text("null\n")
+    loads = []
+    original = catalog_module.load
+
+    def replacing_after_the_read():
+        value = original()
+        loads.append(value)
+        campaigns._write_json(stored, catalog)
+        return value
+
+    monkeypatch.setattr(catalog_module, "load", replacing_after_the_read)
+    response = handle(Request("POST", "/api/v1/campaigns/plan", body=json.dumps(spec).encode()))
+    assert response.status == 500
+    assert loads == [None]

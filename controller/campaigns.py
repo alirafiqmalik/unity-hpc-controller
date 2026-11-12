@@ -260,12 +260,12 @@ def _resolved(campaign, step):
         campaign["error"] = None
 
 
-def _reconcile(campaign, transport, clock):
+def _reconcile(campaign, adapter, clock):
     backend = campaign["spec"]["backend"]
     cancelling = campaign["state"] == lifecycle.CANCELLING
     active = [t for t in campaign["tasks"] if t["state"] in lifecycle.ACTIVE and t.get("job_name")]
     if active:
-        observations = transport.observe(campaign, active)
+        observations = adapter.observe(campaign, active)
         for task in active:
             raw = observations.get(task["job_name"])
             if raw:
@@ -273,7 +273,7 @@ def _reconcile(campaign, transport, clock):
             decision = lifecycle.observed(task, raw, cancelling=cancelling,
                                           max_attempts=campaign["spec"]["max_attempts"], now=clock.wall())
             if decision.effect == lifecycle.CANCEL_JOB:
-                transport.cancel([task["job_id"]])
+                adapter.cancel([task["job_id"]])
             if decision.step:
                 store.record_transition(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
             if decision.effect not in (lifecycle.SALVAGE, lifecycle.RETRIEVE):
@@ -282,7 +282,7 @@ def _reconcile(campaign, transport, clock):
             if decision.effect == lifecycle.SALVAGE:
                 # Checkpoints share one task output path. A retry never changes hardware.
                 try:
-                    transport.collect(campaign, task)
+                    adapter.collect(campaign, task)
                     record_controller_artifacts(campaign, task)
                 except Exception:
                     pass
@@ -290,7 +290,7 @@ def _reconcile(campaign, transport, clock):
                                           retry_backoff_seconds=backend["retry_backoff_seconds"], now=clock.wall())
             else:
                 try:
-                    _collect(campaign, task, transport, lifecycle.scheduler_succeeded(observation))
+                    _collect(campaign, task, adapter, lifecycle.scheduler_succeeded(observation))
                     continue
                 except Exception as exc:
                     # Fetch failure is recoverable independently of compute. No resubmit.
@@ -347,7 +347,7 @@ def tick(identity=None, adapter=None, clock=None):
         # may have no recorded outcome and is still active.
         # Historical bundle manifests must not consume the admission window.
         global_active = store.tasks_in_states(lifecycle.ACTIVE)
-        observed = None  # the Catalog for this pass: read at the first placement, then kept
+        observed = planner.UNREAD  # the Catalog for this pass: read at the first placement, then kept
         for campaign_id in reconciled:
             if deferred_eligible:
                 break
@@ -358,7 +358,7 @@ def tick(identity=None, adapter=None, clock=None):
                 backend = campaign["spec"]["backend"]
                 # Mail is current service policy, including for waiting tasks and
                 # retries in campaigns accepted before notifications were enabled.
-                transport = adapter or slurm_adapter(campaign, controller_limits)
+                slurm = adapter or slurm_adapter(campaign, controller_limits)
                 states = {t["task_id"]: t["state"] for t in campaign["tasks"]}
                 running = sum(t["state"] in lifecycle.ACTIVE for t in campaign["tasks"])
                 cancelling = campaign["state"] == lifecycle.CANCELLING
@@ -375,7 +375,7 @@ def tick(identity=None, adapter=None, clock=None):
                     if sum(t["spec"]["resources"]["gpu_count"] for t in global_active) + gpu_count > controller_limits["max_active_gpus"]:
                         continue
                     try:
-                        if observed is None:
+                        if observed is planner.UNREAD:
                             observed = catalog.load()
                         placement = planner.select(task["spec"]["resources"], backend, observed, now=clock.wall())
                     except Exception as exc:
@@ -405,7 +405,7 @@ def tick(identity=None, adapter=None, clock=None):
                     if not campaign["staged"]:
                         try:
                             staged_at = clock.monotonic()
-                            staged_receipt = transport.stage(campaign)
+                            staged_receipt = slurm.stage(campaign)
                         except Exception as exc:
                             _campaign_failed(campaign_id, "stage", exc)
                             break
@@ -417,7 +417,7 @@ def tick(identity=None, adapter=None, clock=None):
                     task = _intent(campaign, task)
                     admission_attempts += 1
                     try:
-                        receipt = transport.submit(campaign, task, placement)
+                        receipt = slurm.submit(campaign, task, placement)
                     except Exception as exc:
                         receipt = lifecycle.uncertain_receipt(str(exc))
                     step = lifecycle.submitted(receipt)
@@ -431,7 +431,6 @@ def tick(identity=None, adapter=None, clock=None):
             except Exception as exc:
                 _campaign_failed(campaign_id, "admission", exc)
                 global_active = store.tasks_in_states(lifecycle.ACTIVE)
-        observed = None  # the Catalog for this pass: read at the first placement, then kept
         return {"admission_attempts": admission_attempts, "admission_progress": admission_progress,
                 "admission_seconds": round(clock.monotonic() - admission_started, 3),
                 "deferred_eligible": deferred_eligible,
@@ -445,9 +444,9 @@ def cancel(identity, adapter=None):
         if state is None:
             return campaign
         store.record_cancel_request(identity, state)
-        transport = adapter or slurm_adapter(campaign)
+        slurm = adapter or slurm_adapter(campaign)
         jobs = [t["job_id"] for t in campaign["tasks"] if t["state"] in lifecycle.ACTIVE and t["job_id"]]
-        transport.cancel(jobs)
+        slurm.cancel(jobs)
         for task in campaign["tasks"]:
             step = lifecycle.cancel_request(task)
             if step:

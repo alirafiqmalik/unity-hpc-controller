@@ -418,3 +418,16 @@ def test_staging_commit_resolves_only_a_stage_error(tmp_data_dir):
     store.record_campaign_error("study", "placement", "no catalog")
     store.record_staged("study", {})
     assert store.read("study")["error"] == "placement: no catalog"
+
+
+def test_intent_with_an_unknown_state_is_refused_and_writes_nothing(tmp_data_dir):
+    _one_campaign()
+    cursor = store.results("study")["next_cursor"]
+    valid = lifecycle.intent(1, "job-1")
+    with pytest.raises(ValueError):
+        store.record_intent("study", "a", lifecycle.Step("not-a-task-state", valid.fields, valid.event))
+    campaign = store.read("study")
+    assert campaign["tasks"][0]["state"] == "waiting"
+    assert campaign["tasks"][0]["attempt"] == 0
+    assert campaign["attempts"] == []
+    assert store.results("study", after=cursor)["events"] == []

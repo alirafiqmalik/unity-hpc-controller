@@ -207,3 +207,21 @@ def test_probe_route_answers_the_refreshed_catalog(tmp_data_dir, monkeypatch):
     assert set(body) == {"catalog"}
     assert {k: v for k, v in body["catalog"].items() if k != "observed_at"} == EXPECTED
     assert catalog.load() == body["catalog"]
+
+
+@pytest.mark.parametrize("failing", ["replace", "write"])
+def test_failed_save_leaves_no_temporary_file(tmp_data_dir, monkeypatch, failing):
+    catalog._save({"observed_at": "2026-01-01T00:00:00+00:00"})
+    before = catalog.path().read_bytes()
+
+    def fail(*_args, **_kwargs):
+        raise OSError("disk fault")
+
+    if failing == "replace":
+        monkeypatch.setattr(catalog.os, "replace", fail)
+    else:
+        monkeypatch.setattr(type(catalog.path()), "chmod", fail)
+    with pytest.raises(OSError):
+        catalog._save({"observed_at": "2027-01-01T00:00:00+00:00"})
+    assert catalog.path().read_bytes() == before
+    assert [entry.name for entry in catalog.path().parent.iterdir()] == [catalog.path().name]

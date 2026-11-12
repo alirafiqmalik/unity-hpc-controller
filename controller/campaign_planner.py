@@ -54,8 +54,11 @@ def historical_profile(partition, gpu_type):
     return value
 
 
-def select(resources, settings, observed=None, *, now=None):
-    observed = catalog.load() if observed is None else observed
+UNREAD = object()  # "read the stored Catalog"; a loaded document can itself be null
+
+
+def select(resources, settings, observed=UNREAD, *, now=None):
+    observed = catalog.load() if observed is UNREAD else observed
     now = time.time() if now is None else now
     partitions = observed.get("partitions", {})
     default_partitions = settings.get("allowed_partitions") or ["gpu", "gpu-preempt"] if resources.get("gpu_count") else settings.get("cpu_partitions") or ["cpu"]

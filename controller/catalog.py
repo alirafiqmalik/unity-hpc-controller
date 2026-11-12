@@ -131,6 +131,10 @@ def _save(value):
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(target.name + "." + uuid.uuid4().hex + ".tmp")
-    temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    temp.chmod(0o600)
-    os.replace(temp, target)
+    try:
+        temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+        temp.chmod(0o600)
+        os.replace(temp, target)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise

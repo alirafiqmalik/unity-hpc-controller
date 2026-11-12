@@ -37,12 +37,14 @@ i = int(counter.read_text()) if counter.exists() else 0
 counter.write_text(str(i + 1))
 reply = replies[min(i, len(replies) - 1)]
 stdin = "" if os.isatty(0) else sys.stdin.read()
+needle = (d / "forbidden-in-env").read_text() if (d / "forbidden-in-env").exists() else ""
+leaks = sorted(key for key, value in os.environ.items() if needle and needle in value)
 askpass = ""
 if name == "ssh-add" and args and args[0] != "-l" and os.environ.get("SSH_ASKPASS"):
     askpass = subprocess.run([os.environ["SSH_ASKPASS"], "Enter passphrase for key:"], capture_output=True, text=True).stdout
 record = {"argv": [name, *args], "stdin": stdin,
           "env": {k: os.environ[k] for k in ("SSH_AUTH_SOCK", "SSH_AGENT_PID", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "DISPLAY", "UNITY_HPC_ASKPASS_FILE", "RSYNC_RSH") if k in os.environ},
-          "askpass": askpass}
+          "askpass": askpass, "env_leaks": leaks}
 with (d / "calls.jsonl").open("a") as log:
     log.write(json.dumps(record) + "\n")
 sys.stdout.write(reply.get("stdout", ""))
@@ -67,6 +69,10 @@ class SshTools:
             stub = self.directory / name
             stub.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{self.directory}/recorder.py" "{name}" "$@"\n')
             stub.chmod(0o755)
+
+    def forbid_in_env(self, text):
+        """Every later tool call reports the names of environment variables that hold this text."""
+        (self.directory / "forbidden-in-env").write_text(text)
 
     def calls(self):
         log = self.directory / "calls.jsonl"

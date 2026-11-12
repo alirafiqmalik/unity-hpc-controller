@@ -91,11 +91,14 @@ def test_unlock_adds_the_key_and_never_returns_the_passphrase(ssh_tools, key, tm
     socket = str(tmp_path / "agent.sock")
     ssh_tools.respond("ssh -G", {"stdout": "identityagent " + socket + "\n"})
     prepare_unlock(ssh_tools, "SHA256:t3")
+    ssh_tools.forbid_in_env("secret-pass")
     report = cluster_access.unlock_identity(str(key), "secret-pass", host="unity")
     assert report["ok"] is True
     assert report["remembered"] is True
     assert "secret-pass" not in str(report)
     calls = ssh_tools.calls()
+    # The whole environment of every tool call, not only the recorded keys.
+    assert calls and all(call["env_leaks"] == [] for call in calls)
     added = next(c for c in calls if c["argv"] == ["ssh-add", str(key)])
     assert added["askpass"] == "secret-pass"
     assert added["env"]["SSH_ASKPASS_REQUIRE"] == "force"
