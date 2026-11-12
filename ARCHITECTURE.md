@@ -87,9 +87,10 @@ The local-shell transport runs the same command text in local `bash`, treats a r
 `controller/cluster_session.py` keeps the tmux protocol of the Cluster session and sends it through the same transport.
 `cluster-intel/sync-telemetry.sh` runs the pull; the controller gives it `RSYNC_RSH`, built by Cluster access, and `lib/retention.py` uses that variable for the remote prune.
 
-The callers keep their own option order and environment on purpose (ADR 0011), and tests pin every command line.
+The callers deliberately keep their own option order and environment (ADR 0011), and tests pin every command line.
 The Slurm commands put the options before `-i` and use the agent socket that the alias's `IdentityAgent` names; the Cluster session and the pull put `-i` first and inherit the controller's environment; the settings panel's SSH test sets no keep-alive.
-`GET /api/v1/health` reads the identity state with four local tool calls (`ssh -G`, `ssh-add -l`, `ssh-keygen -l`, `busctl`), opens no cluster connection, and caches nothing.
+`GET /api/v1/health` reads the identity state with local tool calls only, opens no cluster connection, and caches nothing.
+With the key loaded in the agent these are four calls (`ssh -G`, `ssh-add -l`, `ssh-keygen -l`, `busctl`); with no key loaded `ssh-keygen -l` is not needed, and a restore from the desktop keyring adds its own calls.
 
 ## Catalog
 
@@ -98,7 +99,7 @@ It turns the survey output into a Catalog, writes `backend-catalog.json` atomica
 The survey is the bounded set of Slurm queries that `SlurmAdapter.probe` runs over Cluster access; a test pins its command text.
 A Catalog is fresh when its `observed_at` is at most `catalog_max_age_seconds` old at the wall time that the caller passes; an absent, unreadable, or undated Catalog is stale.
 The refresh schedule takes monotonic time: the first Worker pass with work refreshes, and then at most one refresh runs each 15 minutes, also after a failure.
-A pass reads the Catalog once, at its first placement, and checks every task of that pass against that copy; a plan request reads it once.
+A pass reads the Catalog at most once, at its first placement, and checks every task of that pass against that copy; a pass that places nothing does not read it. A plan request reads it once.
 The Planner and the Worker ask this module; neither reads the file nor judges age itself.
 
 ## Data

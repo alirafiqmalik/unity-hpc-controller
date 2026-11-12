@@ -21,7 +21,7 @@ The journal refuses a task state that this module does not name.
 Callers use operations named for what the Worker means, and each operation is one transaction.
 Schema setup and the version 1 migration run once for each process and database path.
 A read uses a snapshot on a `query_only` connection and never takes the write lock.
-A read-only URI connection was rejected: it fails on a database that does not exist yet and cannot recover a write-ahead log after a crash.
+A read-only URI connection was rejected: it fails on a database that does not exist yet, and it needs the path quoted as a URI.
 Only one listing runs at a time, because each listing decodes every frozen declaration.
 
 **Worker pass.** A failure while the Worker handles one campaign stays with that campaign.
@@ -41,8 +41,8 @@ Keeping two copies of the rule with a parity test was rejected, because the two 
 **Cluster access.** `controller/cluster_access.py` owns the SSH option set, alias and identity handling, the agent environment, remote commands, and file transfer.
 It has two adapters: SSH and rsync in production, a local shell in tests.
 The command lines did not change by one byte, and tests pin them.
-The callers keep their different option order around `-i` and their different environments on purpose: unifying them needs a check against the live cluster, which this change did not have.
-The identity status is read with four local tool calls and is not cached, so it cannot report a stale unlocked state.
+The callers deliberately keep their different option order around `-i` and their different environments: unifying them needs a check against the live cluster, which this change did not have.
+The identity status is read with local tool calls only (four when the key is loaded in the agent) and is not cached, so it cannot report a stale unlocked state.
 
 **Telemetry archive.** `lib/telemetry_archive.py` owns the `summaries.db` schema and its `ensure` step, the dated tables, the per-day backup content and prune, the profile rebuild, and the production read queries.
 `cluster-intel/rollup.py` keeps its upserts next to its computation and is the one other writer.
@@ -50,7 +50,7 @@ Moving the upserts was rejected: it would split one function for no gain, on cod
 The Planner reads wait history by the canonical GPU name, the spelling that the archive stores.
 
 **Catalog.** `controller/catalog.py` owns the survey parsing, the stored `backend-catalog.json`, the freshness decision, and the refresh schedule.
-A pass and a plan request each read the Catalog once.
+A plan request reads the Catalog once. A pass reads it at most once, at its first placement, and keeps that copy, also when the stored document is not a Catalog.
 An `observed_at` that is absent or malformed counts as stale.
 
 ## Not done
@@ -64,5 +64,6 @@ An `observed_at` that is absent or malformed counts as stale.
 - A change to a state, a journal statement, an SSH option, the archive schema, or the Catalog shape has one place.
 - Tests use the module interfaces: a transition table for the lifecycle, journal operations on a temporary directory, a local-shell transport for the Slurm protocol, golden dumps for rollup.
 - The test suite does not touch the developer's SSH agent or keyring.
+- Every journal operation that writes a task state, the submission intent included, refuses a state that the lifecycle does not name.
 - `GET /api/v1/campaigns/{id}` shows a step-prefixed `error` for a campaign that the Worker could not advance.
 - A new hardware field or a new in-job check is an edit to `controller/attestation.py`, and it changes the text that every later job carries.

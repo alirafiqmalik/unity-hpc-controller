@@ -115,7 +115,7 @@ The catalog records node features, GPU GRES, partition access, QOS, account limi
 The controller refreshes it at the first scheduling pass with work after a start, then every 15 minutes while campaigns need work, and when you call `POST /api/v1/backend/probe`.
 An absent, unreadable, or stale catalog blocks new submissions. Stale means that its observation time is older than `catalog_max_age_seconds` (default 3600 seconds).
 A failed or stale catalog does not stop accepted-job reconciliation or result retrieval.
-Each scheduling pass reads the catalog once and checks all its tasks against that copy; a refresh during a pass applies from the next pass.
+Each scheduling pass reads the catalog at most once, at its first placement, and checks all its tasks against that copy; a refresh after that read applies from the next pass.
 
 ## Collect historical telemetry
 

@@ -21,7 +21,8 @@ That command writes two kinds of backup under
   which leave the live database in the same step. An accounting row whose
   task row left in an earlier run is matched to its day through the
   existing summary backups and saved in an additional summary backup for
-  that day; a row that no backup names stays live.
+  that day; a row that no backup names stays live. This recovery runs only
+  in a retention run that has at least one expired day to archive.
 
 Each filename includes a content hash. A later copy of an old day adds a new
 file, so it cannot overwrite an earlier backup. The command reads each backup
@@ -38,8 +39,8 @@ copy moves into the compressed backup. `UNITY_HPC_LOCAL_RETENTION_DAYS` changes
 the 90 day limit for the sync script. Run `python3 scripts/hpc-local-retention
 --days 90` to see eligible days without changing data.
 
-The live dashboard and per-project hardware profile read only the 90 day live
-database. They do not query compressed backups. The backup files are standard
+Readers of the archive (the accounting route and the Planner's wait history)
+read only the 90 day live database. They do not query compressed backups. The backup files are standard
 tar and SQLite files compressed with gzip. To inspect one summary backup,
 decompress it to a separate directory and open the resulting SQLite database.
 To inspect raw files, list a tar file with `tar -tzf` before extracting it.

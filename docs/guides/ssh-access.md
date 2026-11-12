@@ -35,9 +35,9 @@ options override the matching settings of the `Host` block and keep the rest.
 `controller/cluster_access.py` states these options once.
 
 `GET /api/v1/health` reports whether the identity is loaded in the agent that the
-controller uses (`ssh.unlocked`, `ssh.needs_passphrase`). It runs `ssh -G`,
-`ssh-add -l`, `ssh-keygen -l`, and `busctl` on the controller machine and does not
-connect to the cluster. When the key is not loaded and the unlocked desktop keyring
+controller uses (`ssh.unlocked`, `ssh.needs_passphrase`). With the key loaded it runs
+`ssh -G`, `ssh-add -l`, `ssh-keygen -l`, and `busctl` on the controller machine; with
+no key loaded it does not need `ssh-keygen -l`. It does not connect to the cluster. When the key is not loaded and the unlocked desktop keyring
 holds its passphrase, the same check loads it again, at most once in 30 seconds.
 
 If access fails, inspect the effective `IdentityAgent`, identity file, enrolled
