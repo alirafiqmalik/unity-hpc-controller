@@ -384,7 +384,9 @@ The SQLite database, bundles, and result files form one backup unit.
 The internal journal uses SQLite schema version 2.
 The public campaign schema remains version 1.
 
-Startup migrates version 1 journals and restores recoverable observations for each current attempt.
+The controller migrates a version 1 journal once, when it starts or first opens it, and restores recoverable observations for each current attempt.
+Campaign reads use a snapshot and do not wait for the worker's writes.
+Restart the controller after you restore `campaigns.db` from a backup.
 No automatic deletion applies to campaign results.
 Remote source snapshots and checkpoint directories also remain available.
 The worker runs only while the controller process runs.

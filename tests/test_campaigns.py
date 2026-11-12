@@ -108,12 +108,12 @@ def test_failed_dependency_blocks_dependent_task(setup):
     assert len(fake.submissions) == 1
 
 
-def test_store_change_rejects_unknown_task_state(setup):
+def test_record_transition_rejects_unknown_task_state(setup):
     spec, _ = setup
     value = campaigns.create(spec)
     cursor = value["result_cursor"]
     with pytest.raises(ValueError, match="unknown task state"):
-        store.change("study", "model-a", "done")
+        store.record_transition("study", "model-a", "done")
     assert store.read("study")["tasks"][0]["state"] == "waiting"
     assert store.results("study", after=cursor)["events"] == []
 
@@ -224,26 +224,6 @@ def test_retry_retains_previous_attempt_scheduler_outcome_and_observation(setup,
     assert attempts[1]["state"] == "completed"
     assert attempts[1]["observation"]["state"] == "COMPLETED"
     assert attempts[1]["job_id"] == "124"
-
-
-def test_schema_one_migration_repairs_recoverable_current_attempt_only(setup):
-    spec, _ = setup
-    campaigns.create(spec)
-    slurm = FakeSlurm()
-    campaigns.tick("study", slurm)
-    slurm.terminal()
-    campaigns.tick("study", slurm)
-    with store.database() as con:
-        con.execute("UPDATE attempts SET state='fetching'")
-        con.execute("ALTER TABLE attempts DROP COLUMN observation")
-        con.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
-    migrated = store.read("study")
-    assert migrated["attempts"][0]["state"] == "completed"
-    assert migrated["attempts"][0]["observation"] == migrated["tasks"][0]["observation"]
-    assert migrated["attempts"][0]["receipt"] == {"outcome": "accepted", "job_id": "123"}
-    assert migrated["tasks"][0]["artifacts"]["complete"]
-    with store.database() as con:
-        assert con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
 
 
 def test_only_bounded_infrastructure_retry_with_same_hardware(setup):
@@ -489,7 +469,7 @@ def test_reduced_current_ceiling_applies_to_already_accepted_campaign(setup, cei
     spec["tasks"].append(second)
     campaigns.configure({"max_active_tasks": 2, "max_active_gpus": 2})
     campaigns.create(spec)
-    store.change("study", "model-b", "waiting", eligible_at=100)
+    store.record_transition("study", "model-b", "waiting", eligible_at=100)
     fake = FakeSlurm()
     campaigns.tick("study", fake, clock=lambda: 0)
     campaigns.configure({ceiling: 1, "remote_root": "/work/pi_test/new-location"})
@@ -756,19 +736,19 @@ def test_actionable_observation_changes_remain_in_incremental_stream(setup, fiel
     spec, _ = setup
     campaigns.create(spec)
     observation = {"state": "PENDING", "job_id": "123", "pending_reason": "Priority", "estimated_start": None, "node_list": "", "fetch_attempts": 0}
-    store.change("study", "model-a", "accepted", job_id="123", observation=observation)
+    store.record_transition("study", "model-a", "accepted", job_id="123", observation=observation)
     cursor = store.results("study")["next_cursor"]
     observation[field] = value
-    store.change("study", "model-a", "accepted", observation=observation)
+    store.record_transition("study", "model-a", "accepted", observation=observation)
     assert len(store.results("study", cursor)["events"]) == 1
 
 
 def test_retry_backoff_changes_remain_visible_even_with_same_waiting_state(setup):
     spec, _ = setup
     campaigns.create(spec)
-    store.change("study", "model-a", "waiting", eligible_at=60, error="preempted")
+    store.record_transition("study", "model-a", "waiting", eligible_at=60, error="preempted")
     cursor = store.results("study")["next_cursor"]
-    store.change("study", "model-a", "waiting", eligible_at=120, error="preempted")
+    store.record_transition("study", "model-a", "waiting", eligible_at=120, error="preempted")
     assert len(store.results("study", cursor)["events"]) == 1
 
 

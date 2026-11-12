@@ -25,14 +25,18 @@ def campaign(tmp_data_dir, tmp_path):
                                 "max_walltime_seconds": 86400, "preempt_mode": "OFF"}},
         "account": {"qos": ["normal"]}, "qos": {"normal": {}},
     })
-    return campaigns.create({
-        "schema_version": 1, "campaign_id": "notifications",
+    return campaigns.create(_declaration(tmp_path / "source"))
+
+
+def _declaration(source, campaign_id="notifications"):
+    return {
+        "schema_version": 1, "campaign_id": campaign_id,
         "bundle": {"path": str(source)}, "max_attempts": 2,
         "tasks": [{"task_id": "task", "argv": ["python3", "run.py"],
                    "resources": {"gpu_count": 0, "cpus": 1, "memory_mb": 1024,
                                  "walltime_seconds": 60, "partitions": ["cpu"]},
                    "outputs": ["result.json"]}],
-    })
+    }
 
 
 @pytest.mark.parametrize("gpu_count", [0, 1])
@@ -66,12 +70,12 @@ def test_mail_is_opt_in_for_other_controller_deployments(campaign):
 
 
 @pytest.mark.parametrize("next_recipient", ["updated@umass.edu", ""])
-def test_existing_campaign_and_retry_use_current_mail_policy(campaign, monkeypatch, next_recipient):
-    # Simulate a campaign accepted before mail settings existed.
-    with store.database() as con:
-        spec = copy.deepcopy(campaign["spec"])
-        spec["backend"].pop("mail_user", None)
-        con.execute("UPDATE campaigns SET spec=? WHERE id=?", (json.dumps(spec), campaign["id"]))
+def test_existing_campaign_and_retry_use_current_mail_policy(campaign, monkeypatch, next_recipient, tmp_path):
+    real = campaigns.settings
+    with monkeypatch.context() as patch:
+        patch.setattr(campaigns, "settings", lambda: {k: v for k, v in real().items() if k != "mail_user"})
+        campaign = campaigns.create(_declaration(tmp_path / "source", "legacy-mail"))
+    assert "mail_user" not in campaign["spec"]["backend"]
     captured = []
 
     class Adapter:

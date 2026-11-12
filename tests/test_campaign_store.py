@@ -1,0 +1,384 @@
+"""Campaign journal transactions, schema setup, and concurrent access."""
+
+import sqlite3
+import threading
+
+import pytest
+
+from controller import campaigns, campaign_contract, campaign_lifecycle as lifecycle, campaign_store as store
+from controller.campaign_contract import Conflict
+from controller.http import Request, handle
+
+
+def _db(data):
+    return data / "controller/campaigns.db"
+
+
+def _one_campaign():
+    store.accept("study", {"campaign_id": "study", "tasks": [{"task_id": "a"}]},
+                 "hash-1", [], {"task_count": 1})
+
+
+def _copy(source, target_dir):
+    target = _db(target_dir)
+    target.parent.mkdir(parents=True)
+    original = sqlite3.connect(source)
+    copied = sqlite3.connect(target)
+    try:
+        original.backup(copied)
+    finally:
+        copied.close()
+        original.close()
+    return target
+
+
+def test_schema_one_journal_migrates_as_before(tmp_data_dir, tmp_path, monkeypatch):
+    _one_campaign()
+    store.record_intent("study", "a", lifecycle.intent(1, "job-1"))
+    receipt = {"outcome": "accepted", "job_id": "123"}
+    store.record_submission("study", "a", 1, receipt, lifecycle.submitted(receipt))
+    store.record_transition("study", "a", "fetching", job_id="123", observation={
+        "job_id": "123", "state": "COMPLETED", "exit_code": "0:0", "fetch_attempts": 0,
+    })
+    store.record_transition("study", "a", "completed", artifacts={"files": [], "complete": True}, error=None)
+    legacy = tmp_path / "legacy"
+    copied = _copy(_db(tmp_data_dir), legacy)
+    connection = sqlite3.connect(copied)
+    try:
+        with connection:
+            connection.execute("UPDATE attempts SET state='fetching'")
+            connection.execute("ALTER TABLE attempts DROP COLUMN observation")
+            connection.execute("UPDATE meta SET value='1' WHERE key='schema_version'")
+    finally:
+        connection.close()
+    monkeypatch.setenv("UNITY_HPC_DATA", str(legacy))
+    migrated = store.read("study")
+    assert migrated["attempts"][0]["state"] == "completed"
+    assert migrated["attempts"][0]["observation"] == migrated["tasks"][0]["observation"]
+    assert migrated["attempts"][0]["receipt"] == receipt
+    assert migrated["tasks"][0]["artifacts"]["complete"]
+    connection = sqlite3.connect(copied)
+    try:
+        assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
+    finally:
+        connection.close()
+
+
+def _traced(monkeypatch):
+    statements = []
+    original = store._connect
+
+    def connect(path):
+        connection = original(path)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", connect)
+    return statements
+
+
+def _start(operation):
+    values, errors = [], []
+
+    def run():
+        try:
+            values.append(operation())
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, values, errors
+
+
+def _joined(work):
+    thread, values, errors = work
+    thread.join(5)
+    assert not thread.is_alive()
+    assert not errors, errors
+    return values[0]
+
+
+@pytest.fixture
+def accepting(tmp_data_dir, tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "run.py").write_text("print('scientific task')\n")
+    campaigns.configure({"account": "pi_test", "remote_root": "/work/pi_test/controller"})
+
+    def declaration(campaign_id, memory_mb=81151):
+        return {
+            "schema_version": 1, "campaign_id": campaign_id, "bundle": {"path": str(source)},
+            "max_concurrent": 2, "max_attempts": 2,
+            "tasks": [{"task_id": "model-a", "model_class": "small-a10080-v1",
+                       "argv": ["python3", "run.py", "{output_dir}"], "env": {},
+                       "resources": {"gpu_type": "a100", "gpu_count": 1, "cpus": 4,
+                                     "memory_mb": 32768, "walltime_seconds": 3600,
+                                     "constraint": "a100-80g&sapphirerapids",
+                                     "expected_gpu_name": "NVIDIA A100-SXM4-80GB",
+                                     "expected_gpu_memory_mb": memory_mb},
+                       "outputs": ["results.jsonl", "summary.json"]}],
+        }
+
+    return declaration
+
+
+def test_read_does_not_wait_for_a_held_write_lock(tmp_data_dir):
+    _one_campaign()
+    connection = sqlite3.connect(_db(tmp_data_dir), isolation_level=None)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("UPDATE campaigns SET error='uncommitted'")
+
+        def reads():
+            return (store.read("study"), store.listing(), store.results("study"),
+                    store.identities_excluding({"completed"}), store.tasks_in_states({"waiting"}),
+                    store.prior_acceptance("study", []))
+
+        campaign, listing, results, identities, tasks, prior = _joined(_start(reads))
+        assert campaign["error"] is None
+        assert listing[0]["error"] is None
+        assert results["events"][0]["kind"] == "accepted"
+        assert identities == ["study"]
+        assert tasks[0]["task_id"] == "a"
+        assert prior == ("hash-1", {})
+    finally:
+        connection.execute("ROLLBACK")
+        connection.close()
+
+
+def test_long_listing_does_not_fail_concurrent_reads_or_writes(tmp_data_dir, monkeypatch):
+    _one_campaign()
+    started, release = threading.Event(), threading.Event()
+    decode_lock = threading.Lock()
+    original = store._decode
+
+    def decode(row):
+        with decode_lock:
+            first = not started.is_set()
+            if first:
+                started.set()
+        if first:
+            assert release.wait(10)
+        return original(row)
+
+    monkeypatch.setattr(store, "_decode", decode)
+    listing = _start(store.listing)
+    try:
+        assert started.wait(5)
+
+        def concurrent_operations():
+            before = store.read("study")
+            store.record_transition("study", "a", "waiting", error="probe")
+            store.record_campaign_error("study", "probe")
+            return before, store.read("study")
+
+        before, after = _joined(_start(concurrent_operations))
+        assert before["error"] is None
+        assert after["error"] == "probe"
+        assert after["tasks"][0]["error"] == "probe"
+    finally:
+        release.set()
+        listing[0].join(5)
+    assert _joined(listing)[0]["error"] is None
+
+
+def test_listings_are_serialized_to_limit_peak_memory(tmp_data_dir, monkeypatch):
+    _one_campaign()
+    first_decoding, second_started, second_decoding, release = (
+        threading.Event() for _ in range(4)
+    )
+    decode_lock = threading.Lock()
+    original = store._decode
+
+    def decode(row):
+        with decode_lock:
+            first = not first_decoding.is_set()
+            if first:
+                first_decoding.set()
+            else:
+                second_decoding.set()
+        if first:
+            assert release.wait(10)
+        return original(row)
+
+    def second_listing():
+        second_started.set()
+        return store.listing()
+
+    monkeypatch.setattr(store, "_decode", decode)
+    first = _start(store.listing)
+    second = None
+    try:
+        assert first_decoding.wait(5)
+        second = _start(second_listing)
+        assert second_started.wait(5)
+        assert not second_decoding.wait(0.2)
+        assert second[0].is_alive()
+    finally:
+        release.set()
+        first[0].join(5)
+        if second is not None:
+            second[0].join(5)
+    assert _joined(first) == _joined(second)
+    assert second_decoding.is_set()
+
+
+def test_schema_setup_runs_once_per_process_and_path(tmp_data_dir, tmp_path, monkeypatch):
+    statements = _traced(monkeypatch)
+    assert store.listing() == []
+    assert statements.count("PRAGMA journal_mode=WAL") == 1
+    assert any(sql.lstrip().startswith("CREATE TABLE IF NOT EXISTS meta") for sql in statements)
+
+    statements.clear()
+    _one_campaign()
+    store.read("study")
+    store.listing()
+    store.record_transition("study", "a", "waiting", error="x")
+    store.roll_up("study")
+    assert not any(word in sql.lower() for sql in statements
+                   for word in ("journal_mode", "create table", "schema_version", "table_info"))
+
+    statements.clear()
+    monkeypatch.setenv("UNITY_HPC_DATA", str(tmp_path / "second"))
+    assert store.listing() == []
+    assert statements.count("PRAGMA journal_mode=WAL") == 1
+    assert sum(sql.lstrip().startswith("CREATE TABLE IF NOT EXISTS meta") for sql in statements) == 1
+
+    statements.clear()
+    monkeypatch.setenv("UNITY_HPC_DATA", str(tmp_path / "third"))
+    barrier = threading.Barrier(8)
+
+    def listing():
+        barrier.wait(5)
+        return store.listing()
+
+    work = [_start(listing) for _ in range(8)]
+    assert [_joined(item) for item in work] == [[]] * 8
+    assert statements.count("PRAGMA journal_mode=WAL") == 1
+
+
+def test_current_schema_opens_without_migration_or_rewrite(tmp_data_dir, tmp_path, monkeypatch):
+    _one_campaign()
+    copied = _copy(_db(tmp_data_dir), tmp_path / "copy")
+    monkeypatch.setenv("UNITY_HPC_DATA", str(tmp_path / "copy"))
+    before = copied.read_bytes()
+    statements = _traced(monkeypatch)
+    assert store.read("study")["id"] == "study"
+    assert not any(sql.lstrip().upper().startswith(("INSERT", "UPDATE", "ALTER", "DELETE"))
+                   for sql in statements)
+    assert copied.read_bytes() == before
+
+
+def test_new_data_directory_gets_the_current_schema(tmp_path, monkeypatch):
+    fresh = tmp_path / "fresh"
+    monkeypatch.setenv("UNITY_HPC_DATA", str(fresh))
+    assert not fresh.exists()
+    assert store.listing() == []
+    assert _db(fresh).is_file()
+    connection = sqlite3.connect(_db(fresh))
+    try:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "2"
+        assert "observation" in {row[1] for row in connection.execute("PRAGMA table_info(attempts)")}
+    finally:
+        connection.close()
+    with pytest.raises(FileNotFoundError, match="unknown campaign: missing"):
+        store.read("missing")
+
+
+def test_unsupported_schema_version_is_refused_on_every_use(tmp_path, monkeypatch):
+    future = tmp_path / "future"
+    _db(future).parent.mkdir(parents=True)
+    connection = sqlite3.connect(_db(future))
+    try:
+        with connection:
+            connection.execute("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT)")
+            connection.execute("INSERT INTO meta VALUES('schema_version','3')")
+        monkeypatch.setenv("UNITY_HPC_DATA", str(future))
+        for _ in range(2):
+            with pytest.raises(Conflict, match="unsupported campaigns database schema"):
+                store.listing()
+        assert handle(Request("GET", "/api/v1/campaigns")).status == 409
+        assert connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == "3"
+    finally:
+        connection.close()
+
+
+def test_submission_outcome_and_receipt_commit_together(tmp_data_dir):
+    _one_campaign()
+    store.record_intent("study", "a", lifecycle.intent(1, "job-1"))
+    cursor = store.results("study")["next_cursor"]
+    receipt = {"outcome": "accepted", "job_id": "7"}
+    step = lifecycle.submitted(receipt)
+    with pytest.raises(TypeError):
+        store.record_submission("study", "a", 1, {**receipt, "bad": object()}, step)
+    campaign = store.read("study")
+    assert campaign["tasks"][0]["state"] == "submitting"
+    assert campaign["attempts"][0]["state"] == "submitting"
+    assert campaign["attempts"][0]["receipt"] is None
+    assert store.results("study", after=cursor)["events"] == []
+
+    store.record_submission("study", "a", 1, receipt, step)
+    campaign = store.read("study")
+    assert campaign["tasks"][0]["state"] == "accepted"
+    assert campaign["attempts"][0]["state"] == "accepted"
+    assert campaign["attempts"][0]["receipt"] == receipt
+    assert [event["kind"] for event in store.results("study", after=cursor)["events"]] == ["accepted"]
+
+
+def test_acceptance_compresses_without_holding_the_write_lock(accepting, tmp_data_dir, monkeypatch):
+    original = campaign_contract.snapshot
+    probes = []
+
+    def snapshot(*args, **kwargs):
+        connection = sqlite3.connect(_db(tmp_data_dir), timeout=0.1, isolation_level=None)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("ROLLBACK")
+            probes.append(True)
+        finally:
+            connection.close()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(campaign_contract, "snapshot", snapshot)
+    assert campaigns.create(accepting("study"))["id"] == "study"
+    assert probes == [True]
+
+
+def test_concurrent_identical_acceptance_records_one_campaign(accepting):
+    barrier = threading.Barrier(2)
+
+    def accept():
+        barrier.wait(5)
+        return campaigns.create(accepting("study"))
+
+    work = [_start(accept) for _ in range(2)]
+    assert sorted(_joined(item)["idempotent"] for item in work) == [False, True]
+    assert len(store.listing()) == 1
+    assert sum(event["task_id"] is None and event["kind"] == "accepted"
+               for event in store.results("study")["events"]) == 1
+
+
+def test_concurrent_conflicting_hardware_acceptance_admits_one(accepting, tmp_data_dir):
+    barrier = threading.Barrier(2)
+
+    def accept(identity, memory_mb):
+        barrier.wait(5)
+        return campaigns.create(accepting(identity, memory_mb=memory_mb))
+
+    work = [_start(lambda: accept("first", 81151)), _start(lambda: accept("second", 40960))]
+    for thread, _, _ in work:
+        thread.join(5)
+        assert not thread.is_alive()
+    values = [value for _, results, _ in work for value in results]
+    errors = [error for _, _, exceptions in work for error in exceptions]
+    assert len(values) == len(errors) == 1
+    assert isinstance(errors[0], Conflict)
+    assert "locked to different hardware" in str(errors[0])
+    assert len(store.listing()) == 1
+    connection = sqlite3.connect(_db(tmp_data_dir))
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM hardware_locks").fetchone()[0] == 1
+    finally:
+        connection.close()

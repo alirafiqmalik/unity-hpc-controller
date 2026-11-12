@@ -129,33 +129,25 @@ def create(raw):
         accepted["idempotent"] = True
         return accepted
     with lock():
-        with store.database() as con:
-            existing = con.execute("SELECT request_hash FROM campaigns WHERE id=?", (identity,)).fetchone()
-            if existing and existing[0] != request_hash:
-                raise contract.Conflict("campaign_id already identifies a different declaration or source")
-            if existing:
-                already = True
-            else:
-                already = False
-                for task in specification["tasks"]:
-                    if not task["resources"]["gpu_count"]:
-                        continue
-                    fingerprint = json.dumps(contract.hardware_fingerprint(task["resources"]), sort_keys=True)
-                    previous = con.execute("SELECT fingerprint FROM hardware_locks WHERE model_class=?", (task["model_class"],)).fetchone()
-                    if previous and previous[0] != fingerprint:
-                        raise contract.Conflict(f"model_class {task['model_class']} is locked to different hardware; use an explicit new scientific regime")
-                    con.execute("INSERT OR IGNORE INTO hardware_locks(model_class,fingerprint) VALUES(?,?)", (task["model_class"], fingerprint))
-                directory = store.root(identity)
-                directory.mkdir(parents=True, exist_ok=True)
-                contract.snapshot(specification["bundle"], bundle, directory / "bundle.tar.gz")
-                (directory / "bundle.tar.gz").chmod(0o600)
-                specification["bundle_manifest"] = bundle
-                specification["backend"] = backend
-                _write_json(directory / "declaration.json", specification)
-                con.execute("INSERT INTO campaigns(id,spec,request_hash,state,created_at) VALUES(?,?,?,?,?)", (identity, json.dumps(specification, sort_keys=True), request_hash, lifecycle.ACCEPTED, store.now()))
-                for task in specification["tasks"]:
-                    con.execute("INSERT INTO tasks(campaign_id,task_id,spec,state) VALUES(?,?,?,?)", (identity, task["task_id"], json.dumps(task, sort_keys=True), lifecycle.WAITING))
-                store.event(con, identity, None, lifecycle.ACCEPTED, {"source_sha256": bundle["sha256"], "task_count": len(specification["tasks"])})
+        hardware = [(task["model_class"], json.dumps(contract.hardware_fingerprint(task["resources"]), sort_keys=True))
+                    for task in specification["tasks"] if task["resources"]["gpu_count"]]
+        existing, locked = store.prior_acceptance(identity, [model_class for model_class, _ in hardware])
+        if existing is not None and existing != request_hash:
+            raise contract.Conflict("campaign_id already identifies a different declaration or source")
+        already = existing is not None
+        if not already:
+            for model_class, fingerprint in hardware:
+                if locked.get(model_class, fingerprint) != fingerprint:
+                    raise contract.Conflict(f"model_class {model_class} is locked to different hardware; use an explicit new scientific regime")
+            directory = store.root(identity)
+            directory.mkdir(parents=True, exist_ok=True)
+            contract.snapshot(specification["bundle"], bundle, directory / "bundle.tar.gz")
+            (directory / "bundle.tar.gz").chmod(0o600)
+            specification["bundle_manifest"] = bundle
+            specification["backend"] = backend
+            _write_json(directory / "declaration.json", specification)
+            store.accept(identity, specification, request_hash, hardware,
+                         {"source_sha256": bundle["sha256"], "task_count": len(specification["tasks"])})
     value = store.read(identity)
     value["idempotent"] = already
     return value
@@ -168,11 +160,7 @@ def _intent(campaign, task):
     # The 97-character bound also fits the accounting query's JobName%100 field.
     name = f"{campaign['id'][:64]}-{task['task_id'][:10]}-{digest}"
     step = lifecycle.intent(attempt, name)
-    fields = step.fields
-    with store.database() as con:
-        con.execute("INSERT INTO attempts(campaign_id,task_id,attempt,job_name,state,created_at) VALUES(?,?,?,?,?,?)", (campaign["id"], task["task_id"], attempt, name, lifecycle.attempt_outcome(step.state, None), store.now()))
-        con.execute("UPDATE tasks SET attempt=?,job_name=?,job_id=?,state=?,error=?,observation=?,eligible_at=? WHERE campaign_id=? AND task_id=?", (fields["attempt"], fields["job_name"], fields["job_id"], step.state, fields["error"], fields["observation"], fields["eligible_at"], campaign["id"], task["task_id"]))
-        store.event(con, campaign["id"], task["task_id"], step.state, step.event)
+    store.record_intent(campaign["id"], task["task_id"], step)
     return {**task, "attempt": attempt, "job_name": name, "state": step.state, "job_id": None,
             "observation": None, "eligible_at": 0.0}
 
@@ -213,18 +201,8 @@ def controller_artifacts(campaign, task):
 def record_controller_artifacts(campaign, task):
     """Retain retrieved failure evidence without promoting scientific completion."""
     diagnostics = controller_artifacts(campaign, task)
-    if not diagnostics:
-        return
-    with store.database() as con:
-        row = con.execute("SELECT artifacts FROM tasks WHERE campaign_id=? AND task_id=?",
-                          (campaign["id"], task["task_id"])).fetchone()
-        metadata = json.loads(row[0]) if row and row[0] else {"files": [], "complete": False}
-        if metadata.get("controller_files") == diagnostics:
-            return
-        metadata["controller_files"] = diagnostics
-        con.execute("UPDATE tasks SET artifacts=? WHERE campaign_id=? AND task_id=?",
-                    (json.dumps(metadata, sort_keys=True), campaign["id"], task["task_id"]))
-        store.event(con, campaign["id"], task["task_id"], "diagnostics_available", {"controller_files": diagnostics})
+    if diagnostics:
+        store.record_diagnostics(campaign["id"], task["task_id"], diagnostics)
 
 
 def _collect(campaign, task, adapter, successful):
@@ -256,16 +234,7 @@ def _collect(campaign, task, adapter, successful):
     metadata = {"files": artifacts, "controller_files": controller_artifacts(campaign, task),
                 "missing": missing, "hardware": hardware, "attempt": task["attempt"], "job_id": task["job_id"]}
     step = lifecycle.delivered(metadata, successful=successful)
-    store.change(campaign["id"], task["task_id"], step.state, **step.fields)
-
-
-def _finish_campaign(identity):
-    value = store.read(identity)
-    state = lifecycle.campaign_state(value["state"], [t["state"] for t in value["tasks"]])
-    with store.database() as con:
-        if state:
-            con.execute("UPDATE campaigns SET state=? WHERE id=?", (state, identity))
-            store.event(con, identity, None, state)
+    store.record_transition(campaign["id"], task["task_id"], step.state, **step.fields)
 
 
 def _reconcile(campaign, transport, clock):
@@ -276,8 +245,7 @@ def _reconcile(campaign, transport, clock):
         try:
             observations = transport.observe(campaign, active)
         except Exception as exc:
-            with store.database() as con:
-                con.execute("UPDATE campaigns SET error=? WHERE id=?", (str(exc), campaign["id"]))
+            store.record_campaign_error(campaign["id"], str(exc))
             return False
         for task in active:
             raw = observations.get(task["job_name"])
@@ -288,7 +256,7 @@ def _reconcile(campaign, transport, clock):
             if decision.effect == lifecycle.CANCEL_JOB:
                 transport.cancel([task["job_id"]])
             if decision.step:
-                store.change(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
+                store.record_transition(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
             if decision.effect not in (lifecycle.SALVAGE, lifecycle.RETRIEVE):
                 continue
             observation = decision.step.fields["observation"]
@@ -310,12 +278,12 @@ def _reconcile(campaign, transport, clock):
                     step = lifecycle.undelivered(observation, str(exc), conflict=isinstance(exc, contract.Conflict),
                                                  max_fetch_attempts=backend["max_fetch_attempts"],
                                                  retry_backoff_seconds=backend["retry_backoff_seconds"], now=clock())
-            store.change(campaign["id"], task["task_id"], step.state, **step.fields)
+            store.record_transition(campaign["id"], task["task_id"], step.state, **step.fields)
     if cancelling:
         for task in campaign["tasks"]:
             step = lifecycle.cancel_request(task)
             if step:
-                store.change(campaign["id"], task["task_id"], step.state, **step.fields)
+                store.record_transition(campaign["id"], task["task_id"], step.state, **step.fields)
     return True
 
 
@@ -331,7 +299,7 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
             transport = adapter or SlurmAdapter(campaign["spec"]["backend"])
             if _reconcile(campaign, transport, clock):
                 reconciled.add(campaign["id"])
-                _finish_campaign(campaign["id"])
+                store.roll_up(campaign["id"])
         # Reconcile every accepted attempt before staging or submitting work.
         # A long staging batch must not postpone existing result transfers.
         admission_started = admission_clock()
@@ -357,7 +325,7 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
             for task in campaign["tasks"]:
                 decision = lifecycle.admission(task, states, cancelling=cancelling, now=clock())
                 if decision.step:
-                    store.change(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
+                    store.record_transition(campaign["id"], task["task_id"], decision.step.state, **decision.step.fields)
                     continue
                 if decision.effect != lifecycle.ADMIT:
                     continue
@@ -368,8 +336,7 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
                     continue
                 placement = planner.select(task["spec"]["resources"], backend)
                 if placement["warnings"] or not placement["selected_partitions"]:
-                    with store.database() as con:
-                        con.execute("UPDATE tasks SET error=? WHERE campaign_id=? AND task_id=?", ("; ".join(placement["warnings"]) or "no eligible exact hardware partition; refresh backend probe", campaign["id"], task["task_id"]))
+                    store.record_task_error(campaign["id"], task["task_id"], "; ".join(placement["warnings"]) or "no eligible exact hardware partition; refresh backend probe")
                     continue
                 same_qos = [t for t in global_active if (t["spec"]["resources"].get("qos") or backend["qos"]) == placement["qos"]]
                 count_limits = [placement["qos_limits"].get(k) for k in ("max_submit_jobs", "max_jobs")]
@@ -393,15 +360,12 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
                         staged_at = admission_clock()
                         staged_receipt = transport.stage(campaign)
                     except Exception as exc:
-                        with store.database() as con:
-                            con.execute("UPDATE campaigns SET error=? WHERE id=?", (str(exc), campaign["id"]))
+                        store.record_campaign_error(campaign["id"], str(exc))
                         break
-                    with store.database() as con:
-                        con.execute("UPDATE campaigns SET staged=1,error=NULL WHERE id=?", (campaign["id"],))
-                        evidence = {"elapsed_seconds": round(admission_clock() - staged_at, 3)}
-                        if isinstance(staged_receipt, dict):
-                            evidence.update(staged_receipt)
-                        store.event(con, campaign["id"], None, "source_staged", evidence)
+                    evidence = {"elapsed_seconds": round(admission_clock() - staged_at, 3)}
+                    if isinstance(staged_receipt, dict):
+                        evidence.update(staged_receipt)
+                    store.record_staged(campaign["id"], evidence)
                     campaign["staged"] = 1
                 task = _intent(campaign, task)
                 admission_attempts += 1
@@ -410,14 +374,12 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
                 except Exception as exc:
                     receipt = lifecycle.uncertain_receipt(str(exc))
                 step = lifecycle.submitted(receipt)
-                store.change(campaign["id"], task["task_id"], step.state, **step.fields)
-                with store.database() as con:
-                    con.execute("UPDATE attempts SET receipt=? WHERE campaign_id=? AND task_id=? AND attempt=?", (json.dumps(receipt), campaign["id"], task["task_id"], task["attempt"]))
+                store.record_submission(campaign["id"], task["task_id"], task["attempt"], receipt, step)
                 if step.state in lifecycle.ACTIVE:
                     admission_progress += 1
                     running += 1
                     global_active.append(task)
-            _finish_campaign(campaign["id"])
+            store.roll_up(campaign["id"])
             if deferred_eligible:
                 break
         return {"admission_attempts": admission_attempts, "admission_progress": admission_progress,
@@ -432,17 +394,15 @@ def cancel(identity):
         state = lifecycle.cancel_campaign(campaign["state"])
         if state is None:
             return campaign
-        with store.database() as con:
-            con.execute("UPDATE campaigns SET state=? WHERE id=?", (state, identity))
-            store.event(con, identity, None, state)
+        store.record_cancel_request(identity, state)
         transport = SlurmAdapter(campaign["spec"]["backend"])
         jobs = [t["job_id"] for t in campaign["tasks"] if t["state"] in lifecycle.ACTIVE and t["job_id"]]
         transport.cancel(jobs)
         for task in campaign["tasks"]:
             step = lifecycle.cancel_request(task)
             if step:
-                store.change(identity, task["task_id"], step.state, **step.fields)
-    _finish_campaign(identity)
+                store.record_transition(identity, task["task_id"], step.state, **step.fields)
+    store.roll_up(identity)
     return store.read(identity)
 
 
@@ -496,6 +456,11 @@ def start():
     global _thread
     if _thread and _thread.is_alive():
         return
+    try:
+        store.prepare()
+    except Exception:
+        # the same error recurs on the first journal use and is recorded there
+        pass
     _stop.clear()
     _thread = threading.Thread(target=_loop, name="portable-campaigns", daemon=True)
     _thread.start()

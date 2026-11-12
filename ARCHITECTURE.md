@@ -45,7 +45,11 @@ When `NODE_FAIL`, `PREEMPTED`, or `BOOT_FAIL` sends a task back to `waiting`, th
 
 ## Data
 
-`$UNITY_HPC_DATA/controller/campaigns.db` stores campaigns, tasks, attempts, hardware locks, and result events.
+`$UNITY_HPC_DATA/controller/campaigns.db` is the campaign journal: campaigns, tasks, attempts, hardware locks, and result events.
+`controller/campaign_store.py` is the only code that opens it. Callers use its named operations, and each operation is one SQLite transaction, so a reader sees a transition whole or not at all.
+Writes take `BEGIN IMMEDIATE`. Reads use a snapshot on a `query_only` connection and never take the write lock, so a long listing does not delay the worker, a campaign read, or a result read.
+Only one listing runs at a time, to bound memory; a second listing waits for the first.
+Schema setup and the version 1 migration run once for each process and database path.
 Campaign directories hold immutable bundles, scripts, receipts, and retrieved artifacts.
 `backend-catalog.json` records live hardware and policy observations with timestamps.
 `summaries.db` retains collected job and resource history.

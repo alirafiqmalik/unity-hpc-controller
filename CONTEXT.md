@@ -74,6 +74,11 @@ One durable, cursor-addressed record of a task state change or retrieved artifac
 Clients resume from `next_cursor` without duplicates.
 _Avoid_: notification, message
 
+**Campaign journal**:
+The controller's durable record of campaigns, tasks, attempts, hardware locks, and Result events.
+A recorded transition is complete or absent. A submission intent is recorded before Slurm is called.
+_Avoid_: store, state database
+
 **Controller**:
 The always-on local process that owns the campaign journal, hardware locks, scheduling requests, attempts, and result retrieval.
 _Avoid_: daemon, monitor, MCP server, plugin

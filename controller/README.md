@@ -26,7 +26,7 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | Module | Responsibility |
 |---|---|
 | `campaign_contract.py` | Portable declaration checks and immutable bundle snapshots |
-| `campaign_store.py` | SQLite journal, attempts, hardware locks, and result cursors |
+| `campaign_store.py` | Campaign journal: the only code that opens `campaigns.db`; one transaction for each named operation; snapshot reads; schema setup once per process |
 | `campaign_planner.py` | Exact hardware fit, access, ceilings, and historical placement signals |
 | `campaign_slurm.py` | Bounded SSH, atomic staging, Slurm receipts, device checks, and artifact transfer |
 | `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions, retry budget, backoff, and Result event payloads; no IO |
