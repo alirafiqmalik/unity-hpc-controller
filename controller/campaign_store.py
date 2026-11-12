@@ -106,6 +106,26 @@ def listing():
         return [decode(row) for row in con.execute("SELECT * FROM campaigns ORDER BY created_at DESC")]
 
 
+def identities_excluding(states):
+    """Select worker identities without loading historical source manifests."""
+    states = tuple(sorted(states))
+    placeholders = ",".join("?" for _ in states)
+    with database() as con:
+        return [row[0] for row in con.execute(
+            f"SELECT id FROM campaigns WHERE state NOT IN ({placeholders}) ORDER BY created_at DESC", states
+        )]
+
+
+def tasks_in_states(states):
+    """Read capacity evidence without traversing campaign bundles or results."""
+    states = tuple(sorted(states))
+    placeholders = ",".join("?" for _ in states)
+    with database() as con:
+        return [decode(row) for row in con.execute(
+            f"SELECT * FROM tasks WHERE state IN ({placeholders}) ORDER BY rowid", states
+        )]
+
+
 def results(identity, after=0, limit=100):
     read(identity)
     with database() as con:

@@ -110,6 +110,11 @@ def validate(raw):
             gpu_type = resources.get("gpu_type")
             if not isinstance(gpu_type, str) or not TOKEN.fullmatch(gpu_type):
                 raise CampaignError("GPU tasks require an exact resources.gpu_type")
+            by_constraint = resources.get("gpu_request_by_constraint", False)
+            if not isinstance(by_constraint, bool):
+                raise CampaignError("gpu_request_by_constraint must be a boolean")
+            if by_constraint and gpu_type not in constraint.split("&"):
+                raise CampaignError("constraint GPU requests require the exact gpu_type feature")
             expected = resources.get("expected_gpu_name")
             if not isinstance(expected, str) or not expected.strip() or any(c in expected for c in "\0\n\r"):
                 raise CampaignError("GPU tasks require expected_gpu_name for in-job attestation")

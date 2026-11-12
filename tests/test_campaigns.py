@@ -263,6 +263,32 @@ def test_script_quotes_argv_and_uses_exact_gres_with_preflight(setup, tmp_path):
     assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
 
 
+def test_constraint_gpu_submission_retains_exact_hardware_attestation(setup):
+    spec, _ = setup
+    resources = spec["tasks"][0]["resources"]
+    resources.update(gpu_request_by_constraint=True, constraint="a100&a100-80g")
+    campaign = campaigns.create(spec)
+    task = campaigns._intent(campaign, campaign["tasks"][0])
+    text = script(campaign["spec"]["backend"], campaign, task,
+                  {"selected_partitions": ["gpu"], "qos": "normal"})
+    assert "#SBATCH --gres=gpu:1\n" in text
+    assert "#SBATCH --constraint=a100&a100-80g\n" in text
+    assert "NVIDIA A100-SXM4-80GB" in text
+    assert "81151" in text
+    assert "HPC_PREFLIGHT" in text
+
+
+@pytest.mark.parametrize("flag,constraint,message", [
+    (True, "a100-80g", "exact gpu_type feature"),
+    ("true", "a100", "must be a boolean"),
+])
+def test_constraint_gpu_submission_rejects_ambiguous_hardware(setup, flag, constraint, message):
+    spec, _ = setup
+    spec["tasks"][0]["resources"].update(gpu_request_by_constraint=flag, constraint=constraint)
+    with pytest.raises(CampaignError, match=message):
+        campaigns.create(spec)
+
+
 def test_diagnostic_downloads_are_bounded_and_do_not_become_required_outputs(setup):
     spec, _ = setup
     campaign = campaigns.create(spec)
@@ -592,6 +618,43 @@ def test_full_capacity_and_no_progress_use_normal_polling(setup):
     assert len(fake.submissions) == 1
 
 
+def test_admission_ignores_completed_bundles_and_preserves_global_capacity(setup, monkeypatch):
+    spec, _ = setup
+    fake = FakeSlurm()
+    campaigns.create(spec)
+    campaigns.tick("study", fake)
+    fake.terminal()
+    campaigns.tick("study", fake)
+    assert store.read("study")["state"] == "completed"
+    for identity in ("waiting-a", "waiting-b"):
+        pending = copy.deepcopy(spec)
+        pending["campaign_id"] = identity
+        campaigns.create(pending)
+    campaigns.configure({"max_active_gpus": 1})
+    original_read = store.read
+
+    def read_active_only(identity):
+        assert identity != "study", "completed bundle read during admission"
+        return original_read(identity)
+
+    def no_full_listing():
+        pytest.fail("worker loaded every historical source manifest")
+
+    monkeypatch.setattr(store, "read", read_active_only)
+    monkeypatch.setattr(store, "listing", no_full_listing)
+    fake.submissions.clear()
+    first = campaigns.tick(adapter=fake)
+    assert first["admission_progress"] == 1 and len(fake.submissions) == 1
+    assert len(store.tasks_in_states(campaigns.ACTIVE)) == 1
+    assert set(store.identities_excluding(campaigns.TERMINAL)) == {"waiting-a", "waiting-b"}
+    # An accepted task in another campaign still consumes the GPU ceiling.
+    monkeypatch.setattr(campaigns, "SlurmAdapter", lambda _: fake)
+    campaigns.worker_pass(float("inf"))
+    assert len(fake.submissions) == 1
+    campaigns.tick(adapter=fake)
+    assert len(fake.submissions) == 1
+
+
 def test_failed_staging_has_no_immediate_retry_loop(setup):
     spec, _ = setup
     campaigns.create(spec)
@@ -675,3 +738,26 @@ def test_replaying_remote_submit_intent_consumes_one_sbatch(setup, tmp_path):
     assert adapter.submit(campaign, task, placement) == {"outcome": "accepted", "job_id": "123"}
     assert adapter.submit(campaign, task, placement) == {"outcome": "accepted", "job_id": "123"}
     assert counter.read_text().splitlines() == ["accepted"]
+
+
+def test_scheduler_name_keeps_configuration_and_unique_attempt(setup):
+    spec, _ = setup
+    spec['campaign_id'] = 'sg-q9-l40s-bf16-c32k-p4-1g-' + 'x' * 65
+    campaign = campaigns.create(spec)
+    first = campaigns._intent(campaign, campaign['tasks'][0])
+    second = campaigns._intent(campaign, first)
+    assert first['job_name'].startswith('sg-q9-l40s-bf16-c32k-p4-1g-')
+    assert len(first['job_name']) <= 97
+    assert first['job_name'] != second['job_name']
+
+
+def test_identical_retry_does_not_wait_for_worker_lock(setup, monkeypatch):
+    spec, _ = setup
+    campaigns.create(spec)
+    def locked():
+        raise AssertionError('retry must not acquire worker lock')
+    monkeypatch.setattr(campaigns, 'lock', locked)
+    assert campaigns.create(spec)['idempotent']
+    changed = copy.deepcopy(spec)
+    changed['tasks'][0]['argv'] = ['python3', 'different.py']
+    with pytest.raises(Conflict): campaigns.create(changed)

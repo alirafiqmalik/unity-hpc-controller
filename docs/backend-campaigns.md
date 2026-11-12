@@ -5,6 +5,12 @@ It owns SSH, Slurm submission, durable attempts, and result retrieval.
 Projects do not register a directory or maintain a Unity ledger.
 Their runner directory contains the hardware adapter.
 
+GPU resources may set `gpu_request_by_constraint: true` when Unity's submission
+plugin rejects a typed GPU name present in the catalog. The constraint must then
+contain the exact `gpu_type` feature. Slurm receives an untyped GPU count plus
+that constraint; catalog matching, hardware locks, and device attestation still
+use the declared exact type, name, and memory. Other GPU requests retain typed GRES.
+
 ## Start and configure
 
 Start the controller from this checkout:

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import os
@@ -51,15 +52,21 @@ class Handler(BaseHTTPRequestHandler):
             body=self._read_body() if method in ("POST", "PATCH", "PUT", "DELETE") else b"",
         )
         resp = handle(req)
-        self.send_response(resp.status)
-        self.send_header("Content-Type", resp.content_type)
-        self.send_header("Content-Length", str(len(resp.body)))
-        if "Cache-Control" not in resp.headers:
-            self.send_header("Cache-Control", "no-store")
-        for key, value in resp.headers.items():
-            self.send_header(key, value)
-        self.end_headers()
-        self.wfile.write(resp.body)
+        with contextlib.ExitStack() as stack:
+            source = stack.enter_context(resp.file_path.open("rb")) if resp.file_path else None
+            size = os.fstat(source.fileno()).st_size if source else len(resp.body)
+            self.send_response(resp.status)
+            self.send_header("Content-Type", resp.content_type)
+            self.send_header("Content-Length", str(size))
+            if "Cache-Control" not in resp.headers:
+                self.send_header("Cache-Control", "no-store")
+            for key, value in resp.headers.items():
+                self.send_header(key, value)
+            self.end_headers()
+            if source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+            else:
+                self.wfile.write(resp.body)
 
     def do_GET(self):
         self._dispatch("GET")

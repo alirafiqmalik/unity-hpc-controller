@@ -121,6 +121,17 @@ def create(raw):
     backend = settings()
     if not backend["account"] or not backend["remote_root"]:
         raise contract.CampaignError("configure controller backend account and remote_root before accepting campaigns")
+    # An accepted declaration is immutable. Identical HTTP retries can read it
+    # without waiting for a worker's bounded remote source-staging operation.
+    try:
+        accepted = store.read(identity)
+    except FileNotFoundError:
+        pass
+    else:
+        if accepted["request_hash"] != request_hash:
+            raise contract.Conflict("campaign_id already identifies a different declaration or source")
+        accepted["idempotent"] = True
+        return accepted
     with lock():
         with store.database() as con:
             existing = con.execute("SELECT request_hash FROM campaigns WHERE id=?", (identity,)).fetchone()
@@ -156,7 +167,10 @@ def create(raw):
 
 def _intent(campaign, task):
     attempt = task["attempt"] + 1
-    name = "uh-" + hashlib.sha256(f"{campaign['id']}/{task['task_id']}/{attempt}".encode()).hexdigest()[:28]
+    digest = hashlib.sha256(f"{campaign['id']}/{task['task_id']}/{attempt}".encode()).hexdigest()[:20]
+    # Keep Slurm names readable while retaining a collision-resistant attempt ID.
+    # The 97-character bound also fits the accounting query's JobName%100 field.
+    name = f"{campaign['id'][:64]}-{task['task_id'][:10]}-{digest}"
     with store.database() as con:
         con.execute("INSERT INTO attempts(campaign_id,task_id,attempt,job_name,state,created_at) VALUES(?,?,?,?,?,?)", (campaign["id"], task["task_id"], attempt, name, "submitting", store.now()))
         con.execute("UPDATE tasks SET attempt=?,job_name=?,job_id=NULL,state='submitting',error=NULL,observation=NULL,eligible_at=0 WHERE campaign_id=? AND task_id=?", (attempt, name, campaign["id"], task["task_id"]))
@@ -327,7 +341,7 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
         # Capacity is service policy, so changes apply to every campaign on the
         # next pass. Execution locations and per-campaign behavior stay frozen.
         controller_limits = settings()
-        campaigns = [store.read(identity)] if identity else [store.read(c["id"]) for c in store.listing() if c["state"] not in TERMINAL]
+        campaigns = [store.read(identity)] if identity else [store.read(cid) for cid in store.identities_excluding(TERMINAL)]
         reconciled = set()
         for campaign in campaigns:
             transport = adapter or SlurmAdapter(campaign["spec"]["backend"])
@@ -339,7 +353,10 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
         admission_started = admission_clock()
         admission_attempts = admission_progress = 0
         deferred_eligible = False
-        global_active = [t for c in store.listing() for t in store.read(c["id"])["tasks"] if t["state"] in ACTIVE]
+        # The campaign lock fences concurrent creation/cancellation. Reconcile
+        # first, then count active tasks once and append each accepted intent.
+        # Historical bundle manifests must not consume the admission window.
+        global_active = store.tasks_in_states(ACTIVE)
         for original in campaigns:
             if original["id"] not in reconciled:
                 continue
@@ -350,7 +367,6 @@ def tick(identity=None, adapter=None, clock=time.time, admission_clock=time.mono
             # Mail is current service policy, including for waiting tasks and
             # retries in campaigns accepted before notifications were enabled.
             transport = adapter or SlurmAdapter({**backend, "mail_user": controller_limits["mail_user"]})
-            global_active = [t for c in store.listing() for t in store.read(c["id"])["tasks"] if t["state"] in ACTIVE]
             states = {t["task_id"]: t["state"] for t in campaign["tasks"]}
             running = sum(t["state"] in ACTIVE for t in campaign["tasks"])
             for task in campaign["tasks"]:
@@ -481,7 +497,7 @@ def _loop():
 
 def worker_pass(last_probe=0, *, with_progress=False):
     """Catalog failure must never suppress receipt reconciliation or fetch."""
-    pending = any(c["state"] not in TERMINAL for c in store.listing())
+    pending = bool(store.identities_excluding(TERMINAL))
     if pending and (last_probe == 0 or time.monotonic() - last_probe >= 900):
         # Bound unsuccessful refreshes too, so catalog downtime cannot cause
         # one expensive policy survey on every 30-second task poll.

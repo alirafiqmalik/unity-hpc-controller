@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -28,6 +29,7 @@ class Response:
     body: bytes
     content_type: str = "application/json"
     headers: dict[str, str] = field(default_factory=dict)
+    file_path: Path | None = None
 
 
 def _json(status: int, payload: Any) -> Response:
@@ -110,7 +112,7 @@ def _route(method: str, path: str, req: Request) -> Response:
             return _json(200, campaign_store.results(identity, int(_q(req, "after", "0")), int(_q(req, "limit", "100"))))
         if rest == "artifacts" and method == "GET":
             artifact = campaigns.artifact(identity, _q(req, "task_id"), _q(req, "path"))
-            return Response(200, artifact.read_bytes(), "application/octet-stream")
+            return Response(200, b"", "application/octet-stream", file_path=artifact)
         if rest == "cancel" and method == "POST":
             return _json(202, {"campaign": campaigns.cancel(identity)})
         return _error(404, "unknown campaign route")
@@ -128,6 +130,7 @@ def _route(method: str, path: str, req: Request) -> Response:
             "service": "unity-hpc-controller",
             "mode": "backend",
             "campaign_schema_version": 1,
+            "capabilities": ["gpu_request_by_constraint"],
             "ssh": {
                 "needs_passphrase": ssh.get("needs_passphrase"),
                 "key_path": ssh.get("key_path") or "",

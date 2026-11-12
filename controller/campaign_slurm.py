@@ -24,7 +24,7 @@ MAIL_TYPES = "END,FAIL,TIME_LIMIT,REQUEUE"
 
 
 PREFLIGHT = r'''
-import csv,json,os,subprocess,sys
+import csv,ctypes,json,os,subprocess,sys
 from pathlib import Path
 r=json.loads(sys.argv[1]); out=Path(os.environ['HPC_OUTPUT_DIR']);out.mkdir(parents=True,exist_ok=True)
 metadata={'task_id':os.environ['HPC_TASK_ID'],'attempt':int(os.environ['HPC_ATTEMPT']),'job_id':os.environ.get('SLURM_JOB_ID'),'node':os.environ.get('SLURMD_NODENAME'),'requested':r,'gpus':[],'verified':False}
@@ -32,6 +32,33 @@ try:
     if r['gpu_count']:
         p=subprocess.run(['nvidia-smi','--query-gpu=index,uuid,name,memory.total,driver_version','--format=csv,noheader,nounits'],capture_output=True,text=True,check=True,timeout=15)
         rows=list(csv.reader(p.stdout.splitlines(),skipinitialspace=True))
+        visible_cuda=os.environ.get('CUDA_VISIBLE_DEVICES','').split(',')
+        if any(value.startswith('MIG-') for value in visible_cuda):
+            # nvidia-smi --query-gpu reports the parent board's full memory.
+            # Query the allocated MIG UUIDs through NVML instead; never attest
+            # the parent's memory as the capacity of a partitioned device.
+            if not all(value.startswith('MIG-') for value in visible_cuda):
+                raise ValueError('mixed MIG and full GPU visibility is unsupported')
+            nvml=ctypes.CDLL('libnvidia-ml.so.1')
+            def nvcall(name,*args):
+                code=getattr(nvml,name)(*args)
+                if code: raise ValueError('NVML '+name+' failed: '+str(code))
+            class Memory(ctypes.Structure):
+                _fields_=[('total',ctypes.c_ulonglong),('free',ctypes.c_ulonglong),('used',ctypes.c_ulonglong)]
+            nvcall('nvmlInit_v2')
+            try:
+                rows=[]
+                driver=ctypes.create_string_buffer(128)
+                nvcall('nvmlSystemGetDriverVersion',driver,128)
+                for index,uuid in enumerate(visible_cuda):
+                    handle=ctypes.c_void_p()
+                    nvcall('nvmlDeviceGetHandleByUUID',uuid.encode(),ctypes.byref(handle))
+                    name=ctypes.create_string_buffer(256); memory=Memory()
+                    nvcall('nvmlDeviceGetName',handle,name,256)
+                    nvcall('nvmlDeviceGetMemoryInfo',handle,ctypes.byref(memory))
+                    rows.append([str(index),uuid,name.value.decode(),str(memory.total//(1024*1024)),driver.value.decode()])
+            finally:
+                nvml.nvmlShutdown()
         # Device cgroups may expose an already restricted list. Slurm GPU ids
         # are global; CUDA ordinals can be remapped inside that list.
         if len(rows)!=r['gpu_count']:
@@ -79,7 +106,13 @@ def script(settings, campaign, task, placement):
         headers["mail-user"] = settings["mail_user"]
         headers["mail-type"] = MAIL_TYPES
     if resources["gpu_count"]:
-        headers["gres"] = f"gpu:{resources['gpu_type']}:{resources['gpu_count']}"
+        # Some Unity devices appear in GRES but are absent from the submit
+        # plugin's typed-name allowlist. The validated exact feature, catalog
+        # GPU type, and in-job device attestation retain the hardware lock.
+        if resources.get("gpu_request_by_constraint"):
+            headers["gres"] = f"gpu:{resources['gpu_count']}"
+        else:
+            headers["gres"] = f"gpu:{resources['gpu_type']}:{resources['gpu_count']}"
     if resources.get("constraint"):
         headers["constraint"] = resources["constraint"]
     if resources.get("nodelist"):
@@ -171,7 +204,7 @@ class SlurmAdapter:
         directories = [base + "/" + name for name in ("jobs", "logs", "receipts", "outputs")]
         directories += [cache_parent, cache_parent + "/locks"]
         initial = "set -e; umask 077; mkdir -p " + " ".join(quote(path) for path in directories)
-        result = self.command(initial + ";\n" + locked + ready + "\necho HPC_SOURCE_NEEDS_UPLOAD")
+        result = self.command(initial + ";\n" + locked + ready + "\necho HPC_SOURCE_NEEDS_UPLOAD", timeout=600)
         if result.returncode:
             raise RuntimeError("remote source cache readiness failed: " + result.stderr[-1500:])
         if "HPC_SOURCE_NEEDS_UPLOAD" not in result.stdout.splitlines():
@@ -192,7 +225,7 @@ class SlurmAdapter:
             "chmod -R a-w \"${HPC_STAGE_DIR}\"", "mv \"${HPC_STAGE_DIR}\" " + quote(cache),
             publish, "echo HPC_SOURCE_CACHE_CREATED",
         ])
-        result = self.command(extract)
+        result = self.command(extract, timeout=600)
         if result.returncode:
             raise RuntimeError("remote bundle verification failed: " + result.stderr[-1500:])
         if not any(token in result.stdout.splitlines() for token in ("HPC_SOURCE_CACHE_CREATED", "HPC_SOURCE_CACHE_HIT", "HPC_SOURCE_LEGACY_READY")):

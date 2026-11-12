@@ -1,6 +1,6 @@
 # Headless campaign architecture
 
-Version 0.16.0. The controller owns all cluster execution.
+Version 0.16.3. The controller owns all cluster execution.
 Projects provide portable argument vectors, source bundles, and scientific output declarations.
 Runner adapters translate experiment definitions into this contract.
 
