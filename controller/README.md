@@ -40,8 +40,6 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | `http.py` | HTTP request seam |
 | `serve.py` | Socket adapter and process lifecycle |
 | `cluster_session.py` | Cluster session: the login-node tmux protocol for scheduled telemetry samples |
-| `snapshot.py` | Read-only cluster, queue, and usage views over the local archive |
-| `node_runtime.py`, `runtime_integrity.py` | Compute-node runtime staging and digest checks |
 | `events.py` | Controller event log |
 
 The task worker remains independent of a browser or agent session.

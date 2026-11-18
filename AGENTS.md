@@ -14,7 +14,7 @@ Guidance for coding agents working in this repository.
 
 - `controller/campaign_*.py`, `controller/campaigns.py`: the headless campaign service.
 - `controller/cluster_access.py`: how the controller reaches the cluster (SSH alias, identity, remote command, transfer); campaigns and telemetry share it.
-- `controller/telemetry.py`, `controller/cluster_session.py`, `controller/snapshot.py`, `cluster-intel/`: bounded telemetry collection and the local archive.
+- `controller/telemetry.py`, `controller/cluster_session.py`, `cluster-intel/`: bounded telemetry collection and the local archive.
 - `mcp/hpc_server.py`, `skills/`: agent clients. Every MCP tool is an HTTP call to the controller.
 - `scripts/hpc-controller`, `scripts/hpc-campaign`: service and command clients.
 

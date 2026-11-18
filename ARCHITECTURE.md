@@ -1,6 +1,6 @@
 # Headless campaign architecture
 
-Version 0.18.0. The controller owns all cluster execution.
+Version 0.19.0. The controller owns all cluster execution.
 Projects provide portable argument vectors, source bundles, and scientific output declarations.
 Runner adapters translate experiment definitions into this contract.
 
@@ -14,6 +14,7 @@ Slurm owns allocation, priority, backfill, and preemption.
 The current contract supersedes the project dispatcher ownership described in ADRs 0001 and 0008.
 [ADR 0009](docs/adr/0009-headless-campaign-controller.md) records the migration; the old contracts were removed.
 [ADR 0011](docs/adr/0011-controller-module-ownership.md) records which module owns each concept inside the controller.
+[ADR 0012](docs/adr/0012-retire-the-cluster-dashboard-routes.md) records the removal of the cluster dashboard routes and of code that no client used.
 
 ## Execution flow
 
@@ -115,7 +116,7 @@ Campaign directories hold immutable bundles, scripts, receipts, and retrieved ar
 `lib/telemetry_archive.py` owns it: the schema and the `ensure` step, which creates missing tables, adds missing `task_run` columns, and writes nothing on a current archive; the five dated tables and how a day's rows are selected, with `task_accounting` rows following their day's `task_run` rows; the content of a per-day summary backup and the prune that local retention uses; the `task_profile` rebuild; and the reads that production uses (the accounting route, the fully-summarised gate of the remote prune, the Planner's wait and runtime history, and the rollup stamp in telemetry status).
 `cluster-intel/rollup.py` computes rows from raw days and is the one other writer; its upserts stay next to the computation.
 `lib/local_retention.py` owns the backup files, their names, and the copy-and-replace of the live file.
-`controller/snapshot.py`, the test-only readers in `lib/queries.py`, and the one-time tools `cluster-intel/migrate.py` and `cluster-intel/backfill_hardware.py` keep their own SQL.
+The test-only readers in `lib/queries.py` and the one-time tools `cluster-intel/migrate.py` and `cluster-intel/backfill_hardware.py` keep their own SQL.
 
 The `task_run` table keeps its established shape for existing archives.
 The richer `task_accounting` table retains user/account, nodes, job metadata, requests, allocations, job steps, and provenance.
@@ -127,7 +128,7 @@ Slurm GPU high-water marks do not become time-weighted utilization percentages.
 The HTTP contract lives in [backend operations](docs/backend-campaigns.md).
 CLI and MCP clients cross that same interface; neither submits directly to Slurm.
 The service starts without UI dependencies.
-Project registration routes answer HTTP 410.
+Project registration routes and the retired cluster dashboard routes (`/api/v1/cluster`, `/api/v1/cluster/queue`, `/api/v1/cluster/usage`) answer HTTP 410 ([ADR 0012](docs/adr/0012-retire-the-cluster-dashboard-routes.md)).
 
 ## Scheduling limits
 

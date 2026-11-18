@@ -501,7 +501,7 @@ Verify the archive digest before extraction.
 Run extraction, full file verification, and compiler verification in a GPU-free campaign allocation.
 Extract into a fresh directory and activate it after extraction succeeds.
 Keep existing dependency files until the new runtime passes verification.
-The `runtime_integrity.py` module verifies the frozen manifest and every listed file or symlink.
+The example `examples/allocation-local-runtime/runtime_integrity.py` verifies the frozen manifest and every listed file or symlink.
 The manifest itself must match its frozen digest.
 
 File verification uses one worker by default.
@@ -521,7 +521,8 @@ Regenerate `launcher` paths after relocation.
 Dependent evaluation tasks must wait for a successful canary.
 Changing an accepted canary requires a new campaign identity and frozen bundle.
 
-For allocation-local runtimes, use the separately pinned `controller/node_runtime.py` helper.
+For allocation-local runtimes, a project can copy and pin the example helper `examples/allocation-local-runtime/node_runtime.py`.
+The controller does not import or run it.
 Its standalone bundle contains `node-runtime.py`, `runtime_integrity.py`, `lean-launcher.py`, `files.jsonl`, `runtime-lock.json`, and `archive-lock.json`.
 The archive lock records exact source and Lean archive sizes and digests.
 
