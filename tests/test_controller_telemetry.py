@@ -355,9 +355,9 @@ def test_the_next_run_counts_from_the_last_retrieval(stub_script):
     telemetry.save_settings(source="unity:/work/a/b/telemetry/",
                             schedule_enabled=True, interval_minutes=10)
     telemetry.start_sync(background=False)
-    started = telemetry.last_run()["started_utc"]
+    finished = telemetry.last_run()["finished_utc"]
     when = datetime.strptime(telemetry.next_run_utc(), "%Y-%m-%dT%H:%M:%SZ")
-    expect = datetime.strptime(started, "%Y-%m-%dT%H:%M:%SZ") + timedelta(minutes=10)
+    expect = datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ") + timedelta(minutes=10)
     assert when == expect
 
 
