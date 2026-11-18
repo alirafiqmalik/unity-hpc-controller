@@ -7,7 +7,7 @@ Merge rules (SS6.2):
   - any field NOT present in the observation -> left untouched
 
 Pure functions only. Neither argument is mutated. The locked write protocol
-lives in write_config() (added in the next task). Stdlib only.
+lives in write_config(). Stdlib only.
 """
 
 from __future__ import annotations
@@ -214,36 +214,6 @@ def merge_config(current: dict, observation: dict) -> dict:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-#: sections that make a config substantive; a config carrying none of them
-#: (e.g. freshly seeded with only schema_version/cluster/provenance, or an
-#: empty/corrupt file) has no recon-worthy content regardless of its mtime.
-_SUBSTANTIVE_SECTIONS = ("partitions", "gpu_fleet", "account_limits")
-
-
-def should_probe(ttl_seconds: int, *, force: bool = False) -> bool:
-    """Return False iff the config exists, parses, carries at least one
-    substantive section, and is younger than ttl_seconds, and not forced.
-
-    A missing file, unparseable JSON, or a config with none of
-    partitions/gpu_fleet/account_limits (an empty `{}` or a stub) must not
-    suppress recon until the TTL expires on mtime alone — there is nothing
-    fresh to protect, so a probe is always needed regardless of age.
-    """
-    if force:
-        return True
-    p = paths.config_path()
-    if not p.exists():
-        return True
-    try:
-        data = json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
-        return True
-    if not isinstance(data, dict) or not any(data.get(k) for k in _SUBSTANTIVE_SECTIONS):
-        return True
-    age = datetime.now(timezone.utc).timestamp() - p.stat().st_mtime
-    return age >= ttl_seconds
 
 
 def _atomic_write(path, text: str) -> None:

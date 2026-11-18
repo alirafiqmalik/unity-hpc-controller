@@ -11,7 +11,6 @@ from lib import cluster_config as cc
 from lib import paths
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CLI = REPO_ROOT / "scripts" / "hpc-config-write"
 
 
 def test_first_write_creates_valid_json(tmp_data_dir):
@@ -43,11 +42,18 @@ def test_force_overrides_the_ttl(tmp_data_dir):
     assert cfg["slurm_version"] == "25.11.6"
 
 
-def _write_via_cli(obs, writer):
-    proc = subprocess.run(
-        [sys.executable, str(CLI), "--obs-file", "-", "--writer", writer, "--force"],
+_WRITE = (
+    "import json, sys; sys.path.insert(0, sys.argv[1]); "
+    "from lib import cluster_config as cc; "
+    "cc.write_config(json.loads(sys.stdin.read()), writer=sys.argv[2], force=True)"
+)
+
+
+def _write_in_process(obs, writer):
+    """One separate process for each writer, so the file lock is what keeps writes apart."""
+    return subprocess.run(
+        [sys.executable, "-c", _WRITE, str(REPO_ROOT), writer],
         input=json.dumps(obs), capture_output=True, text=True)
-    return proc
 
 
 def test_eight_concurrent_writers_lose_nothing(tmp_data_dir):
@@ -58,7 +64,7 @@ def test_eight_concurrent_writers_lose_nothing(tmp_data_dir):
                                        "observed_utc": f"2026-07-22T14:0{i}:00Z"}}}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        results = list(ex.map(lambda i: _write_via_cli(obs(i), f"w{i}"), range(8)))
+        results = list(ex.map(lambda i: _write_in_process(obs(i), f"w{i}"), range(8)))
     assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
 
     cfg = json.loads(paths.config_path().read_text())
@@ -77,59 +83,3 @@ def test_atomic_write_leaves_no_tmp_file(tmp_data_dir):
     assert not tmp.exists(), "the temp file must not survive a successful atomic write"
     # the target itself must always parse: no reader can ever observe a partial write
     json.loads(paths.config_path().read_text())
-
-
-def test_should_probe_true_when_config_missing(tmp_data_dir):
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS) is True
-
-
-def test_should_probe_true_when_config_file_is_empty(tmp_data_dir):
-    paths.config_path().write_text("")
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS) is True
-
-
-def test_should_probe_true_when_config_is_invalid_json(tmp_data_dir):
-    paths.config_path().write_text("{not valid json")
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS) is True
-
-
-def test_should_probe_true_when_config_is_an_empty_object(tmp_data_dir):
-    paths.config_path().write_text("{}")
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS) is True
-
-
-def test_should_probe_true_when_config_has_no_substantive_keys(tmp_data_dir):
-    # schema_version/cluster/provenance alone carry no recon-worthy content.
-    paths.config_path().write_text(json.dumps(
-        {"schema_version": cc.SCHEMA_VERSION, "cluster": "unity"}))
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS) is True
-
-
-def test_should_probe_false_for_a_fresh_substantive_config(tmp_data_dir):
-    cc.write_config(
-        {"partitions": {"gpu": {"nodes": 145, "observed_utc": "2026-07-22T14:00:00Z"}}},
-        writer="esim-fv")
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS) is False
-
-
-def test_should_probe_still_honours_ttl_expiry_for_a_substantive_config(tmp_data_dir):
-    cc.write_config(
-        {"partitions": {"gpu": {"nodes": 145, "observed_utc": "2026-07-22T14:00:00Z"}}},
-        writer="esim-fv")
-    assert cc.should_probe(0) is True, "an expired TTL must still trigger a probe"
-
-
-def test_should_probe_force_overrides_everything(tmp_data_dir):
-    cc.write_config(
-        {"partitions": {"gpu": {"nodes": 145, "observed_utc": "2026-07-22T14:00:00Z"}}},
-        writer="esim-fv")
-    assert cc.should_probe(cc.DEFAULT_TTL_SECONDS, force=True) is True
-
-
-def test_cli_reports_skip_within_ttl(tmp_data_dir):
-    assert _write_via_cli({"cluster": "unity"}, "p1").returncode == 0
-    proc = subprocess.run(
-        [sys.executable, str(CLI), "--obs-file", "-", "--writer", "p2", "--ttl", "43200"],
-        input=json.dumps({"cluster": "unity"}), capture_output=True, text=True)
-    assert proc.returncode == 0
-    assert "skipped" in proc.stdout
