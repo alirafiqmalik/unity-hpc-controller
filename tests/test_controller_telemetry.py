@@ -636,15 +636,13 @@ def _slots(day, rid="a100", n=96):
     subprocess.run(["bash", "-c", "command -v rsync"],
                    capture_output=True).returncode != 0,
     reason="rsync not available")
-def test_a_real_retrieval_fills_the_charts_end_to_end(tmp_path, tmp_data_dir):
+def test_a_real_retrieval_fills_the_archive_end_to_end(tmp_path, tmp_data_dir):
     """The controller path, the real script, a local fixture source.
 
     A path with no ':' is a supported local source, so this exercises
     scripts/hpc-sync-telemetry, sync-telemetry.sh, the remote prune and
     rollup.py — everything but the network.
     """
-    from controller import snapshot
-
     day = (datetime.now(timezone.utc)).strftime("%Y-%m-%d")
     src = tmp_path / "cluster" / "telemetry"
     (src / day).mkdir(parents=True)
@@ -655,8 +653,6 @@ def test_a_real_retrieval_fills_the_charts_end_to_end(tmp_path, tmp_data_dir):
         "total_nodes,free_nodes,gpu_types_free\n"
         f"{day}T00:00:00Z,12,4,1,544,31,a100 a40\n")
 
-    assert snapshot.usage(24)["available"] is False
-
     _req("PATCH", "/api/v1/telemetry/settings", {"source": str(src) + "/"})
     run = telemetry.start_sync(background=False)["run"]
     assert run["status"] == "ok", run["output"]
@@ -665,16 +661,14 @@ def test_a_real_retrieval_fills_the_charts_end_to_end(tmp_path, tmp_data_dir):
     assert paths.summaries_db().exists()
     assert paths.snapshot_csv().exists(), "the sibling snapshot.csv must come too"
 
-    usage = snapshot.usage(24)
-    assert usage["available"] is True
-    assert "a100" in usage["series"]
-    assert usage["window"] == "recent"
-
-    live = snapshot.live_snapshot()
-    assert live["available"] is True
-    assert live["source"] == "resource_state"
-    assert live["latest"]["timestamp_utc"] == f"{day} 23:45:00"
-    assert live["latest"]["gpu_running"] == 55
+    con = sqlite3.connect(paths.summaries_db())
+    try:
+        hours = con.execute(
+            "SELECT COUNT(*) FROM hourly_resource WHERE resource_id = 'a100' AND hour_utc LIKE ?",
+            (f"{day}%",)).fetchone()[0]
+    finally:
+        con.close()
+    assert hours == 24
 
     payload = telemetry.status()
     assert payload["rollup"]["last_rollup_utc"]

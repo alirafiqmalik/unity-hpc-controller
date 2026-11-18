@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from controller import events, snapshot, telemetry, campaigns, campaign_store, catalog
+from controller import events, telemetry, campaigns, campaign_store, catalog
 from controller.campaign_contract import CampaignError
 
 DEFAULT_HOST = "127.0.0.1"
@@ -56,19 +56,6 @@ def _read_json(req: Request) -> dict:
 def _q(req: Request, key: str, default: str | None = None) -> str | None:
     vals = req.query.get(key) or []
     return vals[0] if vals else default
-
-
-def _optional_hours(req: Request) -> int | str | None:
-    """The `hours` query: an hour count, `all`, or None when the parameter is absent."""
-    raw = _q(req, "hours")
-    if raw is None or raw == "":
-        return None
-    if raw.lower() == "all":
-        return "all"
-    try:
-        return int(raw)
-    except ValueError:
-        return None
 
 
 def handle(req: Request) -> Response:
@@ -139,31 +126,8 @@ def _route(method: str, path: str, req: Request) -> Response:
             },
         })
 
-    if path == "/api/v1/cluster" and method == "GET":
-        return _json(200, snapshot.cluster(_optional_hours(req)))
-
-    if path == "/api/v1/cluster/queue" and method == "GET":
-        hours = _optional_hours(req)
-        live = snapshot.live_snapshot()
-        return _json(200, {
-            "partitions": snapshot.partitions(hours),
-            "live": live,
-        })
-
-    if path == "/api/v1/cluster/usage" and method == "GET":
-        raw_hours = _q(req, "hours", "24") or "24"
-        if raw_hours.lower() == "all":
-            hours = "all"
-        else:
-            try:
-                hours = int(raw_hours)
-            except ValueError:
-                hours = 24
-        return _json(200, {
-            "usage": snapshot.usage(hours),
-            "outcomes": snapshot.outcomes(hours),
-            "stats": snapshot.task_stats(hours),
-        })
+    if path == "/api/v1/cluster" or path.startswith("/api/v1/cluster/"):
+        return _error(410, "The cluster dashboard routes are retired. Use /api/v1/campaigns/plan and /api/v1/telemetry.")
 
     if path == "/api/v1/telemetry" and method == "GET":
         try:

@@ -327,6 +327,13 @@ def test_placement_enforces_access_walltime_constraint_nodelist_and_staleness(se
     assert not fake.submissions
 
 
+@pytest.mark.parametrize("path", ["/api/v1/cluster", "/api/v1/cluster/queue", "/api/v1/cluster/usage"])
+def test_retired_cluster_routes_answer_gone(path):
+    response = handle(Request("GET", path, query={"hours": ["24"]}))
+    assert response.status == 410
+    assert "/api/v1/campaigns/plan" in json.loads(response.body)["error"]
+
+
 def test_headless_api_no_registration_and_incremental_cursor(setup):
     spec, _ = setup
     response = handle(Request("POST", "/api/v1/campaigns", body=json.dumps(spec).encode()))
