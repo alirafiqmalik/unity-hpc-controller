@@ -133,6 +133,10 @@ For the refinement deployment, that directory is:
 
 Set the collector script executable and create its `telemetry/` subdirectory.
 Keep its writer lock and high-water mark in the same remote directory.
+Copy both files again after every change to either file, and compare their digests with the repository.
+The collector keeps the scratch files of one sample on node-local `/tmp`, not in `$TMPDIR`; `UNITY_COLLECTOR_TMP` changes that directory.
+On the Unity login node `$TMPDIR` is NFS, where a removal can fail with "Directory not empty".
+A scratch or prune removal that fails writes a warning and does not fail the run.
 Each deployment needs a separate directory and `session_name`.
 This prevents collisions with other controllers' writer locks, tmux sessions, and completion markers.
 

@@ -38,6 +38,21 @@ TEL="$WORK_DIR/telemetry"
 LOCK="$WORK_DIR/collector.lock"
 INTERVAL="${UNITY_COLLECTOR_INTERVAL:-900}"
 RETENTION_DAYS="${UNITY_COLLECTOR_RETENTION_DAYS:-35}"
+
+# Scratch for one sample lives on node-local disk, not in $TMPDIR. On the
+# Unity login node the tmux session sets TMPDIR=/scratch/login (VAST NFS).
+# There a file that was just written stays open elsewhere for minutes, so
+# `rm -rf` leaves `.nfs*` files and fails with "Directory not empty".
+SCRATCH="${UNITY_COLLECTOR_TMP:-/tmp}"
+
+make_tmp() {
+    mktemp -d -p "$SCRATCH" unity-collector.XXXXXXXX 2>/dev/null || mktemp -d
+}
+
+# Removing scratch never fails a run: its records are already written.
+drop_tmp() {
+    rm -rf "$1" 2>/dev/null || echo "[collector] WARNING: could not remove scratch $1" >&2
+}
 SACCT_SCOPE="${SACCT_SCOPE:--a}"
 TMUX_SESSION="${UNITY_TMUX_SESSION:-unity-collector}"
 
@@ -220,7 +235,7 @@ sample() {
     day="$(date -u +%F)"
     out="$TEL/$day"
     mkdir -p "$out"
-    tmp="$(mktemp -d)"
+    tmp="$(make_tmp)"
 
     timeout 30 nice -n 19 sinfo -h -o '%R|%a|%D|%C|%G' \
         </dev/null >"$tmp/partitions.raw" 2>/dev/null || true
@@ -321,7 +336,7 @@ sample() {
     enrich_gpu_pending "$out" "$tmp" "$ts"
     enrich_partition_access "$out" "$tmp" "$ts"
 
-    rm -rf "$tmp"
+    drop_tmp "$tmp"
 }
 
 # catchup <START> — one-shot historical backfill. Runs a SINGLE sacct pull
@@ -342,7 +357,7 @@ catchup() {
     fi
     local ts tmp pout
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    tmp="$(mktemp -d)"
+    tmp="$(make_tmp)"
     pout="$tmp/out"
     mkdir -p "$pout"
 
@@ -356,7 +371,7 @@ catchup() {
     if [ "$sacct_rc" -ne 0 ]; then
         echo "[collector] catchup: sacct failed (rc=$sacct_rc) -- nothing written, retry this window" >&2
         sed 's/^/[collector]   sacct: /' "$tmp/sacct.err" >&2 || true
-        rm -rf "$tmp"
+        drop_tmp "$tmp"
         return 3
     fi
 
@@ -368,7 +383,7 @@ catchup() {
 
     enrich_seff "$pout" "$tmp"
 
-    [ -f "$pout/task_runs.jsonl" ] || { rm -rf "$tmp"; return 0; }
+    [ -f "$pout/task_runs.jsonl" ] || { drop_tmp "$tmp"; return 0; }
     python3 - "$pout/task_runs.jsonl" "$TEL" <<'PY'
 import json, os, sys
 runs_path, tel = sys.argv[1], sys.argv[2]
@@ -390,7 +405,7 @@ for day, lines in buckets.items():
     with open(os.path.join(d, "task_runs.jsonl"), "a", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")
 PY
-    rm -rf "$tmp"
+    drop_tmp "$tmp"
 }
 
 prune() {
@@ -402,7 +417,8 @@ prune() {
         name="$(basename "${d%/}")"
         case "$name" in 20*) ;; *) continue ;; esac
         if [[ "$name" < "$cutoff" ]]; then
-            rm -rf "${d%/}"
+            rm -rf "${d%/}" 2>/dev/null \
+                || echo "[collector] WARNING: could not prune ${d%/}; next run retries" >&2
         fi
     done
 }

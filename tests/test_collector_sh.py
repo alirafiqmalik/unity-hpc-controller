@@ -176,6 +176,60 @@ def test_once_writes_when_lock_free(cid, tmp_path):
     assert list((cid / "telemetry").glob("20*/resource_state.jsonl"))
 
 
+def _failing_rm(bin_dir):
+    """An `rm` that fails as NFS does when `.nfs*` files remain."""
+    rm = bin_dir / "rm"
+    rm.write_text('#!/usr/bin/env bash\n'
+                  'echo "rm: cannot remove \'$*\': Directory not empty" >&2\nexit 1\n')
+    rm.chmod(0o755)
+
+
+def test_once_keeps_its_scratch_on_the_configured_local_directory(cid, tmp_path):
+    bin_dir = _stub_bin(tmp_path)
+    seen = tmp_path / "sinfo-stdout"
+    sinfo = bin_dir / "sinfo"
+    sinfo.write_text(sinfo.read_text().replace(
+        "#!/usr/bin/env bash\n",
+        f'#!/usr/bin/env bash\nreadlink /proc/$$/fd/1 >> {seen}\n', 1))
+    scratch = tmp_path / "local-scratch"
+    scratch.mkdir()
+    env = _env(cid, bin_dir)
+    env["TMPDIR"] = str(tmp_path / "nfs-tmpdir-not-used")
+    env["UNITY_COLLECTOR_TMP"] = str(scratch)
+    r = subprocess.run(["bash", str(COLLECTOR), "once"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    outputs = seen.read_text().split()
+    assert outputs and all(o.startswith(str(scratch) + "/unity-collector.") for o in outputs)
+    assert list(scratch.iterdir()) == [], "the scratch directory is removed after the sample"
+
+
+def test_once_succeeds_when_scratch_cleanup_fails(cid, tmp_path):
+    bin_dir = _stub_bin(tmp_path)
+    _failing_rm(bin_dir)
+    env = _env(cid, bin_dir)
+    env["UNITY_COLLECTOR_TMP"] = str(tmp_path)
+    r = subprocess.run(["bash", str(COLLECTOR), "once"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "could not remove scratch" in r.stderr
+    assert list((cid / "telemetry").glob("20*/resource_state.jsonl"))
+    assert (cid / "last_sample_utc").exists()
+
+
+def test_prune_continues_when_a_day_cannot_be_removed(cid, tmp_path):
+    tel = cid / "telemetry"
+    (tel / "2000-01-01").mkdir()
+    (tel / "2000-01-01" / "resource_state.jsonl").write_text("{}\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _failing_rm(bin_dir)
+    r = subprocess.run(["bash", str(COLLECTOR), "prune"],
+                       capture_output=True, text=True, env=_env(cid, bin_dir))
+    assert r.returncode == 0, r.stderr
+    assert "could not prune" in r.stderr
+
+
 def test_prune_removes_days_older_than_retention(cid, tmp_path):
     tel = cid / "telemetry"
     (tel / "2020-01-01").mkdir()
