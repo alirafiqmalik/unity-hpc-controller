@@ -12,10 +12,7 @@ import sys
 import tempfile
 import time
 
-try:
-    from .runtime_integrity import file_digest, verify_tree
-except ImportError:
-    from runtime_integrity import file_digest, verify_tree
+from runtime_integrity import file_digest, verify_tree
 
 MARKER = ".tracebench-runtime-owner.json"
 LOCAL_FILESYSTEMS = {"ext4", "xfs", "btrfs", "zfs"}

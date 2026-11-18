@@ -3,12 +3,15 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 
 import pytest
 
-from controller import node_runtime
-from controller.runtime_integrity import file_digest
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples" / "allocation-local-runtime"))
+
+import node_runtime  # noqa: E402
+from runtime_integrity import file_digest  # noqa: E402
 
 
 def test_local_capacity_rejects_shared_filesystem_even_when_free(tmp_path, monkeypatch):

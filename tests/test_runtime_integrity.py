@@ -1,9 +1,13 @@
 import hashlib
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
-from controller.runtime_integrity import file_digest, verify_tree
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples" / "allocation-local-runtime"))
+
+from runtime_integrity import file_digest, verify_tree  # noqa: E402
 
 
 @pytest.mark.parametrize("workers", [1, 4])
