@@ -1192,6 +1192,82 @@ def test_failed_admission_keeps_its_submitting_task_in_the_capacity_count(setup,
     assert [task["campaign_id"] for task in store.tasks_in_states(lifecycle.ACTIVE)] == ["newer"]
 
 
+@pytest.mark.parametrize("ceiling", ["qos_cpu", "account_gpu", "controller_gpu"])
+def test_failed_outcome_write_keeps_its_intent_in_every_capacity_total(setup, tmp_data_dir, monkeypatch, ceiling):
+    spec, catalog = setup
+    if ceiling == "qos_cpu":
+        catalog["qos"]["normal"]["max_tres_per_user"] = "cpu=4"
+    elif ceiling == "account_gpu":
+        catalog["account"]["grp_tres"] = "gres/gpu=1"
+    else:
+        campaigns.configure({"max_active_gpus": 1})
+    campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json", catalog)
+    campaigns.create(spec)
+    newer = copy.deepcopy(spec)
+    newer["campaign_id"] = "newer"
+    campaigns.create(newer)
+    fake = FakeSlurm()
+    original = store.record_submission
+
+    def record_submission(identity, *args):
+        if identity == "newer":
+            raise RuntimeError("journal unavailable")  # after its intent committed
+        return original(identity, *args)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "record_submission", record_submission)
+        report = campaigns.tick(adapter=fake)
+    assert [name.split("-")[0] for name, _ in fake.submissions] == ["newer"]
+    assert report["admission_attempts"] == 1 and report["admission_progress"] == 0
+    assert store.read("newer")["tasks"][0]["state"] == "submitting"
+    assert store.read("study")["tasks"][0]["state"] == "waiting"
+
+
+@pytest.mark.parametrize("outcome,admitted", [("accepted", ["newer"]), ("uncertain", ["newer"]), ("rejected", ["newer", "study"])])
+def test_an_active_submit_outcome_occupies_capacity_in_the_same_pass(setup, outcome, admitted):
+    spec, _ = setup
+    campaigns.configure({"max_active_gpus": 1})
+    campaigns.create(spec)
+    newer = copy.deepcopy(spec)
+    newer["campaign_id"] = "newer"
+    campaigns.create(newer)
+    fake = FakeSlurm()
+    fake.receipt = {"outcome": outcome, "job_id": "123"} if outcome == "accepted" else {"outcome": outcome, "error": "sbatch"}
+    campaigns.tick(adapter=fake)
+    assert [name.split("-")[0] for name, _ in fake.submissions] == admitted
+
+
+@pytest.mark.parametrize("undeclared", [{}, {"qos": ""}])
+def test_undeclared_qos_counts_against_the_candidate_campaigns_default_qos(setup, tmp_data_dir, undeclared):
+    spec, catalog = setup
+    catalog["account"]["qos"] = ["normal", "long"]
+    catalog["qos"]["long"] = {"max_submit_jobs": 1}
+    campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json", catalog)
+    spec["tasks"][0]["resources"].update(undeclared)
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    assert len(fake.submissions) == 1 and fake.submissions[0][1]["qos"] == "normal"
+
+    campaigns.configure({"qos": "long"})
+    long_default = copy.deepcopy(spec)
+    long_default["campaign_id"] = "long-default"
+    campaigns.create(long_default)
+    campaigns.configure({"qos": "normal"})
+    long_explicit = copy.deepcopy(spec)
+    long_explicit["campaign_id"] = "long-explicit"
+    long_explicit["tasks"][0]["resources"]["qos"] = "long"
+    campaigns.create(long_explicit)
+
+    # The study task declares no QOS, so it counts against long for a campaign whose frozen default is long.
+    campaigns.tick("long-default", fake)
+    assert len(fake.submissions) == 1
+    # It does not count for a campaign that declares long but defaults to normal.
+    campaigns.tick("long-explicit", fake)
+    assert len(fake.submissions) == 2 and fake.submissions[1][1]["qos"] == "long"
+    assert store.read("long-default")["tasks"][0]["state"] == "waiting"
+
+
 def test_observe_failure_is_shown_until_the_next_completed_reconcile(setup):
     spec, _ = setup
 
