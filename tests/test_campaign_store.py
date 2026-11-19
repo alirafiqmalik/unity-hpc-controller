@@ -377,6 +377,21 @@ def test_replayed_observations_publish_only_state_and_queue_changes(tmp_data_dir
     assert store.read("study")["tasks"][0]["observation"]["elapsed_seconds"] == 6
 
 
+def test_transition_does_not_decode_the_task_declaration(tmp_data_dir):
+    _one_campaign()
+    cursor = store.results("study")["next_cursor"]
+    connection = sqlite3.connect(_db(tmp_data_dir))
+    try:
+        with connection:
+            connection.execute("UPDATE tasks SET spec='not json' WHERE task_id='a'")
+        store.record_transition("study", "a", "waiting", eligible_at=60, error="x")
+        assert connection.execute("SELECT state,eligible_at,error,spec FROM tasks").fetchone() == ("waiting", 60, "x", "not json")
+    finally:
+        connection.close()
+    assert [(e["kind"], e["payload"]) for e in store.results("study", after=cursor)["events"]] == [
+        ("waiting", {"eligible_at": 60, "error": "x"})]
+
+
 def test_acceptance_compresses_without_holding_the_write_lock(accepting, tmp_data_dir, monkeypatch):
     original = campaign_contract.snapshot
     probes = []

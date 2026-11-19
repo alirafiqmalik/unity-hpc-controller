@@ -196,7 +196,9 @@ def _check(state, updates):
 
 
 def _transition(con, identity, task_id, state, updates):
-    row = con.execute("SELECT * FROM tasks WHERE campaign_id=? AND task_id=?", (identity, task_id)).fetchone()
+    # Read only what this transition compares or carries to the attempt row, never the frozen declaration.
+    columns = ",".join(dict.fromkeys(("state", "attempt", "job_id", "observation", *updates)))
+    row = con.execute(f"SELECT {columns} FROM tasks WHERE campaign_id=? AND task_id=?", (identity, task_id)).fetchone()
     if row is None:
         raise FileNotFoundError(f"unknown campaign task: {identity}/{task_id}")
     previous = _decode(row)
