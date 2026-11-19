@@ -53,6 +53,7 @@ When `NODE_FAIL`, `PREEMPTED`, or `BOOT_FAIL` sends a task back to `waiting`, th
 A pass runs every `poll_seconds`, or at once when the previous pass admitted work and deferred more.
 While campaigns need work, a pass first refreshes the Catalog when the Catalog module says a refresh is due (the first pass with work, then 15 minutes after the last attempt); this runs before the campaign lock is taken.
 Under the campaign lock it then reconciles every unfinished campaign (observe Slurm, cancel the live jobs of a cancelling campaign, retrieve outputs), and then admits new work (placement, staging, submission intent, submit).
+Each step reads the campaign and its tasks in one journal snapshot, without the Result cursor. Reconciliation also reads each attempt's task, number, and job name, to name the diagnostics of earlier attempts; admission reads no attempt rows and skips a campaign that reconciliation finished.
 
 One clock gives the pass its time.
 Wall time is for times that are stored or compared with stored times: `eligible_at` and the catalog age.
