@@ -906,6 +906,25 @@ def test_admission_ignores_completed_bundles_and_preserves_global_capacity(setup
     assert len(fake.submissions) == 1
 
 
+def test_campaign_that_reconciliation_finishes_is_not_read_for_admission(setup, monkeypatch):
+    spec, _ = setup
+    fake = FakeSlurm()
+    campaigns.create(spec)
+    campaigns.tick(adapter=fake)
+    fake.terminal()
+    reads = []
+    original = store.worker_read
+
+    def worker_read(identity, **kwargs):
+        reads.append((identity, kwargs))
+        return original(identity, **kwargs)
+
+    monkeypatch.setattr(store, "worker_read", worker_read)
+    campaigns.tick(adapter=fake)
+    assert store.read("study")["state"] == "completed"
+    assert reads == [("study", {"attempt_identities": True})]
+
+
 def test_failed_staging_has_no_immediate_retry_loop(setup):
     spec, _ = setup
     campaigns.create(spec)

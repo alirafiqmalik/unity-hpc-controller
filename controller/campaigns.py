@@ -335,12 +335,13 @@ def tick(identity=None, adapter=None, clock=None):
                 # Attempt identities name diagnostics from earlier attempts.
                 campaign = store.worker_read(campaign_id, attempt_identities=True)
                 _reconcile(campaign, adapter or slurm_adapter(campaign, controller_limits), clock)
-                store.roll_up(campaign_id)
+                finished = store.roll_up(campaign_id) in lifecycle.CAMPAIGN_TERMINAL
                 _resolved(campaign, "reconcile")
             except Exception as exc:
                 _campaign_failed(campaign_id, "reconcile", exc)
             else:
-                reconciled.append(campaign_id)
+                if not finished:  # a finished campaign admits nothing; do not decode its declaration again
+                    reconciled.append(campaign_id)
         # Reconcile every accepted attempt before staging or submitting work.
         # A long staging batch must not postpone existing result transfers.
         admission_started = clock.monotonic()
