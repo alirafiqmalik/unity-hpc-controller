@@ -169,9 +169,7 @@ def downloadable(identity, task_id):
     if row is None:
         return None
     task = _decode(row)
-    paths = set(task["spec"]["outputs"])
-    paths.update(receipt["path"] for receipt in (task.get("artifacts") or {}).get("controller_files", []))
-    return paths
+    return {*task["spec"]["outputs"], *(receipt["path"] for receipt in (task.get("artifacts") or {}).get("controller_files", []))}
 
 
 def worker_read(identity, *, attempt_identities=False):
