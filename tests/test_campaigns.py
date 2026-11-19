@@ -1,6 +1,7 @@
 """Portable campaign seam: faults and restarts must not duplicate compute."""
 import collections
 import copy
+import hashlib
 import json
 import shutil
 import subprocess
@@ -468,6 +469,57 @@ def test_delivery_hashes_each_retrieved_file_once_and_records_the_published_diag
         assert task["artifacts"]["complete"] is False
         assert hashed == {".controller/hardware-1.json": 1}
         assert json.loads(campaigns.artifact("study", "model-a", ".controller/hardware-1.json").read_text())["verified"] is False
+
+
+def test_download_reads_only_the_target_task(setup, monkeypatch):
+    spec, _ = setup
+    spec["tasks"] = [{**copy.deepcopy(spec["tasks"][0]), "task_id": f"task-{n:03d}"} for n in range(128)]
+    campaign = campaigns.create(spec)
+    task = campaigns._intent(campaign, campaign["tasks"][64])
+    campaigns._collect(store.read("study"), task, FakeSlurm(), True)
+    artifacts = store.read("study")["tasks"][64]["artifacts"]
+    receipts = {r["path"]: r for r in artifacts["files"] + artifacts["controller_files"]}
+    decoded, statements = [], []
+    original_decode, original_connect = store._decode, store._connect
+
+    def decode(row):
+        decoded.append(set(row.keys()))
+        return original_decode(row)
+
+    def connect(path):
+        connection = original_connect(path)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(store, "_decode", decode)
+    monkeypatch.setattr(store, "_connect", connect)
+    for output in ("summary.json", ".controller/hardware-1.json"):
+        decoded.clear(), statements.clear()
+        data = campaigns.artifact("study", "task-064", output).read_bytes()
+        assert len(data) == receipts[output]["size_bytes"]
+        assert hashlib.sha256(data).hexdigest() == receipts[output]["sha256"]
+        assert decoded == [{"spec", "artifacts"}]
+        assert not any(table in sql for sql in statements for table in ("attempts", "events"))
+    with pytest.raises(FileNotFoundError, match="^artifact has not been retrieved$"):
+        campaigns.artifact("study", "task-000", "summary.json")
+
+
+def test_download_tells_an_unknown_campaign_from_an_unknown_task(setup):
+    spec, _ = setup
+    campaigns.create(spec)
+
+    def download(campaign_id, task_id, path="summary.json"):
+        response = handle(Request("GET", f"/api/v1/campaigns/{campaign_id}/artifacts", query={"task_id": [task_id], "path": [path]}))
+        return response.status, json.loads(response.body)["error"]
+
+    assert download("missing", "model-a") == (404, "unknown campaign: missing")
+    assert download("study", "model-z") == (404, "artifact is not a declared output or retrieved controller diagnostic")
+    assert download("study", "model-a", "run.py") == (404, "artifact is not a declared output or retrieved controller diagnostic")
+    assert download("study", "model-a") == (404, "artifact has not been retrieved")
+    # The task, then the path, are checked before the campaign is looked up.
+    assert download("missing", "../model-a") == (400, "task_id must contain letters, digits, '.', '_', or '-'")
+    assert download("missing", "model-a", "../summary.json") == (400, "output paths must stay inside the task output directory")
+    assert download("bad$id", "model-a") == (400, "campaign_id must contain letters, digits, '.', '_', or '-'")
 
 
 def test_bundle_rejects_symlink_and_dependency_cycle(setup):

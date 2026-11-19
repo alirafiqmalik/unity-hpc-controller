@@ -462,12 +462,7 @@ def cancel(identity, adapter=None):
 def artifact(identity, task_id, output):
     contract.safe_id(task_id, "task_id")
     output = contract.relative(output)
-    campaign = store.read(identity)
-    task = next((t for t in campaign["tasks"] if t["task_id"] == task_id), None)
-    allowed = set(task["spec"]["outputs"]) if task else set()
-    if task:
-        allowed.update(receipt["path"] for receipt in (task.get("artifacts") or {}).get("controller_files", []))
-    if output not in allowed:
+    if output not in (store.downloadable(identity, task_id) or ()):
         raise FileNotFoundError("artifact is not a declared output or retrieved controller diagnostic")
     root = store.root(identity) / "results" / task_id
     path = root / output
