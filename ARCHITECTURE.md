@@ -54,6 +54,7 @@ A pass runs every `poll_seconds`, or at once when the previous pass admitted wor
 While campaigns need work, a pass first refreshes the Catalog when the Catalog module says a refresh is due (the first pass with work, then 15 minutes after the last attempt); this runs before the campaign lock is taken.
 Under the campaign lock it then reconciles every unfinished campaign (observe Slurm, cancel the live jobs of a cancelling campaign, retrieve outputs), and then admits new work (placement, staging, submission intent, submit).
 Each step reads the campaign and its tasks in one journal snapshot, without the Result cursor. Reconciliation also reads each attempt's task, number, and job name, to name the diagnostics of earlier attempts; admission reads no attempt rows and skips a campaign that reconciliation finished.
+Admission counts the active tasks, CPUs, GPUs, and nodes once per pass, by declared QOS, and adds each submit outcome that stays active (accepted or uncertain). A task that declares no QOS counts against a candidate's QOS when the candidate campaign's frozen default is that QOS. After an admission failure the totals are counted again from the journal, because a submission intent can commit before its outcome is recorded.
 
 One clock gives the pass its time.
 Wall time is for times that are stored or compared with stored times: `eligible_at` and the catalog age.
