@@ -1,5 +1,6 @@
 """Campaign journal transactions, schema setup, and concurrent access."""
 
+import json
 import sqlite3
 import threading
 
@@ -325,6 +326,55 @@ def test_submission_outcome_and_receipt_commit_together(tmp_data_dir):
     assert campaign["attempts"][0]["state"] == "accepted"
     assert campaign["attempts"][0]["receipt"] == receipt
     assert [event["kind"] for event in store.results("study", after=cursor)["events"]] == ["accepted"]
+
+
+def test_intent_publishes_attempt_and_job_name_with_its_attempt_row(tmp_data_dir, monkeypatch):
+    _one_campaign()
+    cursor = store.results("study")["next_cursor"]
+
+    def refused(*args):
+        raise sqlite3.OperationalError("event write refused")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_event", refused)
+        with pytest.raises(sqlite3.OperationalError):
+            store.record_intent("study", "a", lifecycle.intent(1, "job-1"))
+    campaign = store.read("study")
+    assert (campaign["tasks"][0]["state"], campaign["tasks"][0]["attempt"], campaign["attempts"]) == ("waiting", 0, [])
+
+    store.record_intent("study", "a", lifecycle.intent(1, "job-1"))
+    response = handle(Request("GET", "/api/v1/campaigns/study/results", {"after": [str(cursor)]}))
+    assert response.status == 200
+    events = json.loads(response.body)["events"]
+    assert [(e["task_id"], e["kind"], e["payload"]) for e in events] == [
+        ("a", "submitting", {"attempt": 1, "job_name": "job-1"})]
+    campaign = store.read("study")
+    assert (campaign["tasks"][0]["state"], campaign["tasks"][0]["attempt"], campaign["tasks"][0]["job_name"]) == (
+        "submitting", 1, "job-1")
+    assert [(a["attempt"], a["job_name"], a["state"]) for a in campaign["attempts"]] == [(1, "job-1", "submitting")]
+
+
+def test_replayed_observations_publish_only_state_and_queue_changes(tmp_data_dir):
+    _one_campaign()
+    store.record_intent("study", "a", lifecycle.intent(1, "job-1"))
+    receipt = {"outcome": "accepted", "job_id": "123"}
+    store.record_submission("study", "a", 1, receipt, lifecycle.submitted(receipt))
+    polls = [("PENDING", "Priority"), ("PENDING", "Priority"), ("PENDING", "Resources"), ("PENDING", "Resources"),
+             ("PENDING", "Priority"), ("RUNNING", None), ("RUNNING", None)]
+    published = []
+    for elapsed, (state, reason) in enumerate(polls):
+        task = store.read("study")["tasks"][0]
+        raw = {"job_id": "123", "state": state, "pending_reason": reason, "elapsed_seconds": elapsed}
+        step = lifecycle.observed(task, raw, cancelling=False, max_attempts=2, now=0).step
+        cursor = store.results("study")["next_cursor"]
+        store.record_transition("study", "a", step.state, **step.fields)
+        published.append([(e["kind"], e["payload"]) for e in store.results("study", after=cursor)["events"]])
+    assert [len(events) for events in published] == [1, 0, 1, 0, 1, 1, 0]
+    assert published[2] == [("accepted", {"job_id": "123", "error": None, "observation": {
+        "job_id": "123", "state": "PENDING", "pending_reason": "Resources", "elapsed_seconds": 2, "fetch_attempts": 0}})]
+    assert published[5] == [("running", {"job_id": "123", "error": None, "observation": {
+        "job_id": "123", "state": "RUNNING", "pending_reason": None, "elapsed_seconds": 5, "fetch_attempts": 0}})]
+    assert store.read("study")["tasks"][0]["observation"]["elapsed_seconds"] == 6
 
 
 def test_acceptance_compresses_without_holding_the_write_lock(accepting, tmp_data_dir, monkeypatch):
