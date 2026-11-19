@@ -196,25 +196,18 @@ def _file_receipts(campaign, task, local, names, *, allow_empty=False):
     return receipts, missing
 
 
-def controller_artifacts(campaign, task):
-    """Expose only known attempt evidence, without making logs required outputs."""
-    local = store.root(campaign["id"]) / "results" / task["task_id"]
-    attempts = [a for a in campaign.get("attempts", []) if a["task_id"] == task["task_id"]]
-    attempts.append(task)
+def record_controller_artifacts(campaign, task):
+    """Retain the retrieved evidence of known attempts, without making logs required outputs or promoting
+    scientific completion. Returns the receipts, so delivery records the same ones without hashing again."""
     names = set()
-    for attempt in attempts:
+    for attempt in [a for a in campaign.get("attempts", []) if a["task_id"] == task["task_id"]] + [task]:
         number = attempt.get("attempt", 0)
         if isinstance(number, int) and 0 < number <= task["attempt"]:
             names.update((hardware_class.hardware_evidence(number), hardware_class.gpu_samples(number)))
         if attempt.get("job_name"):
             names.update(attempt["job_name"] + "." + suffix for suffix in ("out", "err"))
-    return _file_receipts(campaign, task, local, sorted(names), allow_empty=True)[0]
-
-
-def record_controller_artifacts(campaign, task):
-    """Retain retrieved failure evidence without promoting scientific completion.
-    Returns the receipts, so delivery records the same ones without hashing again."""
-    diagnostics = controller_artifacts(campaign, task)
+    local = store.root(campaign["id"]) / "results" / task["task_id"]
+    diagnostics = _file_receipts(campaign, task, local, sorted(names), allow_empty=True)[0]
     if diagnostics:
         store.record_diagnostics(campaign["id"], task["task_id"], diagnostics)
     return diagnostics
