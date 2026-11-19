@@ -338,15 +338,14 @@ def tick(identity=None, adapter=None, clock=None):
         reconciled = []
         for campaign_id in identities:
             try:
-                # Attempt identities name diagnostics from earlier attempts.
                 campaign = store.worker_read(campaign_id, attempt_identities=True)
                 _reconcile(campaign, adapter or slurm_adapter(campaign, controller_limits), clock)
-                finished = store.roll_up(campaign_id) in lifecycle.CAMPAIGN_TERMINAL
+                state = store.roll_up(campaign_id) or campaign["state"]  # roll_up returns only a changed state
                 _resolved(campaign, "reconcile")
             except Exception as exc:
                 _campaign_failed(campaign_id, "reconcile", exc)
             else:
-                if not finished:  # a finished campaign admits nothing; do not decode its declaration again
+                if state not in lifecycle.CAMPAIGN_TERMINAL:  # a finished campaign admits nothing; do not read it again
                     reconciled.append(campaign_id)
         # Reconcile every accepted attempt before staging or submitting work.
         # A long staging batch must not postpone existing result transfers.
@@ -364,8 +363,6 @@ def tick(identity=None, adapter=None, clock=None):
                 break
             try:
                 campaign = store.worker_read(campaign_id)  # admission reads no attempt rows
-                if campaign["state"] in lifecycle.CAMPAIGN_TERMINAL:
-                    continue
                 backend = campaign["spec"]["backend"]
                 # Mail is current service policy, including for waiting tasks and
                 # retries in campaigns accepted before notifications were enabled.
