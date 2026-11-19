@@ -12,11 +12,13 @@ import json
 import os
 import re
 import shutil
+import stat
 import threading
 import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlencode
 
 from lib import paths
 from controller import campaign_contract as contract, campaign_lifecycle as lifecycle, campaign_planner as planner, campaign_store as store, catalog, events, hardware_class
@@ -172,21 +174,28 @@ def _intent(campaign, task):
             "observation": None, "eligible_at": 0.0}
 
 
-def _file_receipt(campaign, task, local, output, *, allow_empty=False):
-    """Describe only a safe retrieved file; controller diagnostics are optional."""
-    from urllib.parse import urlencode
-    path = local / output
-    if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(local.resolve()):
-        return None
-    if not allow_empty and path.stat().st_size == 0:
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    query = urlencode({"task_id": task["task_id"], "path": output})
-    return {"path": output, "sha256": digest.hexdigest(), "size_bytes": path.stat().st_size,
-            "download_url": f"/api/v1/campaigns/{campaign['id']}/artifacts?{query}", "local_path": str(path)}
+def _file_receipts(campaign, task, local, names, *, allow_empty=False):
+    """Receipts for the safe retrieved files among names, and the names without one.
+    Controller diagnostics may be empty; declared outputs may not."""
+    root, receipts, missing = local.resolve(), [], []
+    for name in names:
+        path = local / name
+        try:
+            info = path.lstat()
+        except (OSError, ValueError):
+            info = None
+        if (info is None or not stat.S_ISREG(info.st_mode) or not path.resolve().is_relative_to(root)
+                or not allow_empty and info.st_size == 0):
+            missing.append(name)
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while block := stream.read(1024 * 1024):
+                digest.update(block)
+        query = urlencode({"task_id": task["task_id"], "path": name})
+        receipts.append({"path": name, "sha256": digest.hexdigest(), "size_bytes": info.st_size,
+                         "download_url": f"/api/v1/campaigns/{campaign['id']}/artifacts?{query}", "local_path": str(path)})
+    return receipts, missing
 
 
 def controller_artifacts(campaign, task):
@@ -201,8 +210,7 @@ def controller_artifacts(campaign, task):
             names.update((hardware_class.hardware_evidence(number), hardware_class.gpu_samples(number)))
         if attempt.get("job_name"):
             names.update(attempt["job_name"] + "." + suffix for suffix in ("out", "err"))
-    return [receipt for name in sorted(names)
-            if (receipt := _file_receipt(campaign, task, local, name, allow_empty=True)) is not None]
+    return _file_receipts(campaign, task, local, sorted(names), allow_empty=True)[0]
 
 
 def record_controller_artifacts(campaign, task):
@@ -227,13 +235,7 @@ def _collect(campaign, task, adapter, successful):
         raise contract.Conflict(problem)
     if spec["resources"]["gpu_count"]:
         store.bind_observed(spec["model_class"], hardware_class.observed(hardware["gpus"]))
-    artifacts, missing = [], []
-    for output in spec["outputs"]:
-        receipt = _file_receipt(campaign, task, local, output)
-        if receipt is None:
-            missing.append(output)
-            continue
-        artifacts.append(receipt)
+    artifacts, missing = _file_receipts(campaign, task, local, spec["outputs"])
     metadata = {"files": artifacts, "controller_files": diagnostics,
                 "missing": missing, "hardware": hardware, "attempt": task["attempt"], "job_id": task["job_id"]}
     step = lifecycle.delivered(metadata, successful=successful)
