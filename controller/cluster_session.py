@@ -122,7 +122,7 @@ def remote_invocation(
         f"cat {log} 2>/dev/null || true",
         f"echo {shlex.quote(_LOG_END)}",
         f"rm -f {mark} {log}",
-        f"exit \"$rc\"",
+        'exit "$rc"',
     ])
 
 
