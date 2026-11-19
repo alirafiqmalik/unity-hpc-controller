@@ -281,6 +281,71 @@ def test_retry_retains_previous_attempt_scheduler_outcome_and_observation(setup,
     assert attempts[1]["job_id"] == "124"
 
 
+def test_retry_delivers_diagnostics_from_earlier_attempts(setup):
+    spec, _ = setup
+    campaigns.create(spec)
+
+    class LoggedSlurm(FakeSlurm):
+        def collect(self, campaign, task):
+            local = super().collect(campaign, task)
+            (local / (task["job_name"] + ".out")).write_text(f"attempt {task['attempt']}\n")
+            return local
+
+    slurm = LoggedSlurm()
+    campaigns.tick(adapter=slurm, clock=FakeClock(0))
+    slurm.terminal("NODE_FAIL")
+    campaigns.tick(adapter=slurm, clock=FakeClock(0))
+    slurm.receipt = {"outcome": "accepted", "job_id": "124"}
+    campaigns.tick(adapter=slurm, clock=FakeClock(2))
+    slurm.terminal("COMPLETED", job_id="124")
+    campaigns.tick(adapter=slurm, clock=FakeClock(4))
+    first, second = (name for name, _ in slurm.submissions)
+    task = store.read("study")["tasks"][0]
+    assert task["state"] == "completed" and task["attempt"] == 2
+    assert {r["path"] for r in task["artifacts"]["controller_files"]} == {
+        first + ".out", second + ".out", ".controller/hardware-1.json", ".controller/hardware-2.json"}
+
+
+def test_worker_pass_reads_no_result_cursor_and_admission_reads_no_attempts(setup, monkeypatch):
+    spec, _ = setup
+    spec["max_concurrent"] = 1
+    spec["tasks"].append({**copy.deepcopy(spec["tasks"][0]), "task_id": "model-b"})
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick(adapter=fake)
+    assert len(fake.submissions) == 1
+    statements = []
+    original = store._connect
+
+    def connect(path):
+        connection = original(path)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", connect)
+    campaigns.tick(adapter=fake)
+    assert len(fake.submissions) == 1
+    assert not [s for s in statements if "MAX(cursor)" in s]
+    # Reconciliation reads attempt identities once; admission reads no attempt rows.
+    assert [s for s in statements if s.startswith("SELECT") and "FROM attempts" in s] == [
+        "SELECT task_id,attempt,job_name FROM attempts WHERE campaign_id='study' ORDER BY task_id,attempt"]
+
+
+def test_detail_resend_and_cancel_keep_the_full_snapshot(setup):
+    spec, _ = setup
+    assert handle(Request("POST", "/api/v1/campaigns", body=json.dumps(spec).encode())).status == 202
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    detail = json.loads(handle(Request("GET", "/api/v1/campaigns/study")).body)["campaign"]
+    resend = handle(Request("POST", "/api/v1/campaigns", body=json.dumps(spec).encode()))
+    assert resend.status == 200
+    cancelled = campaigns.cancel("study", adapter=fake)
+    for value in (detail, json.loads(resend.body)["campaign"], cancelled):
+        assert value["attempts"][0]["receipt"] == {"outcome": "accepted", "job_id": "123"}
+        assert value["result_cursor"] > 0
+    assert cancelled["result_cursor"] == store.results("study")["next_cursor"]
+
+
 def test_only_bounded_infrastructure_retry_with_same_hardware(setup):
     spec, _ = setup
     campaigns.create(spec)
@@ -811,17 +876,23 @@ def test_admission_ignores_completed_bundles_and_preserves_global_capacity(setup
         pending["campaign_id"] = identity
         campaigns.create(pending)
     campaigns.configure({"max_active_gpus": 1})
-    original_read = store.read
+    original_read, original_worker_read = store.read, store.worker_read
 
     def read_active_only(identity):
         if identity == "study":
             pytest.fail("completed bundle read during admission")
         return original_read(identity)
 
+    def worker_read_active_only(identity, **kwargs):
+        if identity == "study":
+            pytest.fail("completed bundle read during a general pass")
+        return original_worker_read(identity, **kwargs)
+
     def no_full_listing():
         pytest.fail("worker loaded every historical source manifest")
 
     monkeypatch.setattr(store, "read", read_active_only)
+    monkeypatch.setattr(store, "worker_read", worker_read_active_only)
     monkeypatch.setattr(store, "listing", no_full_listing)
     fake.submissions.clear()
     first = campaigns.tick(adapter=fake)

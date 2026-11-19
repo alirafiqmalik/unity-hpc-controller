@@ -332,7 +332,8 @@ def tick(identity=None, adapter=None, clock=None):
         reconciled = []
         for campaign_id in identities:
             try:
-                campaign = store.read(campaign_id)
+                # Attempt identities name diagnostics from earlier attempts.
+                campaign = store.worker_read(campaign_id, attempt_identities=True)
                 _reconcile(campaign, adapter or slurm_adapter(campaign, controller_limits), clock)
                 store.roll_up(campaign_id)
                 _resolved(campaign, "reconcile")
@@ -356,7 +357,7 @@ def tick(identity=None, adapter=None, clock=None):
             if deferred_eligible:
                 break
             try:
-                campaign = store.read(campaign_id)
+                campaign = store.worker_read(campaign_id)  # admission reads no attempt rows
                 if campaign["state"] in lifecycle.CAMPAIGN_TERMINAL:
                     continue
                 backend = campaign["spec"]["backend"]
