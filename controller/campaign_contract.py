@@ -54,6 +54,14 @@ def _positive(value, label, maximum, minimum=1):
     return value
 
 
+def _optional(resources, key, pattern, message):
+    """The value at key when it is absent, None, empty, or a string that matches pattern."""
+    value = resources.get(key)
+    if value is not None and (not isinstance(value, str) or (value and not re.fullmatch(pattern, value))):
+        raise CampaignError(message)
+    return value
+
+
 def expand_nodes(expression):
     """Expand bounded Slurm nodelists without a controller-side shell call."""
     if not expression:
@@ -125,17 +133,12 @@ def validate(raw):
         partitions = resources.setdefault("partitions", [])
         if not isinstance(partitions, list) or not all(isinstance(p, str) and TOKEN.fullmatch(p) for p in partitions):
             raise CampaignError("resources.partitions must be a list of partition names")
-        if resources.get("qos") is not None and (not isinstance(resources["qos"], str) or (resources["qos"] and not TOKEN.fullmatch(resources["qos"]))):
-            raise CampaignError("resources.qos must be a Slurm QOS name")
+        _optional(resources, "qos", TOKEN, "resources.qos must be a Slurm QOS name")
         constraint = resources.setdefault("constraint", "")
         if not isinstance(constraint, str) or (constraint and not re.fullmatch(r"[A-Za-z0-9_.-]+(?:&[A-Za-z0-9_.-]+)*", constraint)):
             raise CampaignError("constraint supports exact features joined with '&'")
-        if resources.get("nodelist") is not None and (not isinstance(resources["nodelist"], str) or (resources["nodelist"] and not re.fullmatch(r"[A-Za-z0-9_.\[\],-]+", resources["nodelist"]))):
-            raise CampaignError("nodelist must be a Slurm node list")
-        if resources.get("nodelist"):
-            expand_nodes(resources["nodelist"])
-        if resources.get("expected_gpu_uuid") is not None and (not isinstance(resources["expected_gpu_uuid"], str) or (resources["expected_gpu_uuid"] and not TOKEN.fullmatch(resources["expected_gpu_uuid"]))):
-            raise CampaignError("expected_gpu_uuid must be a device identifier")
+        expand_nodes(_optional(resources, "nodelist", r"[A-Za-z0-9_.\[\],-]+", "nodelist must be a Slurm node list"))
+        _optional(resources, "expected_gpu_uuid", TOKEN, "expected_gpu_uuid must be a device identifier")
         if resources["gpu_count"]:
             safe_id(task.get("model_class"), "model_class")
             gpu_type = resources.get("gpu_type")
