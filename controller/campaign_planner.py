@@ -37,8 +37,15 @@ def _history_hardware(gpu_type):
     return gpu_type or "cpu"
 
 
-def historical_profile(partition, gpu_type):
+def historical_profile(partition, gpu_type, profiles=None):
+    """Measured waits, runtimes, and memory of completed runs. With a plan request's `profiles`, read once
+    per partition and history hardware key; a CPU task's gpu_type is not validated, so a key that is not
+    text is read each time."""
     hardware = _history_hardware(gpu_type)
+    if profiles is not None and isinstance(hardware, str):
+        if (partition, hardware) not in profiles:
+            profiles[partition, hardware] = historical_profile(partition, gpu_type)
+        return dict(profiles[partition, hardware])
     value = {"source": "local task_run accounting", "partition": partition, "hardware": hardware, "sample_count": 0,
              "wait_p50_seconds": None, "wait_p95_seconds": None, "runtime_p95_seconds": None, "max_rss_p95_mb": None, "confidence": "unknown"}
     try:
@@ -52,17 +59,6 @@ def historical_profile(partition, gpu_type):
     except (sqlite3.Error, ValueError, TypeError):
         pass
     return value
-
-
-def _profile(partition, gpu_type, profiles):
-    """historical_profile; with a plan request's `profiles`, read once per partition and history
-    hardware key. A CPU task's gpu_type is not validated, so a key that is not text is read each time."""
-    hardware = _history_hardware(gpu_type)
-    if profiles is None or not isinstance(hardware, str):
-        return historical_profile(partition, gpu_type)
-    if (partition, hardware) not in profiles:
-        profiles[partition, hardware] = historical_profile(partition, gpu_type)
-    return dict(profiles[partition, hardware])
 
 
 UNREAD = object()  # "read the stored Catalog"; a loaded document can itself be null
@@ -157,7 +153,7 @@ def select(resources, settings, observed=UNREAD, *, now=None, partition_nodes=No
             reasons.append("no verified node fits the exact features, GPU type/count, CPU, and memory request")
         if entry.get("preempt_mode", "OFF") != "OFF" and not settings.get("allow_preemptible", True):
             reasons.append("preemptible partitions disabled by controller policy")
-        profile = _profile(name, resources.get("gpu_type"), profiles)
+        profile = historical_profile(name, resources.get("gpu_type"), profiles)
         proposed.append({"partition": name, "eligible": not reasons, "reasons": list(dict.fromkeys(reasons)), "matching_nodes": fits,
                          "history": profile, "preempt_mode": entry.get("preempt_mode"), "priority_tier": entry.get("priority_tier"),
                          "freshness_seconds": age, "estimated_queue_seconds": profile["wait_p50_seconds"]})
