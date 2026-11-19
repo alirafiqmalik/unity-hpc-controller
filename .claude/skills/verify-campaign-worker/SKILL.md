@@ -37,12 +37,12 @@ The model covers these code paths. If your diff changes one of them, or changes 
 | `ReconcileBegin`, `ReconcileEnd`, `ReconcileFails` | `campaigns.tick` reconcile loop: `store.worker_read(campaign_id, attempt_identities=True)`, `campaigns._reconcile` end (`lifecycle.cancel_request`), `store.roll_up`, `campaigns._campaign_failed` |
 | `Observe` | `campaigns._reconcile`: `adapter.observe`, `lifecycle.observed`, `adapter.cancel` on `CANCEL_JOB` |
 | `Resolve` | `campaigns._reconcile` SALVAGE and RETRIEVE: `lifecycle.salvaged`, `campaigns._collect`, `lifecycle.delivered`, `lifecycle.undelivered` |
-| `AdmitStart` | `campaigns.tick`: `_ActiveTotals(store.tasks_in_states(lifecycle.ACTIVE))` |
-| `AdmitBegin`, `AdmitCancelWaiting` | `campaigns.tick` admission: `store.worker_read(campaign_id)`, the skip of a finished campaign, `running`, `lifecycle.admission` |
-| `Admissible`, `EffectiveQos`, `SameQos`, `AccountCount` | the capacity checks in `campaigns.tick` admission: `max_concurrent`, `max_active_tasks`, `max_active_gpus`, `_ActiveTotals.under` for QOS job limits, `_ActiveTotals.overall` for account job limits; `planner.qos_for` |
+| `AdmitStart` | `campaigns.tick`: `campaigns._active_totals()` over `store.tasks_in_states(lifecycle.ACTIVE)` |
+| `AdmitBegin`, `AdmitCancelWaiting` | `campaigns.tick` admission: `store.worker_read(campaign_id)`, `running`, `lifecycle.admission`; the skip of a finished campaign is the reconcile loop's check of `store.roll_up(campaign_id) or campaign["state"]`, which leaves it out of `reconciled` |
+| `Admissible`, `EffectiveQos`, `SameQos`, `AccountCount` | the capacity checks in `campaigns.tick` admission: `max_concurrent`, `max_active_tasks`, `max_active_gpus`, `exceeds` with `active[placement["qos"]]` for QOS job and TRES limits, `exceeds` with `overall` for account job and TRES limits; `planner.qos_for` |
 | `Intent` | `campaigns._intent`, `store.record_intent` |
 | `Submit` | `SlurmAdapter.submit` in `controller/campaign_slurm.py`, `lifecycle.uncertain_receipt` |
-| `RecordSubmission`, `RecordSubmissionFails` | `lifecycle.submitted`, `store.record_submission`, `_ActiveTotals.add(task, placement["qos"])`, and the rebuild of `_ActiveTotals` after an admission exception in `campaigns.tick` |
+| `RecordSubmission`, `RecordSubmissionFails` | `lifecycle.submitted`, `store.record_submission`, `active[placement["qos"]].update(requested)`, and `active = _active_totals()` after an admission exception in `campaigns.tick` |
 | `AdmitEnd`, `PassEnd` | `store.roll_up` after a campaign's admission; the end of `tick` |
 | `CancelBegin`, `CancelEnd` | `campaigns.cancel`: `lifecycle.cancel_campaign`, `store.record_cancel_request`, `adapter.cancel`, `lifecycle.cancel_request` |
 | `Crash` | the controller process ends; `campaigns.db` and Slurm stay |
