@@ -6,7 +6,6 @@ remote flock; a missing receipt after an SSH failure is an uncertain outcome.
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import re
@@ -33,8 +32,9 @@ def script(settings, campaign, task, placement):
     spec, resources = task["spec"], task["spec"]["resources"]
     base = remote_root(settings, campaign)
     output = output_dir(settings, campaign, task)
+    walltime = resources["walltime_seconds"]
     headers = {"job-name": task["job_name"], "account": settings["account"], "partition": ",".join(placement["selected_partitions"]),
-               "time": f"{resources['walltime_seconds'] // 86400}-{resources['walltime_seconds'] // 3600 % 24:02}:{resources['walltime_seconds'] // 60 % 60:02}:{resources['walltime_seconds'] % 60:02}", "nodes": "1", "cpus-per-task": str(resources["cpus"]),
+               "time": f"{walltime // 86400}-{walltime // 3600 % 24:02}:{walltime // 60 % 60:02}:{walltime % 60:02}", "nodes": "1", "cpus-per-task": str(resources["cpus"]),
                "mem": str(resources["memory_mb"]) + "M", "output": base + "/logs/" + task["job_name"] + ".out", "error": base + "/logs/" + task["job_name"] + ".err",
                "qos": placement["qos"], "no-requeue": None}
     if settings.get("mail_user"):
@@ -44,14 +44,9 @@ def script(settings, campaign, task, placement):
         # Some Unity devices appear in GRES but are absent from the submit
         # plugin's typed-name allowlist. The validated exact feature, catalog
         # GPU type, and in-job device attestation retain the hardware lock.
-        if resources.get("gpu_request_by_constraint"):
-            headers["gres"] = f"gpu:{resources['gpu_count']}"
-        else:
-            headers["gres"] = f"gpu:{resources['gpu_type']}:{resources['gpu_count']}"
-    if resources.get("constraint"):
-        headers["constraint"] = resources["constraint"]
-    if resources.get("nodelist"):
-        headers["nodelist"] = resources["nodelist"]
+        typed = "" if resources.get("gpu_request_by_constraint") else f"{resources['gpu_type']}:"
+        headers["gres"] = f"gpu:{typed}{resources['gpu_count']}"
+    headers.update({key: resources[key] for key in ("constraint", "nodelist") if resources.get(key)})
     lines = ["#!/usr/bin/env bash", *(f"#SBATCH --{k}" + (f"={v}" if v is not None else "") for k, v in headers.items()), "set -euo pipefail", "umask 077"]
     env = {**spec["env"], "HPC_TASK_ID": task["task_id"], "HPC_OUTPUT_DIR": output, "HPC_ATTEMPT": str(task["attempt"]),
            "HPC_CAMPAIGN_ID": campaign["id"], "HPC_HARDWARE_PROFILE_ID": spec.get("model_class", "cpu"),
@@ -149,14 +144,14 @@ class SlurmAdapter:
 
     def submit(self, campaign, task, placement):
         base = remote_root(self.settings, campaign)
-        path = base + "/jobs/" + task["job_name"] + ".sh"
-        result = self.command("umask 077; cat > " + shlex.quote(path), input=script(self.settings, campaign, task, placement))
+        path = shlex.quote(base + "/jobs/" + task["job_name"] + ".sh")
+        result = self.command("umask 077; cat > " + path, input=script(self.settings, campaign, task, placement))
         if result.returncode:
             return {"outcome": "rejected", "error": "job script staging failed: " + result.stderr[-1500:]}
-        receipt = base + "/receipts/" + task["job_name"]
-        code = "\n".join(["set -u", "exec 9>" + shlex.quote(receipt + ".lock"), "flock 9", "if test -s " + shlex.quote(receipt) + "; then cat " + shlex.quote(receipt) + "; exit 0; fi",
-                           "sbatch --parsable " + shlex.quote(path) + " >" + shlex.quote(receipt + ".tmp"), "HPC_RC=$?", "if test \"$HPC_RC\" -ne 0; then echo HPC_SUBMISSION_REJECTED >&2; exit \"$HPC_RC\"; fi",
-                           "mv " + shlex.quote(receipt + ".tmp") + " " + shlex.quote(receipt), "cat " + shlex.quote(receipt)])
+        receipt, lock, pending = (shlex.quote(base + "/receipts/" + task["job_name"] + suffix) for suffix in ("", ".lock", ".tmp"))
+        code = "\n".join(["set -u", "exec 9>" + lock, "flock 9", "if test -s " + receipt + "; then cat " + receipt + "; exit 0; fi",
+                           "sbatch --parsable " + path + " >" + pending, "HPC_RC=$?", "if test \"$HPC_RC\" -ne 0; then echo HPC_SUBMISSION_REJECTED >&2; exit \"$HPC_RC\"; fi",
+                           "mv " + pending + " " + receipt, "cat " + receipt])
         result = self.command("bash -c " + shlex.quote(code))
         match = re.fullmatch(r"\s*(\d+)(?:;[A-Za-z0-9_.-]+)?\s*", result.stdout)
         if result.returncode == 0 and match:
@@ -221,17 +216,13 @@ class SlurmAdapter:
         local.mkdir(parents=True, exist_ok=True)
         includes = ["/" + hardware_class.EVIDENCE_DIR + "/", "/" + hardware_class.EVIDENCE_DIR + "/***"]
         for output in task["spec"]["outputs"]:
-            path = Path(output)
-            for parent in reversed(path.parents):
-                if str(parent) != ".":
-                    includes.append("/" + str(parent) + "/")
-            escaped = re.sub(r"([*?\[\]\\])", r"\\\1", output)
-            includes.append("/" + escaped)
+            includes += ["/" + str(parent) + "/" for parent in reversed(Path(output).parents) if str(parent) != "."]
+            includes.append("/" + re.sub(r"([*?\[\]\\])", r"\\\1", output))
         self.transfer(local, output_dir(self.settings, campaign, task) + "/", pull=True, include=includes)
-        base = remote_root(self.settings, campaign)
-        for suffix in ("out", "err"):
+        logs = remote_root(self.settings, campaign) + "/logs/"
+        for log in (task["job_name"] + ".out", task["job_name"] + ".err"):
             try:
-                self.transfer(local / (task["job_name"] + "." + suffix), base + "/logs/" + task["job_name"] + "." + suffix, pull=True)
+                self.transfer(local / log, logs + log, pull=True)
             except RuntimeError:
                 pass
         return local
