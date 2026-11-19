@@ -7,6 +7,7 @@ SSH, Slurm, or remote paths. Validation and planning never submit work.
 from __future__ import annotations
 
 import fnmatch
+import graphlib
 import hashlib
 import io
 import json
@@ -163,23 +164,14 @@ def validate(raw):
         if not isinstance(dependencies, list) or not all(isinstance(x, str) for x in dependencies):
             raise CampaignError("depends_on must be a list of task identities")
     graph = {t["task_id"]: t["depends_on"] for t in tasks}
-    remaining, dependents = {}, {identity: [] for identity in graph}
-    for identity, dependencies in graph.items():
-        remaining[identity] = len(set(dependencies))
+    for dependencies in graph.values():
         for dep in set(dependencies):
             if dep not in graph:
                 raise CampaignError(f"unknown dependency: {dep}")
-            dependents[dep].append(identity)
-    ready = [identity for identity, count in remaining.items() if not count]
-    visited = 0
-    while ready:
-        visited += 1
-        for identity in dependents[ready.pop()]:
-            remaining[identity] -= 1
-            if not remaining[identity]:
-                ready.append(identity)
-    if visited != len(graph):
-        raise CampaignError("task dependencies contain a cycle")
+    try:
+        graphlib.TopologicalSorter(graph).prepare()  # iterative, so long chains do not exhaust the stack
+    except graphlib.CycleError:
+        raise CampaignError("task dependencies contain a cycle") from None
     value["max_concurrent"] = _positive(value.get("max_concurrent", 4), "max_concurrent", 128)
     value["max_attempts"] = _positive(value.get("max_attempts", 2), "max_attempts", 10)
     return value
