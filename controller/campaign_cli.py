@@ -61,10 +61,10 @@ def main(argv=None):
                 campaign = result["campaign"]
                 result = {"campaign_id": campaign["id"], "state": campaign["state"], "error": campaign.get("error"),
                           "task_counts": dict(Counter(t["state"] for t in campaign["tasks"])),
-                          "jobs": [{"task_id": t["task_id"], "job_id": t["job_id"], "state": (t.get("observation") or {}).get("state", t["state"]),
-                                    "pending_reason": (t.get("observation") or {}).get("pending_reason"), "node_list": (t.get("observation") or {}).get("node_list"),
-                                    "estimated_start": (t.get("observation") or {}).get("estimated_start"), "observed_at": (t.get("observation") or {}).get("observed_at")}
-                                   for t in campaign["tasks"] if t.get("job_id") and t["state"] not in ("completed", "failed", "rejected", "cancelled", "blocked")],
+                          "jobs": [{"task_id": t["task_id"], "job_id": t["job_id"], "state": seen.get("state", t["state"]),
+                                    **{key: seen.get(key) for key in ("pending_reason", "node_list", "estimated_start", "observed_at")}}
+                                   for t in campaign["tasks"] if t.get("job_id") and t["state"] not in ("completed", "failed", "rejected", "cancelled", "blocked")
+                                   for seen in [t.get("observation") or {}]],
                           "estimate_note": "Slurm start hints can change. Missing estimates remain unknown. This command reads cached controller observations."}
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
