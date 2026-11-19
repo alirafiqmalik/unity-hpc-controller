@@ -321,20 +321,20 @@ class Clock:
 
 
 class _ActiveTotals:
-    """Active tasks, CPUs, GPUs, and nodes for one admission pass, kept by declared QOS.
-    Tasks that declare no QOS (absent or empty) share the bucket None."""
+    """Active tasks, CPUs, GPUs, and nodes for one admission pass, kept by the QOS each task runs
+    under: its resources.qos, else its own campaign's frozen default QOS."""
 
     KEYS = ("tasks", "cpu", "gres/gpu", "node")
 
     def __init__(self, tasks):
         self.by_qos = {}
         for task in tasks:
-            self.add(task)
+            self.add(task, planner.qos_for(task["spec"]["resources"], task["campaign_backend"]))
 
-    def add(self, task):
-        """Count a task whose recorded state is active."""
+    def add(self, task, qos):
+        """Count a task whose recorded state is active and that runs under qos."""
         resources = task["spec"]["resources"]
-        totals = self.by_qos.setdefault(resources.get("qos") or None, dict.fromkeys(self.KEYS, 0))
+        totals = self.by_qos.setdefault(qos, dict.fromkeys(self.KEYS, 0))
         totals["tasks"] += 1
         totals["node"] += 1  # each task asks for one node
         totals["cpu"] += resources["cpus"]
@@ -343,13 +343,9 @@ class _ActiveTotals:
     def overall(self):
         return {key: sum(totals[key] for totals in self.by_qos.values()) for key in self.KEYS}
 
-    def same_qos(self, qos, backend):
-        """Totals that count against the placement's QOS: tasks that declare it, and tasks that
-        declare none when the candidate campaign's frozen default QOS is that QOS."""
-        buckets = [self.by_qos[qos]] if qos and qos in self.by_qos else []
-        if None in self.by_qos and backend["qos"] == qos:
-            buckets.append(self.by_qos[None])
-        return {key: sum(totals[key] for totals in buckets) for key in self.KEYS}
+    def under(self, qos):
+        """Totals of the tasks that run under qos."""
+        return self.by_qos.get(qos) or dict.fromkeys(self.KEYS, 0)
 
 
 def tick(identity=None, adapter=None, clock=None):
@@ -424,10 +420,12 @@ def tick(identity=None, adapter=None, clock=None):
                     if placement["warnings"] or not placement["selected_partitions"]:
                         store.record_task_error(campaign["id"], task["task_id"], "; ".join(placement["warnings"]) or "no eligible exact hardware partition; refresh backend probe")
                         continue
-                    same_qos = active.same_qos(placement["qos"], backend)
-                    count_limits = [placement["qos_limits"].get(k) for k in ("max_submit_jobs", "max_jobs")]
-                    count_limits += [placement["account_limits"].get(k) for k in ("max_submit_jobs", "max_jobs", "grp_submit_jobs", "grp_jobs")]
-                    if any(limit is not None and same_qos["tasks"] >= limit for limit in count_limits):
+                    # QOS job limits count the tasks under this QOS; association job limits count every QOS.
+                    same_qos = active.under(placement["qos"])
+                    if (any(same_qos["tasks"] >= limit for k in ("max_submit_jobs", "max_jobs")
+                            if (limit := placement["qos_limits"].get(k)) is not None)
+                            or any(overall["tasks"] >= limit for k in ("max_submit_jobs", "max_jobs", "grp_submit_jobs", "grp_jobs")
+                                   if (limit := placement["account_limits"].get(k)) is not None)):
                         continue
                     qos_tres = planner.tres_limits(placement["qos_limits"].get("max_tres_per_user"))
                     account_tres = planner.tres_limits(placement["account_limits"].get("grp_tres"))
@@ -463,7 +461,7 @@ def tick(identity=None, adapter=None, clock=None):
                     if step.state in lifecycle.ACTIVE:
                         admission_progress += 1
                         running += 1
-                        active.add(task)
+                        active.add(task, placement["qos"])
                 store.roll_up(campaign["id"])
                 _resolved(campaign, "admission")
             except Exception as exc:

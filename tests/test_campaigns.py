@@ -1238,7 +1238,8 @@ def test_an_active_submit_outcome_occupies_capacity_in_the_same_pass(setup, outc
 
 
 @pytest.mark.parametrize("undeclared", [{}, {"qos": ""}])
-def test_undeclared_qos_counts_against_the_candidate_campaigns_default_qos(setup, tmp_data_dir, undeclared):
+def test_active_task_counts_under_the_qos_it_runs_under(setup, tmp_data_dir, undeclared):
+    """A task without resources.qos runs under its own campaign's frozen default QOS, and counts there."""
     spec, catalog = setup
     catalog["account"]["qos"] = ["normal", "long"]
     catalog["qos"]["long"] = {"max_submit_jobs": 1}
@@ -1259,13 +1260,31 @@ def test_undeclared_qos_counts_against_the_candidate_campaigns_default_qos(setup
     long_explicit["tasks"][0]["resources"]["qos"] = "long"
     campaigns.create(long_explicit)
 
-    # The study task declares no QOS, so it counts against long for a campaign whose frozen default is long.
+    # The study task runs under normal, so the long limit of one still has room.
     campaigns.tick("long-default", fake)
-    assert len(fake.submissions) == 1
-    # It does not count for a campaign that declares long but defaults to normal.
-    campaigns.tick("long-explicit", fake)
     assert len(fake.submissions) == 2 and fake.submissions[1][1]["qos"] == "long"
-    assert store.read("long-default")["tasks"][0]["state"] == "waiting"
+    # The long-default task runs under long without declaring it, so it fills that limit.
+    campaigns.tick("long-explicit", fake)
+    assert len(fake.submissions) == 2
+    assert store.read("long-explicit")["tasks"][0]["state"] == "waiting"
+
+
+def test_account_job_limit_counts_active_tasks_of_every_qos(setup, tmp_data_dir):
+    spec, catalog = setup
+    catalog["account"].update(qos=["normal", "long"], max_submit_jobs=1)
+    catalog["qos"]["long"] = {"max_submit_jobs": 5}
+    campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json", catalog)
+    campaigns.create(spec)
+    fake = FakeSlurm()
+    campaigns.tick("study", fake)
+    assert len(fake.submissions) == 1 and fake.submissions[0][1]["qos"] == "normal"
+    other = copy.deepcopy(spec)
+    other["campaign_id"] = "other-qos"
+    other["tasks"][0]["resources"]["qos"] = "long"
+    campaigns.create(other)
+    campaigns.tick("other-qos", fake)
+    assert len(fake.submissions) == 1
+    assert store.read("other-qos")["tasks"][0]["state"] == "waiting"
 
 
 def test_observe_failure_is_shown_until_the_next_completed_reconcile(setup):

@@ -57,6 +57,11 @@ def historical_profile(partition, gpu_type):
 UNREAD = object()  # "read the stored Catalog"; a loaded document can itself be null
 
 
+def qos_for(resources, settings):
+    """The QOS a task runs under: its resources.qos, else the settings' (a campaign's frozen backend) qos."""
+    return resources.get("qos") or settings.get("qos", "normal")
+
+
 def select(resources, settings, observed=UNREAD, *, now=None):
     observed = catalog.load() if observed is UNREAD else observed
     now = time.time() if now is None else now
@@ -64,7 +69,7 @@ def select(resources, settings, observed=UNREAD, *, now=None):
     default_partitions = settings.get("allowed_partitions") or ["gpu", "gpu-preempt"] if resources.get("gpu_count") else settings.get("cpu_partitions") or ["cpu"]
     candidates = resources.get("partitions") or default_partitions
     allowed = settings.get("allowed_partitions", []) if resources.get("gpu_count") else settings.get("cpu_partitions", [])
-    qos_name = resources.get("qos") or settings.get("qos", "normal")
+    qos_name = qos_for(resources, settings)
     qos = observed.get("qos", {}).get(qos_name, {})
     account = settings.get("account", "")
     required = set(filter(None, resources.get("constraint", "").split("&")))

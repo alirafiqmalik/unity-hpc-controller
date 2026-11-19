@@ -200,13 +200,21 @@ def identities_excluding(states):
 
 
 def tasks_in_states(states):
-    """Read capacity evidence without traversing campaign bundles or results."""
+    """Read capacity evidence without decoding campaign bundles or results. Each task row also
+    carries "campaign_backend": its campaign's frozen backend settings, read once per campaign."""
     states = tuple(sorted(states))
     placeholders = ",".join("?" for _ in states)
     with _read() as con:
-        return [_decode(row) for row in con.execute(
+        rows = [_decode(row) for row in con.execute(
             f"SELECT * FROM tasks WHERE state IN ({placeholders}) ORDER BY rowid", states
         )]
+        backends = {identity: json.loads(backend or "{}") for identity, backend in con.execute(
+            f"SELECT id,json_extract(spec,'$.backend') FROM campaigns WHERE id IN"
+            f" (SELECT campaign_id FROM tasks WHERE state IN ({placeholders}))", states
+        )}
+    for row in rows:
+        row["campaign_backend"] = backends[row["campaign_id"]]
+    return rows
 
 
 def results(identity, after=0, limit=100):
