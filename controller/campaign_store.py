@@ -150,6 +150,22 @@ def read(identity):
         return value
 
 
+def downloadable(identity, task_id):
+    """The paths a client may download from one task: its declared outputs and its
+    retrieved controller diagnostics. None when the campaign has no such task."""
+    safe_id(identity, "campaign_id")
+    with _read() as con:
+        if con.execute("SELECT 1 FROM campaigns WHERE id=?", (identity,)).fetchone() is None:
+            raise FileNotFoundError(f"unknown campaign: {identity}")
+        row = con.execute("SELECT spec,artifacts FROM tasks WHERE campaign_id=? AND task_id=?", (identity, task_id)).fetchone()
+    if row is None:
+        return None
+    task = _decode(row)
+    paths = set(task["spec"]["outputs"])
+    paths.update(receipt["path"] for receipt in (task.get("artifacts") or {}).get("controller_files", []))
+    return paths
+
+
 def listing():
     with _listing_lock:
         with _read() as con:

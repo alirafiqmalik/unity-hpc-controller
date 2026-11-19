@@ -148,6 +148,34 @@ def test_read_does_not_wait_for_a_held_write_lock(tmp_data_dir):
         connection.close()
 
 
+def test_download_read_returns_one_tasks_paths_from_a_snapshot(tmp_data_dir):
+    store.accept("study", {"campaign_id": "study", "tasks": [
+        {"task_id": "a", "outputs": ["summary.json", "results.jsonl"]},
+        {"task_id": "b", "outputs": ["other.json"]},
+    ]}, "hash-1", [], {"task_count": 2})
+    store.record_diagnostics("study", "a", [{"path": ".controller/hardware-1.json"}])
+    connection = sqlite3.connect(_db(tmp_data_dir), isolation_level=None)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("UPDATE tasks SET artifacts=NULL")
+        connection.execute("DELETE FROM campaigns")
+
+        def reads():
+            return store.downloadable("study", "a"), store.downloadable("study", "b"), store.downloadable("study", "c")
+
+        a, b, missing_task = _joined(_start(reads))
+    finally:
+        connection.execute("ROLLBACK")
+        connection.close()
+    assert a == {"summary.json", "results.jsonl", ".controller/hardware-1.json"}
+    assert b == {"other.json"}
+    assert missing_task is None
+    with pytest.raises(FileNotFoundError, match="^unknown campaign: missing$"):
+        store.downloadable("missing", "a")
+    with pytest.raises(campaign_contract.CampaignError, match="campaign_id"):
+        store.downloadable("../study", "a")
+
+
 def test_long_listing_does_not_fail_concurrent_reads_or_writes(tmp_data_dir, monkeypatch):
     _one_campaign()
     started, release = threading.Event(), threading.Event()
