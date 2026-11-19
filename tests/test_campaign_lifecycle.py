@@ -1,4 +1,4 @@
-"""Pure lifecycle decisions pin state names, fields, effects, and event payloads."""
+"""Pure lifecycle decisions pin state names, fields, and effects."""
 
 import ast
 from pathlib import Path
@@ -18,8 +18,8 @@ def seen(state, **extra):                      # as observe() returns it
 def kept(state, fetch_attempts=0, **extra):    # as the lifecycle records it
     return {"job_id": "123", "state": state, **extra, "fetch_attempts": fetch_attempts}
 
-def step(state, fields):                       # a Step whose event payload equals its fields
-    return (state, fields, fields)
+def step(state, fields):                       # a Step: the next state and the fields to record
+    return (state, fields)
 
 OBS = {"cancelling": False, "max_attempts": 2, "now": 50}
 SAL = {"cancelling": False, "retry_backoff_seconds": 60, "now": 1000}
@@ -33,7 +33,7 @@ def J(observation):
 
 
 ROWS = [
-    ("L01", "intent", (2, 'job-2'), {}, ("submitting", {"attempt": 2, "job_name": "job-2", "job_id": None, "error": None, "observation": None, "eligible_at": 0}, {"attempt": 2, "job_name": "job-2"})),
+    ("L01", "intent", (2, 'job-2'), {}, ("submitting", {"attempt": 2, "job_name": "job-2", "job_id": None, "error": None, "observation": None, "eligible_at": 0})),
     ("L02", "uncertain_receipt", ('ssh reset',), {}, {"outcome": "uncertain", "error": "ssh reset"}),
     ("L03", "submitted", ({'outcome': 'accepted', 'job_id': '123'},), {}, step("accepted", {"job_id": "123", "error": None})),
     ("L04", "submitted", ({'outcome': 'accepted', 'job_id': '12a'},), {}, step("uncertain", {"job_id": "12a", "error": None})),

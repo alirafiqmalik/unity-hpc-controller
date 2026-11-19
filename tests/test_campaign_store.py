@@ -475,7 +475,7 @@ def test_intent_with_an_unknown_state_is_refused_and_writes_nothing(tmp_data_dir
     cursor = store.results("study")["next_cursor"]
     valid = lifecycle.intent(1, "job-1")
     with pytest.raises(ValueError):
-        store.record_intent("study", "a", lifecycle.Step("not-a-task-state", valid.fields, valid.event))
+        store.record_intent("study", "a", lifecycle.Step("not-a-task-state", valid.fields))
     campaign = store.read("study")
     assert campaign["tasks"][0]["state"] == "waiting"
     assert campaign["tasks"][0]["attempt"] == 0

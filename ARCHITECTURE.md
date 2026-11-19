@@ -36,8 +36,10 @@ Retries preserve output identity and remain within the declared budget.
 
 `controller/campaign_lifecycle.py` owns the task, attempt, and campaign states and every transition between them.
 It performs no IO and reads no clock; the worker passes the time in.
-Given a task record and one input (a submission receipt, a scheduler observation, a retrieval outcome, dependency states, or a cancel request), it returns the next state, the fields to record, and the Result event payload.
+Given a task record and one input (a submission receipt, a scheduler observation, a retrieval outcome, dependency states, or a cancel request), it returns the next state and the fields to record.
 The worker performs the remote effects, and the journal records the fields.
+The journal publishes the Result event: its payload is the recorded fields, and it is written only when the state, a field, or an actionable part of the scheduler observation changes.
+A submission intent's event carries only the attempt number and the job name, and commits with the attempt row and the task state.
 The journal refuses a task state that the lifecycle does not name.
 
 Task states: `waiting`; the active states `submitting`, `uncertain`, `accepted`, `running`, `fetching`, `cancelling`; and the terminal states `completed`, `failed`, `rejected`, `cancelled`, `blocked`.

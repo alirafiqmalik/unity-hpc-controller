@@ -33,7 +33,7 @@ The [capability assessment](../docs/research/unity-backend-capabilities.md) reco
 | `campaign_slurm.py` | Slurm protocol over Cluster access: atomic staging, job scripts that carry the Attestation, Slurm receipts, artifact retrieval, and the Catalog survey command |
 | `hardware_class.py` | Hardware class: fingerprint, hardware lock and bind rule, evidence file names, and the controller check of an Attestation; no IO after import |
 | `attestation.py` | In-job Attestation and the match rule that the controller also uses; standard library only; job scripts carry its text |
-| `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions, retry budget, backoff, and Result event payloads; no IO |
+| `campaign_lifecycle.py` | Task, attempt, and campaign states; transitions and the fields they record, retry budget, and backoff; no IO |
 | `campaigns.py` | Worker passes: reconciliation, admission, retrieval, and cancellation; a campaign's failure is recorded on it and the pass goes on; one clock for the pass; slurm_adapter() gives a campaign its Slurm adapter |
 | `campaign_cli.py` | HTTP-only operator client |
 | `telemetry.py` | Existing optional telemetry archive schedule |

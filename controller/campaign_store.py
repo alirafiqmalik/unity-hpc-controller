@@ -263,13 +263,15 @@ def accept(identity, specification, request_hash, hardware_locks, event):
 
 
 def record_intent(identity, task_id, step):
+    """Record the attempt row, the task state, and the Result event in one transaction.
+    The event carries only the attempt number and the job name."""
     _check(step.state, step.fields)
     fields = step.fields
     attempt, name = fields["attempt"], fields["job_name"]
     with _write() as con:
         con.execute("INSERT INTO attempts(campaign_id,task_id,attempt,job_name,state,created_at) VALUES(?,?,?,?,?,?)", (identity, task_id, attempt, name, lifecycle.attempt_outcome(step.state, None), now()))
-        con.execute("UPDATE tasks SET attempt=?,job_name=?,job_id=?,state=?,error=?,observation=?,eligible_at=? WHERE campaign_id=? AND task_id=?", (fields["attempt"], fields["job_name"], fields["job_id"], step.state, fields["error"], fields["observation"], fields["eligible_at"], identity, task_id))
-        _event(con, identity, task_id, step.state, step.event)
+        con.execute("UPDATE tasks SET attempt=?,job_name=?,job_id=?,state=?,error=?,observation=?,eligible_at=? WHERE campaign_id=? AND task_id=?", (attempt, name, fields["job_id"], step.state, fields["error"], fields["observation"], fields["eligible_at"], identity, task_id))
+        _event(con, identity, task_id, step.state, {"attempt": attempt, "job_name": name})
 
 
 def record_submission(identity, task_id, attempt, receipt, step):
