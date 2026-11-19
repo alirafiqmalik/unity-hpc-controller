@@ -91,38 +91,25 @@ class SlurmAdapter:
         cache_parent = self.settings["remote_root"].rstrip("/") + "/source-cache"
         cache = cache_parent + "/" + manifest_sha
         cache_source = cache + "/source"
-        marker = cache + "/.controller-source-manifest-sha256"
         archive = store.root(campaign["id"]) / "bundle.tar.gz"
-        digest = hashlib.sha256()
         with archive.open("rb") as stream:
-            while block := stream.read(1024 * 1024):
-                digest.update(block)
-        sha = digest.hexdigest()
+            sha = hashlib.file_digest(stream, "sha256").hexdigest()
         quote = shlex.quote
-        publish = "\n".join([
-            "HPC_SOURCE_LINK=" + quote(base + "/.source-link-") + "$$",
-            "ln -s " + quote(cache_source) + " \"${HPC_SOURCE_LINK}\"",
-            "mv -T \"${HPC_SOURCE_LINK}\" " + quote(base + "/source"),
-        ])
+        link, cached, source, marker = quote(base + "/source"), quote(cache), quote(cache_source), quote(cache + "/.controller-source-manifest-sha256")
+        legacy_marker, manifest_word, sha_word = quote(base + "/source/.bundle-sha256"), quote(manifest_sha), quote(sha)
+        # The cache is intact when each path has its type, is not a symlink, and the marker names the frozen manifest.
+        checks = (("-d", cached), ("-d", source), ("-f", marker))
+        intact = " && ".join(f"test {kind} {path} && ! test -L {path}" for kind, path in checks) + f" && test \"$(cat {marker})\" = {manifest_word}"
+        damaged = " || ".join(f"! test {kind} {path} || test -L {path}" for kind, path in checks) + f" || test \"$(cat {marker})\" != {manifest_word}"
+        publish = "\n".join(["HPC_SOURCE_LINK=" + quote(base + "/.source-link-") + "$$", "ln -s " + source + " \"${HPC_SOURCE_LINK}\"", "mv -T \"${HPC_SOURCE_LINK}\" " + link])
         ready = "\n".join([
-            "if test -e " + quote(base + "/source") + " || test -L " + quote(base + "/source") + "; then",
-            "  if test -L " + quote(base + "/source") + " && test \"$(readlink " + quote(base + "/source") + ")\" = " + quote(cache_source)
-            + " && test -d " + quote(cache) + " && ! test -L " + quote(cache)
-            + " && test -d " + quote(cache_source) + " && ! test -L " + quote(cache_source)
-            + " && test -f " + quote(marker) + " && ! test -L " + quote(marker)
-            + " && test \"$(cat " + quote(marker) + ")\" = " + quote(manifest_sha) + "; then echo HPC_SOURCE_CACHE_HIT; exit 0; fi",
-            "  if ! test -L " + quote(base + "/source") + " && test -f " + quote(base + "/source/.bundle-sha256")
-            + " && ! test -L " + quote(base + "/source/.bundle-sha256")
-            + " && test \"$(cat " + quote(base + "/source/.bundle-sha256") + ")\" = " + quote(sha)
-            + "; then echo HPC_SOURCE_LEGACY_READY; exit 0; fi",
+            f"if test -e {link} || test -L {link}; then",
+            f"  if test -L {link} && test \"$(readlink {link})\" = {source} && {intact}; then echo HPC_SOURCE_CACHE_HIT; exit 0; fi",
+            f"  if ! test -L {link} && test -f {legacy_marker} && ! test -L {legacy_marker} && test \"$(cat {legacy_marker})\" = {sha_word}; then echo HPC_SOURCE_LEGACY_READY; exit 0; fi",
             "  echo 'existing campaign source differs from its frozen snapshot; preserved' >&2; exit 1",
             "fi",
-            "if test -e " + quote(cache) + " || test -L " + quote(cache) + "; then",
-            "  if ! test -d " + quote(cache) + " || test -L " + quote(cache)
-            + " || ! test -d " + quote(cache_source) + " || test -L " + quote(cache_source)
-            + " || ! test -f " + quote(marker) + " || test -L " + quote(marker)
-            + " || test \"$(cat " + quote(marker) + ")\" != " + quote(manifest_sha)
-            + "; then echo 'source cache marker differs from the frozen manifest; preserved' >&2; exit 1; fi",
+            f"if test -e {cached} || test -L {cached}; then",
+            f"  if {damaged}; then echo 'source cache marker differs from the frozen manifest; preserved' >&2; exit 1; fi",
             publish,
             "  echo HPC_SOURCE_CACHE_HIT; exit 0",
             "fi",
@@ -134,31 +121,29 @@ class SlurmAdapter:
         result = self.command(initial + ";\n" + locked + ready + "\necho HPC_SOURCE_NEEDS_UPLOAD", timeout=600)
         if result.returncode:
             raise RuntimeError("remote source cache readiness failed: " + result.stderr[-1500:])
-        if "HPC_SOURCE_NEEDS_UPLOAD" not in result.stdout.splitlines():
-            if not any(token in result.stdout.splitlines() for token in ("HPC_SOURCE_CACHE_HIT", "HPC_SOURCE_LEGACY_READY")):
-                raise RuntimeError("remote source cache readiness receipt missing")
-            legacy = "HPC_SOURCE_LEGACY_READY" in result.stdout.splitlines()
-            return {"source_manifest_sha256": manifest_sha, "cache_hit": "HPC_SOURCE_CACHE_HIT" in result.stdout.splitlines(),
-                    "legacy_source": legacy, "cache_path": None if legacy else cache,
-                    "source_path": base + "/source" if legacy else cache_source}
-        self.transfer(archive, base + "/bundle.tar.gz")
-        extract = "\n".join([
-            "set -e; umask 077; " + locked + ready,
-            "cd " + quote(base), "printf '%s  bundle.tar.gz\\n' " + quote(sha) + " | sha256sum -c -",
-            "HPC_STAGE_DIR=$(mktemp -d " + quote(cache_parent + "/.stage-" + manifest_sha + ".XXXXXX") + ")",
-            "mkdir \"${HPC_STAGE_DIR}/source\"", "tar -xzf bundle.tar.gz -C \"${HPC_STAGE_DIR}/source\"",
-            "printf '%s\\n' " + quote(manifest_sha) + " >\"${HPC_STAGE_DIR}/.controller-source-manifest-sha256\"",
-            "printf '%s\\n' " + quote(sha) + " >\"${HPC_STAGE_DIR}/.bundle-sha256\"",
-            "chmod -R a-w \"${HPC_STAGE_DIR}\"", "mv \"${HPC_STAGE_DIR}\" " + quote(cache),
-            publish, "echo HPC_SOURCE_CACHE_CREATED",
-        ])
-        result = self.command(extract, timeout=600)
-        if result.returncode:
-            raise RuntimeError("remote bundle verification failed: " + result.stderr[-1500:])
-        if not any(token in result.stdout.splitlines() for token in ("HPC_SOURCE_CACHE_CREATED", "HPC_SOURCE_CACHE_HIT", "HPC_SOURCE_LEGACY_READY")):
-            raise RuntimeError("remote source cache activation receipt missing")
-        legacy = "HPC_SOURCE_LEGACY_READY" in result.stdout.splitlines()
-        return {"source_manifest_sha256": manifest_sha, "cache_hit": "HPC_SOURCE_CACHE_HIT" in result.stdout.splitlines(),
+        lines = result.stdout.splitlines()
+        if "HPC_SOURCE_NEEDS_UPLOAD" in lines:
+            self.transfer(archive, base + "/bundle.tar.gz")
+            extract = "\n".join([
+                "set -e; umask 077; " + locked + ready,
+                "cd " + quote(base), "printf '%s  bundle.tar.gz\\n' " + sha_word + " | sha256sum -c -",
+                "HPC_STAGE_DIR=$(mktemp -d " + quote(cache_parent + "/.stage-" + manifest_sha + ".XXXXXX") + ")",
+                "mkdir \"${HPC_STAGE_DIR}/source\"", "tar -xzf bundle.tar.gz -C \"${HPC_STAGE_DIR}/source\"",
+                "printf '%s\\n' " + manifest_word + " >\"${HPC_STAGE_DIR}/.controller-source-manifest-sha256\"",
+                "printf '%s\\n' " + sha_word + " >\"${HPC_STAGE_DIR}/.bundle-sha256\"",
+                "chmod -R a-w \"${HPC_STAGE_DIR}\"", "mv \"${HPC_STAGE_DIR}\" " + cached,
+                publish, "echo HPC_SOURCE_CACHE_CREATED",
+            ])
+            result = self.command(extract, timeout=600)
+            if result.returncode:
+                raise RuntimeError("remote bundle verification failed: " + result.stderr[-1500:])
+            lines = result.stdout.splitlines()
+            if not any(token in lines for token in ("HPC_SOURCE_CACHE_CREATED", "HPC_SOURCE_CACHE_HIT", "HPC_SOURCE_LEGACY_READY")):
+                raise RuntimeError("remote source cache activation receipt missing")
+        elif not any(token in lines for token in ("HPC_SOURCE_CACHE_HIT", "HPC_SOURCE_LEGACY_READY")):
+            raise RuntimeError("remote source cache readiness receipt missing")
+        legacy = "HPC_SOURCE_LEGACY_READY" in lines
+        return {"source_manifest_sha256": manifest_sha, "cache_hit": "HPC_SOURCE_CACHE_HIT" in lines,
                 "legacy_source": legacy, "cache_path": None if legacy else cache,
                 "source_path": base + "/source" if legacy else cache_source}
 
