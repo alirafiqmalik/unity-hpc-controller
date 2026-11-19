@@ -320,6 +320,38 @@ class Clock:
         return time.monotonic()
 
 
+class _ActiveTotals:
+    """Active tasks, CPUs, GPUs, and nodes for one admission pass, kept by declared QOS.
+    Tasks that declare no QOS (absent or empty) share the bucket None."""
+
+    KEYS = ("tasks", "cpu", "gres/gpu", "node")
+
+    def __init__(self, tasks):
+        self.by_qos = {}
+        for task in tasks:
+            self.add(task)
+
+    def add(self, task):
+        """Count a task whose recorded state is active."""
+        resources = task["spec"]["resources"]
+        totals = self.by_qos.setdefault(resources.get("qos") or None, dict.fromkeys(self.KEYS, 0))
+        totals["tasks"] += 1
+        totals["node"] += 1  # each task asks for one node
+        totals["cpu"] += resources["cpus"]
+        totals["gres/gpu"] += resources["gpu_count"]
+
+    def overall(self):
+        return {key: sum(totals[key] for totals in self.by_qos.values()) for key in self.KEYS}
+
+    def same_qos(self, qos, backend):
+        """Totals that count against the placement's QOS: tasks that declare it, and tasks that
+        declare none when the candidate campaign's frozen default QOS is that QOS."""
+        buckets = [self.by_qos[qos]] if qos and qos in self.by_qos else []
+        if None in self.by_qos and backend["qos"] == qos:
+            buckets.append(self.by_qos[None])
+        return {key: sum(totals[key] for totals in buckets) for key in self.KEYS}
+
+
 def tick(identity=None, adapter=None, clock=None):
     """One restart-safe pass. Tests supply an adapter and a clock, never SSH or Slurm.
     A failure while handling one campaign is recorded on that campaign; the pass goes on."""
@@ -348,11 +380,11 @@ def tick(identity=None, adapter=None, clock=None):
         admission_attempts = admission_progress = 0
         deferred_eligible = False
         # The campaign lock fences concurrent creation/cancellation. Reconcile
-        # first, then count active tasks once and append each accepted intent.
+        # first, then count active tasks once and add each active outcome.
         # After a campaign fails, count again from the journal: its last intent
         # may have no recorded outcome and is still active.
         # Historical bundle manifests must not consume the admission window.
-        global_active = store.tasks_in_states(lifecycle.ACTIVE)
+        active = _ActiveTotals(store.tasks_in_states(lifecycle.ACTIVE))
         observed = planner.UNREAD  # the Catalog for this pass: read at the first placement, then kept
         for campaign_id in reconciled:
             if deferred_eligible:
@@ -375,10 +407,11 @@ def tick(identity=None, adapter=None, clock=None):
                         continue
                     if decision.effect != lifecycle.ADMIT:
                         continue
-                    if running >= campaign["spec"]["max_concurrent"] or len(global_active) >= controller_limits["max_active_tasks"]:
+                    overall = active.overall()
+                    if running >= campaign["spec"]["max_concurrent"] or overall["tasks"] >= controller_limits["max_active_tasks"]:
                         break
                     gpu_count = task["spec"]["resources"]["gpu_count"]
-                    if sum(t["spec"]["resources"]["gpu_count"] for t in global_active) + gpu_count > controller_limits["max_active_gpus"]:
+                    if overall["gres/gpu"] + gpu_count > controller_limits["max_active_gpus"]:
                         continue
                     try:
                         if observed is planner.UNREAD:
@@ -391,18 +424,17 @@ def tick(identity=None, adapter=None, clock=None):
                     if placement["warnings"] or not placement["selected_partitions"]:
                         store.record_task_error(campaign["id"], task["task_id"], "; ".join(placement["warnings"]) or "no eligible exact hardware partition; refresh backend probe")
                         continue
-                    same_qos = [t for t in global_active if (t["spec"]["resources"].get("qos") or backend["qos"]) == placement["qos"]]
+                    same_qos = active.same_qos(placement["qos"], backend)
                     count_limits = [placement["qos_limits"].get(k) for k in ("max_submit_jobs", "max_jobs")]
                     count_limits += [placement["account_limits"].get(k) for k in ("max_submit_jobs", "max_jobs", "grp_submit_jobs", "grp_jobs")]
-                    if any(limit is not None and len(same_qos) >= limit for limit in count_limits):
+                    if any(limit is not None and same_qos["tasks"] >= limit for limit in count_limits):
                         continue
                     qos_tres = planner.tres_limits(placement["qos_limits"].get("max_tres_per_user"))
                     account_tres = planner.tres_limits(placement["account_limits"].get("grp_tres"))
                     requested = {"cpu": task["spec"]["resources"]["cpus"], "gres/gpu": gpu_count, "node": 1}
-                    def exceeds(limits, tasks):
-                        used = {"cpu": sum(t["spec"]["resources"]["cpus"] for t in tasks), "gres/gpu": sum(t["spec"]["resources"]["gpu_count"] for t in tasks), "node": len(tasks)}
+                    def exceeds(limits, used):
                         return any(used[key] + requested[key] > ceiling for key, ceiling in limits.items())
-                    if exceeds(qos_tres, same_qos) or exceeds(account_tres, global_active):
+                    if exceeds(qos_tres, same_qos) or exceeds(account_tres, overall):
                         continue
                     if (admission_attempts >= controller_limits["max_new_tasks_per_pass"]
                             or clock.monotonic() - admission_started >= controller_limits["admission_budget_seconds"]):
@@ -431,12 +463,12 @@ def tick(identity=None, adapter=None, clock=None):
                     if step.state in lifecycle.ACTIVE:
                         admission_progress += 1
                         running += 1
-                        global_active.append(task)
+                        active.add(task)
                 store.roll_up(campaign["id"])
                 _resolved(campaign, "admission")
             except Exception as exc:
                 _campaign_failed(campaign_id, "admission", exc)
-                global_active = store.tasks_in_states(lifecycle.ACTIVE)
+                active = _ActiveTotals(store.tasks_in_states(lifecycle.ACTIVE))
         return {"admission_attempts": admission_attempts, "admission_progress": admission_progress,
                 "admission_seconds": round(clock.monotonic() - admission_started, 3),
                 "deferred_eligible": deferred_eligible,
