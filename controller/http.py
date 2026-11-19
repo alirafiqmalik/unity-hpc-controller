@@ -33,8 +33,7 @@ class Response:
 
 
 def _json(status: int, payload: Any) -> Response:
-    raw = json.dumps(payload, default=str).encode()
-    return Response(status=status, body=raw, content_type="application/json")
+    return Response(status, json.dumps(payload, default=str).encode())
 
 
 def _error(status: int, message: str) -> Response:
@@ -98,8 +97,7 @@ def _route(method: str, path: str, req: Request) -> Response:
         if rest == "results" and method == "GET":
             return _json(200, campaign_store.results(identity, int(_q(req, "after", "0")), int(_q(req, "limit", "100"))))
         if rest == "artifacts" and method == "GET":
-            artifact = campaigns.artifact(identity, _q(req, "task_id"), _q(req, "path"))
-            return Response(200, b"", "application/octet-stream", file_path=artifact)
+            return Response(200, b"", "application/octet-stream", file_path=campaigns.artifact(identity, _q(req, "task_id"), _q(req, "path")))
         if rest == "cancel" and method == "POST":
             return _json(202, {"campaign": campaigns.cancel(identity)})
         return _error(404, "unknown campaign route")
