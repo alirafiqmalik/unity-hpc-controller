@@ -77,10 +77,8 @@ def nodes_by_partition(observed):
     """Each partition's Catalog nodes in Catalog order; a node is listed once per partition."""
     groups = {}
     for node in observed.get("nodes", []):
-        for name in node.get("partitions", []):
-            group = groups.setdefault(name, [])
-            if not group or group[-1] is not node:
-                group.append(node)
+        for name in dict.fromkeys(node.get("partitions", [])):
+            groups.setdefault(name, []).append(node)
     return groups
 
 
