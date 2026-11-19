@@ -206,15 +206,17 @@ def controller_artifacts(campaign, task):
 
 
 def record_controller_artifacts(campaign, task):
-    """Retain retrieved failure evidence without promoting scientific completion."""
+    """Retain retrieved failure evidence without promoting scientific completion.
+    Returns the receipts, so delivery records the same ones without hashing again."""
     diagnostics = controller_artifacts(campaign, task)
     if diagnostics:
         store.record_diagnostics(campaign["id"], task["task_id"], diagnostics)
+    return diagnostics
 
 
 def _collect(campaign, task, adapter, successful):
     local = adapter.collect(campaign, task)
-    record_controller_artifacts(campaign, task)
+    diagnostics = record_controller_artifacts(campaign, task)
     spec = task["spec"]
     hardware_path = local / hardware_class.hardware_evidence(task["attempt"])
     if not hardware_path.is_file():
@@ -232,7 +234,7 @@ def _collect(campaign, task, adapter, successful):
             missing.append(output)
             continue
         artifacts.append(receipt)
-    metadata = {"files": artifacts, "controller_files": controller_artifacts(campaign, task),
+    metadata = {"files": artifacts, "controller_files": diagnostics,
                 "missing": missing, "hardware": hardware, "attempt": task["attempt"], "job_id": task["job_id"]}
     step = lifecycle.delivered(metadata, successful=successful)
     store.record_transition(campaign["id"], task["task_id"], step.state, **step.fields)

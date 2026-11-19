@@ -1,4 +1,5 @@
 """Portable campaign seam: faults and restarts must not duplicate compute."""
+import collections
 import copy
 import json
 import shutil
@@ -35,6 +36,7 @@ class FakeSlurm:
         self.submissions, self.observations, self.staged = [], {}, 0
         self.receipt = {"outcome": "accepted", "job_id": "123"}
         self.missing, self.fetch_failure, self.gpu_name = False, False, "NVIDIA A100-SXM4-80GB"
+        self.verified = True
         self.cancelled = []
 
     def stage(self, campaign):
@@ -56,7 +58,7 @@ class FakeSlurm:
             raise RuntimeError("network interrupted during fetch")
         local = store.root(campaign["id"]) / "results" / task["task_id"]
         (local / ".controller").mkdir(parents=True, exist_ok=True)
-        (local / ".controller" / f"hardware-{task['attempt']}.json").write_text(json.dumps({"verified": True, "task_id": task["task_id"], "attempt": task["attempt"], "gpus": [{"name": self.gpu_name, "memory_mb": 81151}]}))
+        (local / ".controller" / f"hardware-{task['attempt']}.json").write_text(json.dumps({"verified": self.verified, "task_id": task["task_id"], "attempt": task["attempt"], "gpus": [{"name": self.gpu_name, "memory_mb": 81151}]}))
         (local / "results.jsonl").write_text('{"result":"ok"}\n')
         if not self.missing:
             (local / "summary.json").write_text('{"count":1}\n')
@@ -430,6 +432,42 @@ def test_failed_gpu_attestation_still_delivers_diagnostics(setup):
     assert saved["artifacts"]["files"] == []
     path = campaigns.artifact("study", task["task_id"], ".controller/hardware-1.json")
     assert json.loads(path.read_text())["gpus"][0]["name"] == "different GPU"
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_delivery_hashes_each_retrieved_file_once_and_records_the_published_diagnostics(setup, monkeypatch, verified):
+    spec, _ = setup
+    campaigns.create(spec)
+    slurm = FakeSlurm()
+    slurm.verified = verified
+    campaigns.tick("study", slurm)
+    slurm.terminal()
+    local = store.root("study") / "results" / "model-a"
+    hashed = collections.Counter()
+    real_open = Path.open
+
+    def counting_open(self, mode="r", *args, **kwargs):
+        if mode == "rb" and self.is_relative_to(local):
+            hashed[self.relative_to(local).as_posix()] += 1
+        return real_open(self, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", counting_open)
+        campaigns.tick("study", slurm)
+    task = store.read("study")["tasks"][0]
+    published = [e["payload"]["controller_files"] for e in store.results("study")["events"] if e["kind"] == "diagnostics_available"]
+    assert [[r["path"] for r in receipts] for receipts in published] == [[".controller/hardware-1.json"]]
+    assert task["artifacts"]["controller_files"] == published[0]
+    assert len(slurm.submissions) == 1
+    if verified:
+        assert task["state"] == "completed"
+        assert hashed == {".controller/hardware-1.json": 1, "results.jsonl": 1, "summary.json": 1}
+    else:
+        assert task["state"] == "failed"
+        assert "hardware attestation is missing, invalid" in task["error"]
+        assert task["artifacts"]["complete"] is False
+        assert hashed == {".controller/hardware-1.json": 1}
+        assert json.loads(campaigns.artifact("study", "model-a", ".controller/hardware-1.json").read_text())["verified"] is False
 
 
 def test_bundle_rejects_symlink_and_dependency_cycle(setup):
