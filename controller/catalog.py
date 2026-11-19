@@ -37,6 +37,10 @@ def seconds(value):
     return int(days) * 86400 + fields[0] * 3600 + fields[1] * 60 + fields[2]
 
 
+def _count(text):
+    return int(text) if text.isdigit() else None
+
+
 def parse(text, account):
     """Turn the survey output into a Catalog."""
     value = {"observed_at": datetime.now(timezone.utc).isoformat(), "nodes": [], "partitions": {}, "qos": {}, "associations": {}, "groups": [], "account": {"name": account}, "source": "bounded SSH Slurm commands"}
@@ -45,32 +49,26 @@ def parse(text, account):
         if line in ("NODES", "PARTITIONS", "QOS", "ASSOCIATIONS", "ACCOUNT_LIMITS", "GROUPS", "FAIRSHARE"):
             section = line
             continue
-        fields = dict(re.findall(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=([^\s]*)", line))
+        # NODES and PARTITIONS lines are key=value words; the other sections are '|' rows.
+        fields = dict(re.findall(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]*)=([^\s]*)", line)) if section in ("NODES", "PARTITIONS") else {}
+        row = line.split("|")
         if section == "NODES" and "NodeName" in fields:
             gpus = {name: int(count) for name, count in re.findall(r"gpu:([^:,()]+):(\d+)", fields.get("Gres", ""))}
-            value["nodes"].append({"name": fields["NodeName"], "cpus": int(fields.get("CPUTot", 0)), "memory_mb": int(fields.get("RealMemory", 0)), "features": fields.get("ActiveFeatures", "").split(","), "partitions": fields.get("Partitions", "").split(","), "gpus": gpus, "state": fields.get("State"), "alloc_tres": fields.get("AllocTRES"), "free_memory_mb": int(fields["FreeMem"]) if fields.get("FreeMem", "").isdigit() else None})
+            value["nodes"].append({"name": fields["NodeName"], "cpus": int(fields.get("CPUTot", 0)), "memory_mb": int(fields.get("RealMemory", 0)), "features": fields.get("ActiveFeatures", "").split(","), "partitions": fields.get("Partitions", "").split(","), "gpus": gpus, "state": fields.get("State"), "alloc_tres": fields.get("AllocTRES"), "free_memory_mb": _count(fields.get("FreeMem", ""))})
         elif section == "PARTITIONS" and "PartitionName" in fields:
             value["partitions"][fields["PartitionName"]] = {"state": fields.get("State"), "max_walltime_seconds": seconds(fields.get("MaxTime")), "priority_tier": int(fields.get("PriorityTier", 0)), "preempt_mode": fields.get("PreemptMode", "OFF"), **{key: fields.get(source, "").split(",") if fields.get(source) not in (None, "(null)", "") else [] for key, source in (("allow_accounts", "AllowAccounts"), ("deny_accounts", "DenyAccounts"), ("allow_groups", "AllowGroups"), ("allow_qos", "AllowQos"), ("deny_qos", "DenyQos"))}}
-        elif section == "QOS":
-            row = line.split("|")
-            if len(row) >= 5:
-                value["qos"][row[0]] = {"max_walltime_seconds": seconds(row[1]), "max_jobs": int(row[2]) if row[2].isdigit() else None, "max_submit_jobs": int(row[3]) if row[3].isdigit() else None, "max_tres_per_user": row[4] or None}
-        elif section == "ASSOCIATIONS":
-            row = line.split("|")
-            if len(row) >= 6:
-                value["associations"][row[0]] = {"qos": row[1].split(","), "max_jobs": int(row[2]) if row[2].isdigit() else None, "max_submit_jobs": int(row[3]) if row[3].isdigit() else None, "grp_tres": row[4] or None, "max_walltime_seconds": seconds(row[5])}
-                if row[0] == account:
-                    value["account"].update(value["associations"][row[0]])
-        elif section == "ACCOUNT_LIMITS":
-            row = line.split("|")
-            if len(row) >= 5 and row[0] == account and not row[1]:
-                value["account"].update(grp_tres=row[2] or None, grp_jobs=int(row[3]) if row[3].isdigit() else None, grp_submit_jobs=int(row[4]) if row[4].isdigit() else None)
+        elif section == "QOS" and len(row) >= 5:
+            value["qos"][row[0]] = {"max_walltime_seconds": seconds(row[1]), "max_jobs": _count(row[2]), "max_submit_jobs": _count(row[3]), "max_tres_per_user": row[4] or None}
+        elif section == "ASSOCIATIONS" and len(row) >= 6:
+            value["associations"][row[0]] = {"qos": row[1].split(","), "max_jobs": _count(row[2]), "max_submit_jobs": _count(row[3]), "grp_tres": row[4] or None, "max_walltime_seconds": seconds(row[5])}
+            if row[0] == account:
+                value["account"].update(value["associations"][row[0]])
+        elif section == "ACCOUNT_LIMITS" and len(row) >= 5 and row[0] == account and not row[1]:
+            value["account"].update(grp_tres=row[2] or None, grp_jobs=_count(row[3]), grp_submit_jobs=_count(row[4]))
         elif section == "GROUPS":
             value["groups"] = line.split()
-        elif section == "FAIRSHARE":
-            row = line.split("|")
-            if len(row) >= 4 and row[0] == account:
-                value["fairshare"] = {"factor": float(row[2]) if row[2] else None, "effective_usage": float(row[3]) if row[3] else None}
+        elif section == "FAIRSHARE" and len(row) >= 4 and row[0] == account:
+            value["fairshare"] = {"factor": float(row[2]) if row[2] else None, "effective_usage": float(row[3]) if row[3] else None}
     return value
 
 
