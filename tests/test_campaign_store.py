@@ -524,3 +524,24 @@ def test_intent_with_an_unknown_state_is_refused_and_writes_nothing(tmp_data_dir
     assert campaign["tasks"][0]["attempt"] == 0
     assert campaign["attempts"] == []
     assert store.results("study", after=cursor)["events"] == []
+
+
+def test_worker_read_shares_one_snapshot_without_cursor_or_attempt_records(tmp_data_dir, monkeypatch):
+    _one_campaign()
+    store.record_intent("study", "a", lifecycle.intent(1, "job-1"))
+    receipt = {"outcome": "accepted", "job_id": "7"}
+    store.record_submission("study", "a", 1, receipt, lifecycle.submitted(receipt))
+    full = store.read("study")
+    assert full["attempts"][0]["receipt"] == receipt and full["result_cursor"] > 0
+    statements = _traced(monkeypatch)
+    admission = store.worker_read("study")
+    reconcile = store.worker_read("study", attempt_identities=True)
+    common = {key: value for key, value in full.items() if key not in ("attempts", "result_cursor")}
+    assert admission == common
+    assert reconcile == {**common, "attempts": [{"task_id": "a", "attempt": 1, "job_name": "job-1"}]}
+    assert statements.count("BEGIN") == 2  # one snapshot per call
+    assert not [s for s in statements if "MAX(cursor)" in s]
+    assert [s for s in statements if "FROM attempts" in s] == [
+        "SELECT task_id,attempt,job_name FROM attempts WHERE campaign_id='study' ORDER BY task_id,attempt"]
+    with pytest.raises(FileNotFoundError):
+        store.worker_read("missing")

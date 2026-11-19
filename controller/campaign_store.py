@@ -137,15 +137,23 @@ def _decode(row):
     return value
 
 
+def _campaign(con, identity, attempts=None):
+    """The campaign row, its task rows, and the named attempt columns, if any, read in one snapshot."""
+    row = con.execute("SELECT * FROM campaigns WHERE id=?", (identity,)).fetchone()
+    if row is None:
+        raise FileNotFoundError(f"unknown campaign: {identity}")
+    value = _decode(row)
+    value["tasks"] = [_decode(t) for t in con.execute("SELECT * FROM tasks WHERE campaign_id=? ORDER BY rowid", (identity,))]
+    if attempts:
+        value["attempts"] = [_decode(t) for t in con.execute(f"SELECT {attempts} FROM attempts WHERE campaign_id=? ORDER BY task_id,attempt", (identity,))]
+    return value
+
+
 def read(identity):
+    """The full campaign snapshot: tasks, attempts with receipts and observations, and the Result cursor."""
     safe_id(identity, "campaign_id")
     with _read() as con:
-        row = con.execute("SELECT * FROM campaigns WHERE id=?", (identity,)).fetchone()
-        if row is None:
-            raise FileNotFoundError(f"unknown campaign: {identity}")
-        value = _decode(row)
-        value["tasks"] = [_decode(t) for t in con.execute("SELECT * FROM tasks WHERE campaign_id=? ORDER BY rowid", (identity,))]
-        value["attempts"] = [_decode(t) for t in con.execute("SELECT * FROM attempts WHERE campaign_id=? ORDER BY task_id,attempt", (identity,))]
+        value = _campaign(con, identity, "*")
         value["result_cursor"] = con.execute("SELECT COALESCE(MAX(cursor),0) FROM events WHERE campaign_id=?", (identity,)).fetchone()[0]
         return value
 
@@ -164,6 +172,15 @@ def downloadable(identity, task_id):
     paths = set(task["spec"]["outputs"])
     paths.update(receipt["path"] for receipt in (task.get("artifacts") or {}).get("controller_files", []))
     return paths
+
+
+def worker_read(identity, *, attempt_identities=False):
+    """The campaign and task records that one Worker step decides from, in one snapshot, without the
+    Result cursor. With attempt_identities, also each attempt's task_id, attempt, and job_name, which
+    reconciliation uses to name diagnostics from earlier attempts; never receipts or observations."""
+    safe_id(identity, "campaign_id")
+    with _read() as con:
+        return _campaign(con, identity, "task_id,attempt,job_name" if attempt_identities else None)
 
 
 def listing():
