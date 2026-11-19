@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1502,6 +1503,85 @@ def test_plan_reads_the_catalog_once(setup, monkeypatch):
     assert len(loads) == 1
     assert len(value["tasks"]) == 3
     assert len({task["placement"]["observed_at"] for task in value["tasks"]}) == 1
+
+
+NO_FIT = "no verified node fits the exact features, GPU type/count, CPU, and memory request"
+
+
+def ranked(placement):
+    return [(p["partition"], p["eligible"], p["reasons"], p["matching_nodes"]) for p in placement["partitions"]]
+
+
+def test_plan_lists_a_node_under_each_of_its_partitions(setup, tmp_data_dir, monkeypatch):
+    spec, catalog = setup
+    fit = {"cpus": 112, "memory_mb": 2000000, "features": ["a100-80g", "sapphirerapids"], "gpus": {"a100": 8}}
+    catalog["nodes"] = [{**fit, "name": "gpu001", "partitions": ["gpu", "gpu-preempt"]},
+                        {**fit, "name": "gpu002", "partitions": ["gpu-preempt"]},
+                        {**fit, "name": "gpu003", "partitions": ["gpu"], "features": ["a100-40g"]},
+                        {**fit, "name": "gpu004", "partitions": ["gpu-preempt", "gpu", "gpu-preempt"]},
+                        {**fit, "name": "gpu005", "partitions": ["gpu-other"]}]
+    catalog["partitions"]["gpu"]["priority_tier"] = 1
+    catalog["partitions"]["gpu-preempt"]["priority_tier"] = 2
+    catalog["partitions"]["gpu-empty"] = {"state": "UP", "allow_accounts": ["ALL"], "max_walltime_seconds": 86400, "preempt_mode": "OFF"}
+    campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json", catalog)
+    campaigns.configure({"allowed_partitions": ["gpu", "gpu-preempt", "gpu-empty"]})
+    fixed = time.time()
+    monkeypatch.setattr(campaigns.planner, "time", SimpleNamespace(time=lambda: fixed))  # one clock for both paths
+    base, spec["tasks"] = spec["tasks"][0], []
+    for task_id, nodelist in (("absent", None), ("null", None), ("empty", ""), ("listed", "gpu[002-004]")):
+        task = copy.deepcopy(base)
+        task.update(task_id=task_id, model_class=f"class-{task_id}")
+        task["resources"]["partitions"] = ["gpu", "gpu-preempt", "gpu-empty"]
+        if task_id != "absent":
+            task["resources"]["nodelist"] = nodelist
+        spec["tasks"].append(task)
+    value = campaigns.plan(spec)
+    every = [("gpu-preempt", True, [], ["gpu001", "gpu002", "gpu004"]), ("gpu", True, [], ["gpu001", "gpu004"]), ("gpu-empty", False, [NO_FIT], [])]
+    listed = [("gpu-preempt", True, [], ["gpu002", "gpu004"]), ("gpu", True, [], ["gpu004"]), ("gpu-empty", False, [NO_FIT], [])]
+    assert {task["task_id"]: ranked(task["placement"]) for task in value["tasks"]} == {"absent": every, "null": every, "empty": every, "listed": listed}
+    assert {tuple(task["placement"]["selected_partitions"]) for task in value["tasks"]} == {("gpu-preempt", "gpu")}
+    assert value["ready"]
+    for task in value["tasks"]:  # the Worker calls select without a grouping
+        assert campaigns.planner.select(task["resources"], campaigns.settings(), catalog) == task["placement"]
+
+
+def test_plan_keeps_candidate_partitions_when_the_catalog_lists_no_nodes(setup, tmp_data_dir):
+    spec, catalog = setup
+    del catalog["nodes"]
+    campaigns._write_json(tmp_data_dir / "controller/backend-catalog.json", catalog)
+    value = campaigns.plan(spec)
+    assert ranked(value["tasks"][0]["placement"]) == [("gpu", False, [NO_FIT], []), ("gpu-preempt", False, [NO_FIT], [])]
+    assert not value["ready"]
+
+
+def test_plan_groups_catalog_nodes_once_and_visits_only_candidate_partitions(setup, monkeypatch):
+    spec, catalog = setup
+    reads, expansions = {}, []
+
+    class Node(dict):
+        def get(self, key, default=None):
+            reads[key] = reads.get(key, 0) + 1
+            return super().get(key, default)
+
+    node = catalog["nodes"][0]
+    catalog["nodes"] = [Node(node, name=f"gpu{i:03d}", partitions=[partition])
+                        for i, partition in enumerate(["gpu", "gpu-preempt", "gpu-long", "gpu-other"] * 3)]
+    catalog["partitions"]["gpu-long"] = dict(catalog["partitions"]["gpu"])
+    campaigns.configure({"allowed_partitions": ["gpu", "gpu-preempt", "gpu-long"]})
+    monkeypatch.setattr(catalog_module, "load", lambda: catalog)
+    original = campaigns.planner.expand_nodes
+    monkeypatch.setattr(campaigns.planner, "expand_nodes", lambda value: expansions.append(value) or original(value))
+    base, spec["tasks"] = spec["tasks"][0], []
+    for index in range(4):
+        task = copy.deepcopy(base)
+        task.update(task_id=f"task-{index}", model_class=f"class-{index}")
+        task["resources"].update(partitions=["gpu", "gpu-preempt", "gpu-long"], nodelist="gpu[000-011]")
+        spec["tasks"].append(task)
+    value = campaigns.plan(spec)
+    assert [task["placement"]["selected_partitions"] for task in value["tasks"]] == [["gpu", "gpu-preempt", "gpu-long"]] * 4
+    assert reads["partitions"] == 12  # each Catalog node once, to group it
+    assert reads["features"] == 4 * 9  # each task visits the nine nodes of its three candidate partitions
+    assert len(expansions) == 4
 
 
 def test_stale_catalog_blocks_submission_not_retrieval(setup, tmp_data_dir):

@@ -62,7 +62,20 @@ def qos_for(resources, settings):
     return resources.get("qos") or settings.get("qos", "normal")
 
 
-def select(resources, settings, observed=UNREAD, *, now=None):
+def nodes_by_partition(observed):
+    """Each partition's Catalog nodes in Catalog order; a node is listed once per partition."""
+    groups = {}
+    for node in observed.get("nodes", []):
+        for name in node.get("partitions", []):
+            group = groups.setdefault(name, [])
+            if not group or group[-1] is not node:
+                group.append(node)
+    return groups
+
+
+def select(resources, settings, observed=UNREAD, *, now=None, partition_nodes=None):
+    """Rank the candidate partitions for one task. `partition_nodes` is nodes_by_partition(observed);
+    a plan request groups its Catalog once and passes it for every task."""
     observed = catalog.load() if observed is UNREAD else observed
     now = time.time() if now is None else now
     partitions = observed.get("partitions", {})
@@ -86,6 +99,8 @@ def select(resources, settings, observed=UNREAD, *, now=None):
         # parent association survey.
         association.update({key: value for key, value in observed["associations"].get(account, {}).items() if value not in (None, "", [])})
     allowed_qos = association.get("qos", [])
+    requested_nodes = expand_nodes(resources.get("nodelist", ""))
+    partition_nodes = nodes_by_partition(observed) if partition_nodes is None else partition_nodes
     for name in dict.fromkeys(candidates):
         reasons = []
         entry = partitions.get(name)
@@ -118,9 +133,8 @@ def select(resources, settings, observed=UNREAD, *, now=None):
             if bound is not None and resources["walltime_seconds"] > bound:
                 reasons.append("requested walltime exceeds partition/account/QOS ceiling")
         fits = []
-        requested_nodes = expand_nodes(resources.get("nodelist", ""))
-        for node in observed.get("nodes", []):
-            if name not in node.get("partitions", []) or not required <= set(node.get("features", [])):
+        for node in partition_nodes.get(name, []):
+            if not required <= set(node.get("features", [])):
                 continue
             if requested_nodes and node["name"] not in requested_nodes:
                 continue
@@ -147,8 +161,9 @@ def plan(raw, settings):
     specification = validate(raw)
     bundle = inventory(specification["bundle"])
     observed = catalog.load()
+    partition_nodes = nodes_by_partition(observed)
     tasks = [{"task_id": task["task_id"], "model_class": task.get("model_class"), "resources": task["resources"],
-              "placement": select(task["resources"], settings, observed)} for task in specification["tasks"]]
+              "placement": select(task["resources"], settings, observed, partition_nodes=partition_nodes)} for task in specification["tasks"]]
     return {"schema_version": 1, "campaign_id": specification["campaign_id"], "bundle": bundle, "tasks": tasks,
             "ready": all(t["placement"]["selected_partitions"] and not t["placement"]["warnings"] for t in tasks),
             "max_concurrent": specification["max_concurrent"], "max_attempts": specification["max_attempts"]}
