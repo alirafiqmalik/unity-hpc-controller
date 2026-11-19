@@ -165,10 +165,10 @@ class SlurmAdapter:
         return {"outcome": "rejected" if "HPC_SUBMISSION_REJECTED" in result.stderr else "uncertain", "error": result.stderr[-1500:] or "submission receipt missing"}
 
     def observe(self, campaign, tasks):
-        names = ",".join(t["job_name"] for t in tasks)
+        names = shlex.quote(",".join(t["job_name"] for t in tasks))
         created = datetime.fromisoformat(campaign["created_at"].replace("Z", "+00:00"))
         start = (created.astimezone(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
-        command = "set -e; printf 'QUEUE\\n'; timeout 20 squeue -h --name=" + shlex.quote(names) + " -o '%i|%j|%T|%R|%N|%S'; printf 'ACCOUNTING\\n'; timeout 30 sacct -u $(whoami) --name=" + shlex.quote(names) + " -S " + shlex.quote(start) + " -E now -P -n -o JobIDRaw,JobName%100,State,ExitCode,NodeList,ElapsedRaw,Submit,Start,End,AllocTRES,MaxRSS,TotalCPU,TRESUsageInMax"
+        command = "set -e; printf 'QUEUE\\n'; timeout 20 squeue -h --name=" + names + " -o '%i|%j|%T|%R|%N|%S'; printf 'ACCOUNTING\\n'; timeout 30 sacct -u $(whoami) --name=" + names + " -S " + shlex.quote(start) + " -E now -P -n -o JobIDRaw,JobName%100,State,ExitCode,NodeList,ElapsedRaw,Submit,Start,End,AllocTRES,MaxRSS,TotalCPU,TRESUsageInMax"
         result = self.command(command, timeout=70)
         if result.returncode:
             raise RuntimeError("scheduler observation failed: " + result.stderr[-1500:])
@@ -178,21 +178,22 @@ class SlurmAdapter:
                 section = line
                 continue
             row = line.split("|")
-            if len(row) < 5 or "." in row[0]:
+            if len(row) < 5:
                 continue
+            # A job step ("123.batch") is not a digit string, so the identity check skips it.
             identity, name, state = (x.strip() for x in row[:3])
-            if not identity.isdigit() or not state or section not in ("QUEUE", "ACCOUNTING"):
+            if not section or not identity.isdigit() or not state:
                 continue
             observation = {"job_id": identity, "job_name": name, "state": state.split()[0].rstrip("+"), "node_list": row[4].strip(), "source": section}
             if section == "QUEUE":
-                observation["pending_reason"] = row[3].strip() if observation["state"] == "PENDING" else None
-                estimate = row[5].strip() if len(row) >= 6 else ""
+                pending = observation["state"] == "PENDING"
+                estimate = row[5].strip() if pending and len(row) >= 6 else ""
                 try:
                     datetime.fromisoformat(estimate)
                 except ValueError:
                     estimate = None
-                observation["estimated_start"] = estimate if observation["state"] == "PENDING" else None
-                observation["estimated_start_source"] = "Slurm backfill hint; can change" if observation["estimated_start"] else None
+                observation.update(pending_reason=row[3].strip() if pending else None, estimated_start=estimate,
+                                   estimated_start_source="Slurm backfill hint; can change" if estimate else None)
             elif len(row) >= 13:
                 observation.update(exit_code=row[3].strip(), elapsed_seconds=int(row[5] or 0), submit=row[6], start=row[7], end=row[8], alloc_tres=row[9], max_rss=row[10] or None, total_cpu=row[11] or None, tres_usage_in_max=row[12] or None)
             existing = queue.get(name) or accounting.get(name)
