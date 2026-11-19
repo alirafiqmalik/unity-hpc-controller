@@ -50,12 +50,12 @@ The model covers these code paths. If your diff changes one of them, or changes 
 
 One model step is one journal transaction or one Slurm call in the code. If your change splits a transaction in two, or moves a Slurm call before a journal write, the model must split or move the step too.
 
-**Sync commit:** `4ba63339d4de0aeff1549beab0dbb1fbfc54aef8`. At this commit the model, the walks, and the code agree, and both checks end as expected.
+**Sync commit:** `165138080f8b4dce71492b24e933d07088df55e7`. At this commit the model, the walks, and the code agree, and both checks end as expected.
 
 To see whether covered code changed since then:
 
 ```sh
-git log --oneline 4ba63339d4de0aeff1549beab0dbb1fbfc54aef8..HEAD -- controller/campaigns.py controller/campaign_lifecycle.py controller/campaign_store.py controller/campaign_slurm.py
+git log --oneline 165138080f8b4dce71492b24e933d07088df55e7..HEAD -- controller/campaigns.py controller/campaign_lifecycle.py controller/campaign_store.py controller/campaign_slurm.py
 ```
 
 Move the sync commit forward only after you read the covered code at the new commit, confirm that each row above still describes it, and both checks end as expected.
