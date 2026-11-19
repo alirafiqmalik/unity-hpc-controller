@@ -33,3 +33,4 @@ Do not add project-side dispatchers; projects talk to the controller through the
 Issues live in this repo's GitHub Issues, driven via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 Triage label strings are in `docs/agents/triage-labels.md`.
 Domain docs conventions are in `docs/agents/domain.md`.
+Before you change the campaign Worker pass, admission capacity, submission intent, reconciliation, or cancel, read `.claude/skills/verify-campaign-worker/SKILL.md` and run its checks.

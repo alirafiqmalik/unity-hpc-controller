@@ -33,29 +33,29 @@ The model covers these code paths. If your diff changes one of them, or changes 
 
 | Model action | Code (as of the sync commit) |
 | --- | --- |
-| `PassStart` | `campaigns.tick`: `lock()`, `store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL)` |
-| `ReconcileBegin`, `ReconcileEnd`, `ReconcileFails` | `campaigns.tick` reconcile loop, `campaigns._reconcile` end (`lifecycle.cancel_request`), `store.roll_up`, `campaigns._campaign_failed` |
+| `PassStart` | `campaigns.tick`: `lock()`, `store.identities_excluding(lifecycle.CAMPAIGN_TERMINAL)` (newest first) |
+| `ReconcileBegin`, `ReconcileEnd`, `ReconcileFails` | `campaigns.tick` reconcile loop: `store.worker_read(campaign_id, attempt_identities=True)`, `campaigns._reconcile` end (`lifecycle.cancel_request`), `store.roll_up`, `campaigns._campaign_failed` |
 | `Observe` | `campaigns._reconcile`: `adapter.observe`, `lifecycle.observed`, `adapter.cancel` on `CANCEL_JOB` |
 | `Resolve` | `campaigns._reconcile` SALVAGE and RETRIEVE: `lifecycle.salvaged`, `campaigns._collect`, `lifecycle.delivered`, `lifecycle.undelivered` |
-| `AdmitStart` | `campaigns.tick`: `store.tasks_in_states(lifecycle.ACTIVE)` builds the admission totals |
-| `AdmitBegin`, `AdmitCancelWaiting` | `campaigns.tick` admission re-read, `lifecycle.admission` |
-| `Admissible` | the capacity checks in `campaigns.tick` admission: `max_concurrent`, `max_active_tasks`, `max_active_gpus`, QOS and account job counts |
+| `AdmitStart` | `campaigns.tick`: `_ActiveTotals(store.tasks_in_states(lifecycle.ACTIVE))` |
+| `AdmitBegin`, `AdmitCancelWaiting` | `campaigns.tick` admission: `store.worker_read(campaign_id)`, the skip of a finished campaign, `running`, `lifecycle.admission` |
+| `Admissible`, `EffectiveQos`, `SameQos`, `AccountCount` | the capacity checks in `campaigns.tick` admission: `max_concurrent`, `max_active_tasks`, `max_active_gpus`, `_ActiveTotals.under` for QOS job limits, `_ActiveTotals.overall` for account job limits; `planner.qos_for` |
 | `Intent` | `campaigns._intent`, `store.record_intent` |
 | `Submit` | `SlurmAdapter.submit` in `controller/campaign_slurm.py`, `lifecycle.uncertain_receipt` |
-| `RecordSubmission`, `RecordSubmissionFails` | `lifecycle.submitted`, `store.record_submission`, the totals update, and the rebuild after an admission exception in `campaigns.tick` |
+| `RecordSubmission`, `RecordSubmissionFails` | `lifecycle.submitted`, `store.record_submission`, `_ActiveTotals.add(task, placement["qos"])`, and the rebuild of `_ActiveTotals` after an admission exception in `campaigns.tick` |
 | `AdmitEnd`, `PassEnd` | `store.roll_up` after a campaign's admission; the end of `tick` |
 | `CancelBegin`, `CancelEnd` | `campaigns.cancel`: `lifecycle.cancel_campaign`, `store.record_cancel_request`, `adapter.cancel`, `lifecycle.cancel_request` |
 | `Crash` | the controller process ends; `campaigns.db` and Slurm stay |
-| `QosRule`, `AccountRule` (`MCCampaignWorker.cfg`) | which active tasks admission counts against a QOS job limit and against the account job limits |
+| `QosRule`, `AccountRule` (`MCCampaignWorker.cfg`) | `"own-default"` and `"all-active"`: which active tasks admission counts against a QOS job limit and against the account job limits |
 
 One model step is one journal transaction or one Slurm call in the code. If your change splits a transaction in two, or moves a Slurm call before a journal write, the model must split or move the step too.
 
-**Sync commit:** `ad4db8042dc165c7f0bc998f93844f8a63ea5d42` (code checked at this commit; the model's QosRule and AccountRule state the fixed rules, see Findings).
+**Sync commit:** `4ba63339d4de0aeff1549beab0dbb1fbfc54aef8`. At this commit the model, the walks, and the code agree, and both checks end as expected.
 
 To see whether covered code changed since then:
 
 ```sh
-git log --oneline ad4db8042dc165c7f0bc998f93844f8a63ea5d42..HEAD -- controller/campaigns.py controller/campaign_lifecycle.py controller/campaign_store.py controller/campaign_slurm.py
+git log --oneline 4ba63339d4de0aeff1549beab0dbb1fbfc54aef8..HEAD -- controller/campaigns.py controller/campaign_lifecycle.py controller/campaign_store.py controller/campaign_slurm.py
 ```
 
 Move the sync commit forward only after you read the covered code at the new commit, confirm that each row above still describes it, and both checks end as expected.
@@ -90,7 +90,7 @@ Never delete a broken variant to get a green run.
 
 ## Findings
 
-Both findings were found by the model and replayed on the real code by the walks at `ad4db80`:
+Both findings were found by the model and replayed on the real code by the walks at `ad4db80`. Commit `4ba6333` fixes both:
 
 1. **QOS job limit counted under the wrong QOS.** Admission counted an active task without `resources.qos` under the candidate campaign's frozen `qos`, not the QOS the task runs under. Path: campaign `c2` (frozen qos `long`) submits task `c`; campaign `c1` (frozen qos `normal`) then admits task `b`, which declares `long`; admission counts `c` as `normal`, sees no `long` job, and submits `b` past the `long` limit of one.
 2. **Account job limits counted only same-QOS tasks.** The association limits (`max_jobs`, `max_submit_jobs`, `grp_jobs`, `grp_submit_jobs`) cover every QOS, but admission compared them with the same-QOS count. Path: `c2` submits `c` (`long`); `c1` submits `a` (`normal`) and `b` (`long`); each check sees at most one job of its QOS, and the account ends with three jobs against a limit of two.
