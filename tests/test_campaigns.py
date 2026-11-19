@@ -1447,6 +1447,39 @@ def test_planner_history_reads_the_canonical_gpu_name(tmp_data_dir):
     assert (cpu["hardware"], cpu["sample_count"]) == ("cpu", 0)
 
 
+def test_plan_reads_history_once_per_partition_and_hardware(setup, tmp_data_dir, monkeypatch):
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from lib import paths, telemetry_archive
+
+    spec, _ = setup
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    con = sqlite3.connect(paths.summaries_db())
+    telemetry_archive.ensure(con)
+    con.executemany("INSERT INTO task_run(job_id, hardware, partition, state, wait_s, elapsed_s, max_rss_mb, day_utc) VALUES(?,?,?,?,?,?,?,?)",
+                    [(str(i), "a100", "gpu-preempt", "COMPLETED", 5.0 * i, 100.0, 512.0, today) for i in range(1, 5)])
+    con.commit()
+    con.close()
+    base, spec["tasks"] = spec["tasks"][0], []
+    for task_id, gpu_type in (("a", "a100"), ("b", "A100"), ("c", "a100")):
+        task = copy.deepcopy(base)
+        task.update(task_id=task_id, model_class=f"class-{task_id}")
+        task["resources"]["gpu_type"] = gpu_type
+        spec["tasks"].append(task)
+    for task_id in ("cpu-a", "cpu-b"):  # a CPU task's gpu_type is not validated
+        spec["tasks"].append({**copy.deepcopy(base), "task_id": task_id, "resources": {"gpu_type": ["odd"], "partitions": ["cpu"]}})
+    reads = []
+    original = telemetry_archive.completed_runs
+    monkeypatch.setattr(telemetry_archive, "completed_runs", lambda *key: reads.append(key) or original(*key))
+    value = campaigns.plan(spec)
+    assert reads == [("gpu", "a100"), ("gpu-preempt", "a100"), ("cpu", ["odd"]), ("cpu", ["odd"])]
+    for task in value["tasks"]:
+        for row in task["placement"]["partitions"]:
+            assert row["history"] == campaigns.planner.historical_profile(row["partition"], task["resources"].get("gpu_type"))
+    assert value["tasks"][1]["placement"]["partitions"][0]["history"]["wait_p50_seconds"] == 10.0
+
+
 def test_pass_reads_the_catalog_once_and_keeps_it(setup, tmp_data_dir, monkeypatch):
     spec, catalog = setup
     for task_id in ("model-b", "model-c"):

@@ -54,6 +54,17 @@ def historical_profile(partition, gpu_type):
     return value
 
 
+def _profile(partition, gpu_type, profiles):
+    """historical_profile; with a plan request's `profiles`, read once per partition and history
+    hardware key. A CPU task's gpu_type is not validated, so a key that is not text is read each time."""
+    hardware = _history_hardware(gpu_type)
+    if profiles is None or not isinstance(hardware, str):
+        return historical_profile(partition, gpu_type)
+    if (partition, hardware) not in profiles:
+        profiles[partition, hardware] = historical_profile(partition, gpu_type)
+    return dict(profiles[partition, hardware])
+
+
 UNREAD = object()  # "read the stored Catalog"; a loaded document can itself be null
 
 
@@ -73,9 +84,10 @@ def nodes_by_partition(observed):
     return groups
 
 
-def select(resources, settings, observed=UNREAD, *, now=None, partition_nodes=None):
+def select(resources, settings, observed=UNREAD, *, now=None, partition_nodes=None, profiles=None):
     """Rank the candidate partitions for one task. `partition_nodes` is nodes_by_partition(observed);
-    a plan request groups its Catalog once and passes it for every task."""
+    a plan request groups its Catalog once and passes it for every task, with one `profiles` dict
+    that keeps the history read for each partition and hardware key during that request."""
     observed = catalog.load() if observed is UNREAD else observed
     now = time.time() if now is None else now
     partitions = observed.get("partitions", {})
@@ -147,7 +159,7 @@ def select(resources, settings, observed=UNREAD, *, now=None, partition_nodes=No
             reasons.append("no verified node fits the exact features, GPU type/count, CPU, and memory request")
         if entry.get("preempt_mode", "OFF") != "OFF" and not settings.get("allow_preemptible", True):
             reasons.append("preemptible partitions disabled by controller policy")
-        profile = historical_profile(name, resources.get("gpu_type"))
+        profile = _profile(name, resources.get("gpu_type"), profiles)
         proposed.append({"partition": name, "eligible": not reasons, "reasons": list(dict.fromkeys(reasons)), "matching_nodes": fits,
                          "history": profile, "preempt_mode": entry.get("preempt_mode"), "priority_tier": entry.get("priority_tier"),
                          "freshness_seconds": age, "estimated_queue_seconds": profile["wait_p50_seconds"]})
@@ -161,9 +173,10 @@ def plan(raw, settings):
     specification = validate(raw)
     bundle = inventory(specification["bundle"])
     observed = catalog.load()
-    partition_nodes = nodes_by_partition(observed)
+    partition_nodes, profiles = nodes_by_partition(observed), {}
     tasks = [{"task_id": task["task_id"], "model_class": task.get("model_class"), "resources": task["resources"],
-              "placement": select(task["resources"], settings, observed, partition_nodes=partition_nodes)} for task in specification["tasks"]]
+              "placement": select(task["resources"], settings, observed, partition_nodes=partition_nodes, profiles=profiles)}
+             for task in specification["tasks"]]
     return {"schema_version": 1, "campaign_id": specification["campaign_id"], "bundle": bundle, "tasks": tasks,
             "ready": all(t["placement"]["selected_partitions"] and not t["placement"]["warnings"] for t in tasks),
             "max_concurrent": specification["max_concurrent"], "max_attempts": specification["max_attempts"]}
