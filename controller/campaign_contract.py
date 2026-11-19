@@ -191,10 +191,8 @@ def inventory(bundle):
             path = str(base / name)
             return any(fnmatch.fnmatch(name, p) or fnmatch.fnmatch(path, p) for p in exclusions)
         dirs[:] = sorted(d for d in dirs if not excluded(d))
-        for name in [*dirs, *sorted(names)]:
+        for name in [*dirs, *sorted(name for name in names if not excluded(name))]:
             path = Path(directory) / name
-            if excluded(name):
-                continue
             if path.is_symlink():
                 raise CampaignError(f"bundle symlinks are unsupported: {path.relative_to(root)}")
             if path.is_file():
