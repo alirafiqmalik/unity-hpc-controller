@@ -188,12 +188,10 @@ def _file_receipts(campaign, task, local, names, *, allow_empty=False):
                 or not allow_empty and info.st_size == 0):
             missing.append(name)
             continue
-        digest = hashlib.sha256()
         with path.open("rb") as stream:
-            while block := stream.read(1024 * 1024):
-                digest.update(block)
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
         query = urlencode({"task_id": task["task_id"], "path": name})
-        receipts.append({"path": name, "sha256": digest.hexdigest(), "size_bytes": info.st_size,
+        receipts.append({"path": name, "sha256": digest, "size_bytes": info.st_size,
                          "download_url": f"/api/v1/campaigns/{campaign['id']}/artifacts?{query}", "local_path": str(path)})
     return receipts, missing
 
