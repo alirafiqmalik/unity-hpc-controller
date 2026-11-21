@@ -7,7 +7,8 @@
  * any non-API GET, so a deep link works on a cold load.
  */
 
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
+import { useRecoilValue } from 'recoil';
 
 import { TelemetryProvider } from './modules/telemetry/TelemetryProvider';
 import { ClusterAnalyticsPage } from './pages/ClusterAnalyticsPage';
@@ -21,14 +22,32 @@ import { SettingsConfigPage } from './pages/SettingsConfigPage';
 import { SettingsLogsPage } from './pages/SettingsLogsPage';
 import { SettingsScheduledPage } from './pages/SettingsScheduledPage';
 import { AppLayout } from './ui/layout/AppLayout';
-import { Workspace, ExperimentLibrary, ExperimentRevision } from './modules/workspace/Workspace';
-import { OverviewPage } from './modules/workspace/OverviewPage';
-import { SettingsPage } from './modules/workspace/SettingsPage';
-import { FilesPage, ResultsPage } from './modules/workspace/ArtifactPages';
-import { ExperimentEditor } from './modules/workspace/ExperimentEditor';
-import { PlanReview } from './modules/workspace/ExecutionPages';
-import { ProjectRuns } from './modules/workspace/RunsPage';
-import { DEFAULT_ROUTE } from './modules/navigation/routes';
+import { WorkflowRunnerPage } from './modules/runner/WorkflowRunnerPage';
+import { ExecutionPage, ExecutionsPage } from './modules/runner/ExecutionPages';
+import { DocumentPage } from './modules/runner/DocumentPage';
+import { GenAIWorkspace } from './modules/genai/GenAIWorkspace';
+import { SessionsPage, TracesPage } from './modules/genai/ObservabilityPages';
+import { DatasetDetailPage, DatasetsPage } from './modules/genai/DatasetPages';
+import { EvaluationDetailPage, EvaluationsPage } from './modules/genai/EvaluationPages';
+import { AgentVersionsPage, PromptsPage } from './modules/genai/VersionPages';
+import { lastSyncState, projectsState } from './modules/controller/state';
+import { DEFAULT_ROUTE, GENAI_APPLICATION } from './modules/navigation/routes';
+
+/**
+ * Where `/projects/:slug` lands. An LLMs & Agents project opens on its traces,
+ * as MLflow opens an experiment; every other project opens on workflow setup.
+ * Until the first sync names the project, nothing is drawn, so the redirect
+ * never guesses.
+ */
+const WorkspaceIndex = () => {
+  const { slug = '' } = useParams();
+  const projects = useRecoilValue(projectsState);
+  const synced = useRecoilValue(lastSyncState);
+  const project = projects.find((one) => one.slug === slug);
+  if (!synced && !project) return null;
+  if (project?.application === GENAI_APPLICATION) return <Navigate to="traces" replace />;
+  return <Navigate to="runner" replace />;
+};
 
 export const App = () => (
   <Routes>
@@ -44,17 +63,25 @@ export const App = () => (
       <Route path="/jobs/project" element={<JobsProjectPage />} />
       <Route path="/jobs/dispatch" element={<JobsDispatchPage />} />
 
-      <Route path="/projects/:slug" element={<Workspace />}>
-        <Route index element={<Navigate to="overview" replace />} />
-        <Route path="overview" element={<OverviewPage />} />
-        <Route path="experiments" element={<ExperimentLibrary />} />
-        <Route path="experiments/:experimentId" element={<ExperimentEditor />} />
-        <Route path="experiments/:experimentId/revisions/:revision" element={<ExperimentRevision />} />
-        <Route path="review/:planId" element={<PlanReview />} />
-        <Route path="runs" element={<ProjectRuns />} />
-        <Route path="results" element={<ResultsPage />} />
-        <Route path="files" element={<FilesPage />} />
-        <Route path="settings" element={<SettingsPage />} />
+      <Route path="/projects/:slug">
+        <Route index element={<WorkspaceIndex />} />
+        <Route path="runner" element={<WorkflowRunnerPage />} />
+        <Route path="executions" element={<ExecutionsPage />} />
+        <Route path="executions/:executionId" element={<ExecutionPage />} />
+        <Route path="docs" element={<DocumentPage />} />
+
+        {/* The LLMs & Agents evaluation workspace. Paths match GENAI_SECTIONS. */}
+        <Route element={<GenAIWorkspace />}>
+          <Route path="traces" element={<TracesPage />} />
+          <Route path="sessions" element={<SessionsPage />} />
+          <Route path="datasets" element={<DatasetsPage />} />
+          <Route path="datasets/:datasetId" element={<DatasetDetailPage />} />
+          <Route path="evaluations" element={<EvaluationsPage />} />
+          <Route path="evaluations/:evaluationId" element={<EvaluationDetailPage />} />
+          <Route path="prompts" element={<PromptsPage />} />
+          <Route path="agent-versions" element={<AgentVersionsPage />} />
+        </Route>
+        <Route path="*" element={<WorkspaceIndex />} />
       </Route>
 
       {/* The three Settings pages share one telemetry reader. */}

@@ -120,19 +120,31 @@ def test_the_router_has_no_page_the_drawer_hides():
         f"routes missing from the drawer: {sorted(declared - set(ALL_ROUTES))}"
 
 
-def test_project_routes_have_their_own_navigation_and_overview_landing():
+def test_project_routes_keep_genai_and_use_the_workflow_runner_landing():
     app = _read("src/App.tsx")
     navigation = _read("src/modules/navigation/routes.ts")
     drawer = _read("src/ui/layout/NavigationDrawer.tsx")
     assert 'path="/projects/:slug"' in app
-    assert '<Navigate to="overview" replace' in app
-    sections = re.search(r'PROJECT_SECTIONS = \[([^\]]+)\]', navigation).group(1)
-    for label in re.findall(r"'([^']+)'", sections):
-        assert f'path="{label.lower()}"' in app
-    assert 'PROJECT_SECTIONS.map' in drawer
+    assert '<Navigate to="traces" replace' in app
+    assert '<Navigate to="runner" replace' in app
+    for path in ('runner', 'executions', 'executions/:executionId', 'docs', 'traces',
+                 'sessions', 'datasets', 'evaluations', 'prompts', 'agent-versions'):
+        assert f'path="{path}"' in app
+    for path in ('overview', 'experiments', 'runs', 'results', 'files', 'settings'):
+        assert f'path="{path}"' not in app
+    assert 'PROJECT_SECTIONS' not in navigation
+    assert 'RUNNER_SECTIONS.map' in drawer
+    assert 'GENAI_SECTIONS.map' in drawer
     assert 'to={projectsReturn}' in drawer
     assert "let projectsReturn = '/jobs/project'" in drawer
     assert "sessionStorage.getItem('unity-hpc.projects-return')" in drawer
+
+
+def test_project_links_no_longer_reach_retired_pages():
+    for path in (SRC / 'modules/genai').glob('*.tsx'):
+        text = path.read_text()
+        assert not re.search(r'/files|/overview|/runs\?execution', text), path
+    assert not (SRC / 'modules/workspace').exists()
 
 
 def test_the_default_route_is_the_overview():
@@ -155,10 +167,10 @@ def _get(path: str):
 
 
 @needs_build
-@pytest.mark.parametrize("path", ["/", *ALL_ROUTES, "/projects/demo/overview",
-                                  "/projects/demo/experiments/exp-example",
-                                  "/projects/demo/review/plan-example",
-                                  "/projects/demo/runs?execution=plan-example"])
+@pytest.mark.parametrize("path", ["/", *ALL_ROUTES, "/projects/demo/runner",
+                                  "/projects/demo/executions/plan-example",
+                                  "/projects/demo/docs",
+                                  "/projects/demo/traces"])
 def test_every_route_answers_with_the_page(path):
     """A deep link must work on a cold load, not only after client routing."""
     resp = _get(path)

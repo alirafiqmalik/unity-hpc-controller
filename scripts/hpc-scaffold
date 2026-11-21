@@ -239,11 +239,14 @@ def main() -> int:
             return 2
 
     def _rel(action: scaffold.Action) -> str:
-        rel = action.path.relative_to(project_dir / "unityHPC").as_posix()
-        label = f"unityHPC/{rel}"
-        if rel == ".env":
-            label += "  (env.example)"
-        return label
+        unity = project_dir / "unityHPC"
+        if action.path.is_relative_to(unity):
+            rel = action.path.relative_to(unity).as_posix()
+            label = f"unityHPC/{rel}"
+            if rel == ".env":
+                label += "  (env.example)"
+            return label
+        return action.path.relative_to(project_dir).as_posix()
 
     if args.dry_run:
         noun = "application" if args.application else "scaffold"

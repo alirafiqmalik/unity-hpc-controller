@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from controller import dispatch, events, experiments, registry, snapshot, telemetry
+from lib import campaign as _campaign
 from controller.dispatch import DispatchError, OperationBusy
 from controller.registry import RegistryError
 from controller.workspace_store import WorkspaceError
@@ -207,6 +208,15 @@ def _route(method: str, path: str, req: Request) -> Response:
     if path == "/api/v1/jobs" and method == "GET":
         return _json(200, {"jobs": snapshot.all_jobs()})
 
+    if path == "/api/v1/jobs/delete" and method == "POST":
+        result = _forget_jobs(_read_json(req))
+        events.record(
+            "forget",
+            f"removed {result['deleted']} ledger rows",
+            deleted=result["deleted"],
+        )
+        return _json(200, result)
+
     if path == "/api/v1/events" and method == "GET":
         try:
             limit = int(_q(req, "limit", "50") or "50")
@@ -261,9 +271,19 @@ def _route(method: str, path: str, req: Request) -> Response:
 
 
 def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
+    if rest == "runner" or rest.startswith("runner/"):
+        from controller.runner_http import route as runner_route
+        return runner_route(method, slug, rest[len("runner/"):] if rest != "runner" else "", req)
+
     if rest.startswith("workspace/"):
         from controller.workspace_http import route
         return route(method, slug, rest[len("workspace/"):], req)
+
+    if rest == "genai" or rest.startswith("genai/"):
+        from controller.genai_http import route as genai_route
+        if registry.get(slug) is None:
+            return _error(404, f"unknown project {slug!r}")
+        return genai_route(method, slug, rest[len("genai/"):] if rest != "genai" else "", req)
 
     if rest == "" and method == "GET":
         detail = snapshot.project_detail(slug)
@@ -361,6 +381,53 @@ def _project_route(method: str, slug: str, rest: str, req: Request) -> Response:
         return _json(200 if result["ok"] else 502, result)
 
     return _error(404, f"no route {method} /api/v1/projects/{slug}/{rest}")
+
+
+def _forget_jobs(body: dict) -> dict:
+    """Remove selected ledger rows from attached projects.
+
+    The body is ``{"jobs": [{"slug", "campaign", "job_id"}, ...]}``. Each
+    identity must already exist on an attached project. Duplicate identities
+    count once. This does not call ``run.sh``.
+    """
+    items = body.get("jobs")
+    if not isinstance(items, list) or not items:
+        raise ValueError("jobs must list the rows to remove")
+    grouped: dict[tuple[str, str], list[str]] = {}
+    seen: set[tuple[str, str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("each job needs slug, campaign, and job_id")
+        slug = item.get("slug")
+        campaign_name = item.get("campaign")
+        job_id = item.get("job_id")
+        if (
+            not isinstance(slug, str)
+            or not isinstance(campaign_name, str)
+            or not isinstance(job_id, str)
+            or not slug
+            or not campaign_name
+            or not job_id
+        ):
+            raise ValueError("each job needs slug, campaign, and job_id")
+        rec = registry.get(slug)
+        if rec is None:
+            raise ValueError(f"unknown project {slug!r}")
+        root = Path(rec["path"])
+        if campaign_name not in _campaign.campaigns(root):
+            raise ValueError(f"unknown campaign {campaign_name!r} on {slug}")
+        identity = (slug, campaign_name, job_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        grouped.setdefault((slug, campaign_name), []).append(job_id)
+    deleted = 0
+    for (slug, campaign_name), ids in grouped.items():
+        rec = registry.get(slug)
+        if rec is None:
+            raise ValueError(f"unknown project {slug!r}")
+        deleted += _campaign.forget(Path(rec["path"]), campaign_name, ids)
+    return {"ok": True, "deleted": deleted, "missing": len(seen) - deleted}
 
 
 def _write_client_stub(rec: dict) -> None:

@@ -64,7 +64,10 @@ const tagPalette = (step: 10 | 80): TagPalette =>
 
 const tagText = (step: 40 | 60): TagPalette =>
   Object.fromEntries(
-    Object.entries(COLOR).map(([name, ramp]) => [name, ramp[step]]),
+    Object.entries(COLOR).map(([name, ramp]) => [
+      name,
+      name === 'gray' && step === 40 ? GRAY_SCALE.gray45 : ramp[step],
+    ]),
   ) as TagPalette;
 
 /** Everything both themes share. */
@@ -82,7 +85,15 @@ const COMMON = {
   sidePanel: { width: '460px' },
   pageHeader: { height: '52px' },
   table: { rowHeight: '34px', headerHeight: '32px' },
-  zIndex: { drawer: 40, header: 30, sidePanel: 60, overlay: 55, modal: 80, toast: 90 },
+  zIndex: {
+    drawer: 40,
+    header: 30,
+    sidePanel: 60,
+    overlay: 55,
+    actionBar: 70,
+    modal: 80,
+    toast: 90,
+  },
 } as const;
 
 export const THEME_DARK = {
@@ -119,7 +130,7 @@ export const THEME_DARK = {
     color: {
       primary: GRAY_SCALE.gray15,
       secondary: GRAY_SCALE.gray40,
-      tertiary: GRAY_SCALE.gray50,
+      tertiary: GRAY_SCALE.gray45,
       light: GRAY_SCALE.gray55,
       inverted: GRAY_SCALE.gray95,
       danger: COLOR.red[40],
@@ -179,7 +190,7 @@ export const THEME_LIGHT: Theme = {
     color: {
       primary: GRAY_SCALE.gray85,
       secondary: GRAY_SCALE.gray55,
-      tertiary: GRAY_SCALE.gray45,
+      tertiary: GRAY_SCALE.gray55,
       light: GRAY_SCALE.gray40,
       inverted: GRAY_SCALE.gray10,
       danger: COLOR.red[60],

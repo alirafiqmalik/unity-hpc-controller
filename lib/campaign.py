@@ -153,6 +153,31 @@ def jobs(project_dir: Path, campaign: str | None = None) -> list[dict]:
         con.close()
 
 
+def forget(project_dir: Path, campaign: str, job_ids: list[str]) -> int:
+    """Remove ledger rows. Returns how many rows the delete removed.
+
+    A missing id removes nothing. This does not cancel the scheduler job and
+    does not delete remote files. The campaign file stays, even when it is empty.
+    """
+    ids = list(dict.fromkeys(str(job_id) for job_id in job_ids if str(job_id)))
+    if not ids or campaign not in campaigns(project_dir):
+        return 0
+    con = _connect(db_path(project_dir, campaign), create=False)
+    if con is None:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    try:
+        with con:
+            cursor = con.execute(
+                f"DELETE FROM jobs WHERE job_id IN ({marks})", ids,
+            )
+            return int(cursor.rowcount)
+    except sqlite3.Error:
+        return 0
+    finally:
+        con.close()
+
+
 def all_job_ids(project_dir: Path) -> list[str]:
     """Every job id this project has submitted, across all campaigns."""
     ids: list[str] = []
@@ -161,12 +186,14 @@ def all_job_ids(project_dir: Path) -> list[str]:
     return [j for j in dict.fromkeys(ids) if j]
 
 
-def apply_states(project_dir: Path, campaign: str, states: dict[str, dict]) -> int:
+def apply_states(project_dir: Path, campaign: str, states: dict[str, dict],
+                 *, from_telemetry: bool = False) -> int:
     """Fold observed states into the ledger. Returns the number of rows changed.
 
     `states` maps job_id -> {state, hardware?, elapsed_s?}. A terminal state is
     never overwritten by a later non-terminal observation: SLURM's accounting
-    is the truth and the job cannot un-finish.
+    is the truth and the job cannot un-finish. Unclocked telemetry cannot move
+    a known non-pending job back to PENDING; live scheduler checks can.
     """
     if not states:
         # Nothing observed means nothing to write. Returning before opening for
@@ -193,6 +220,12 @@ def apply_states(project_dir: Path, campaign: str, states: dict[str, dict]) -> i
                     continue
                 new_state = (obs.get("state") or "").strip()
                 if not new_state or new_state == current[job_id]:
+                    continue
+                # task_run has no observation timestamp. Reimporting its old
+                # PENDING row after a live check would erase the running state
+                # and hardware. Real scheduler requeues use the live path.
+                if (from_telemetry and new_state == "PENDING"
+                        and current[job_id] != "PENDING"):
                     continue
                 con.execute(
                     "UPDATE jobs SET status=?, hardware=COALESCE(?, hardware), "
@@ -234,7 +267,7 @@ def refresh_from_telemetry(project_dir: Path, campaign: str | None = None) -> in
     }
     if not observed:
         return 0
-    return apply_states(project_dir, name, observed)
+    return apply_states(project_dir, name, observed, from_telemetry=True)
 
 
 def parse_sbatch_output(text: str) -> str | None:

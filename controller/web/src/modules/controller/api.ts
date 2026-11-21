@@ -154,6 +154,14 @@ export const controllerApi = {
   usage: (hours: number) =>
     request<UsageAnswer>(`/api/v1/cluster/usage?hours=${hours}`),
   jobs: () => request<{ jobs: Job[] }>('/api/v1/jobs'),
+  /**
+   * Remove ledger rows the user selected. Does not cancel a scheduler job
+   * and does not delete remote files.
+   */
+  deleteJobs: (jobs: { slug: string; campaign: string; job_id: string }[]) =>
+    post<{ ok: boolean; deleted: number; missing: number }>('/api/v1/jobs/delete', {
+      jobs,
+    }),
   events: (limit = 50) =>
     request<{ events: ControllerEvent[] }>(`/api/v1/events?limit=${limit}`),
 

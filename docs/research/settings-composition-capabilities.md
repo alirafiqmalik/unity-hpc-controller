@@ -7,8 +7,8 @@ No application code, setup skill, project settings, or cluster state changed for
 
 ## Scope and source hierarchy
 
-The accepted [Experiments specification](../design/experiments-spec.md) and [decision record](../design/project-workspace-plan.md) govern Q1–Q23.
-The [Experiments build plan](../design/experiments-build-plan.md) supplies delivery dependencies.
+The retired Experiments specification and decision record supplied the original product decisions Q1–Q23.
+The [execution contract](../workspace-contract-v1.md) retains the requirements that still apply to the backend.
 Existing [connection research](project-connection-harness.md) and [tool research](project-workspace-tools.md) supplied the initial evidence map.
 This review then inspected repository and project source directly.
 
@@ -33,8 +33,8 @@ The earlier five-primitive and no-sequenced-work decisions remain relevant to le
 | Dynamic choices | [connection reader](../../controller/workspace_connection.py), `load_connection` | Declared choice readers use literal argv, local working directories, 1–30 second deadlines, and at most 10000 returned choices | Cached facts and visible reader freshness, bounded output-byte handling, reliable invalidation of reviewed choice values |
 | Workspace persistence | [workspace store](../../controller/workspace_store.py) | New SQLite record store uses transactions, expected-version conflicts, experiment revisions, archive, and stable IDs | Maintenance transaction semantics and composition graph revisions must use this boundary |
 | Snapshot transport | [workspace dispatcher](../../controller/workspace_dispatch.py), `stage_bundle` | New transport copies the reviewed plan bundle, rejects symlinks, and avoids project-wide Sync | Composition must reuse the bundle, not upload mutable project roots |
-| Workspace Settings UI | [workspace UI](../../controller/web/src/modules/workspace/Workspace.tsx), `ProjectConnection` | New component shows declaration details and sync policy. It explicitly describes broader Settings as planned | The four complete Settings sections and action reviews |
-| Workspace frontend contracts | [workspace API](../../controller/web/src/modules/workspace/api.ts) | New typed client names experiments, drafts, plans, executions, metrics, and resources | Typed ports, versioned operation definitions, composition capability negotiation |
+| Workspace Settings UI | [workspace UI](https://github.com/alirafiqmalik/phd-plugin-unity-hpc/blob/2af7bcf8761ed78ecdc2bef4a55054402e2c986d/controller/web/src/modules/workspace/Workspace.tsx), `ProjectConnection` | New component shows declaration details and sync policy. It explicitly describes broader Settings as planned | The four complete Settings sections and action reviews |
+| Workspace frontend contracts | [workspace API](https://github.com/alirafiqmalik/phd-plugin-unity-hpc/blob/2af7bcf8761ed78ecdc2bef4a55054402e2c986d/controller/web/src/modules/workspace/api.ts) | New typed client names experiments, drafts, plans, executions, metrics, and resources | Typed ports, versioned operation definitions, composition capability negotiation |
 | Global access maintenance | [global Settings](../../controller/web/src/pages/SettingsConfigPage.tsx) | Global page already exposes telemetry source, SSH alias/identity, probe, and key unlock | Project page links these controls without presenting them as project-only settings |
 | Legacy metric declarations | [metric reader](../../lib/metrics.py) | `metrics.json` declares primary ranking, report columns, and labels | It cannot supply units, collector costs, cardinality, provenance, or scientifically valid aggregation rules |
 | Artifact retrieval | [dispatcher](../../controller/dispatch.py), `fetch` | Scheduler logs and project hook return separate results | Selected-artifact contracts and per-artifact provenance remain required |
@@ -89,7 +89,8 @@ New collection needs visible stages, costs, and explicit review.
 
 No new runtime LLM, tracking vendor, second dispatcher, or scientific source generator is required.
 These are design conclusions from the accepted ownership contract and inspected source, not claims about implemented features.
-The detailed choices appear in [Settings](../design/settings-spec.md) and [composition](../design/composition-spec.md).
+The original detailed choices appeared in the retired Settings and composition specifications.
+The execution contract now records the retained backend requirements.
 
 ## Verification and concurrency record
 

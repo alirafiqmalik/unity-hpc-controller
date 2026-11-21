@@ -29,7 +29,7 @@ type PanelTarget =
 type PanelContextValue = {
   openJob: (jobId: string, slug?: string) => void;
   openProject: (slug: string) => void;
-  openLegacyProject: (slug: string) => void;
+  openProjectControls: (slug: string) => void;
   closePanel: () => void;
   /** The slug the panel is showing, or null. Pages use it to keep it fresh. */
   openProjectSlug: string | null;
@@ -38,7 +38,7 @@ type PanelContextValue = {
 const PanelContext = createContext<PanelContextValue>({
   openJob: () => {},
   openProject: () => {},
-  openLegacyProject: () => {},
+  openProjectControls: () => {},
   closePanel: () => {},
   openProjectSlug: null,
 });
@@ -55,21 +55,22 @@ export const PanelProvider = ({ children }: { children: ReactNode }) => {
 
   const openProject = useCallback((slug: string) => {
     setTarget(null);
-    navigate(`/projects/${encodeURIComponent(slug)}/overview`);
+    // The index route picks the landing page: Traces for LLMs & Agents, Workflow runner otherwise.
+    navigate(`/projects/${encodeURIComponent(slug)}`);
   }, [navigate]);
 
   const closePanel = useCallback(() => setTarget(null), []);
-  const openLegacyProject = useCallback((slug: string) => setTarget({ kind: 'project', slug }), []);
+  const openProjectControls = useCallback((slug: string) => setTarget({ kind: 'project', slug }), []);
 
   const value = useMemo(
     () => ({
       openJob,
       openProject,
-      openLegacyProject,
+      openProjectControls,
       closePanel,
       openProjectSlug: target?.kind === 'project' ? target.slug : null,
     }),
-    [openJob, openProject, openLegacyProject, closePanel, target],
+    [openJob, openProject, openProjectControls, closePanel, target],
   );
 
   return (

@@ -53,6 +53,17 @@ const Header = styled.header`
   position: sticky;
   top: 0;
   z-index: ${({ theme }) => theme.zIndex.header};
+
+  @media (max-width: 720px) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: ${({ theme }) => theme.spacing(2)};
+    padding: ${({ theme }) => theme.spacing(2, 3)};
+
+    > div:first-of-type > div > div {
+      flex-wrap: wrap;
+    }
+  }
 `;
 
 const Title = styled.h1`
@@ -61,6 +72,11 @@ const Title = styled.h1`
   font-weight: ${({ theme }) => theme.font.weight.semiBold};
   letter-spacing: -0.015em;
   line-height: 1.25;
+
+  @media (max-width: 720px) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
 `;
 
 const Subtitle = styled.div`
@@ -77,6 +93,11 @@ const HeaderRight = styled.div`
   display: flex;
   flex-shrink: 0;
   gap: ${({ theme }) => theme.spacing(2)};
+
+  @media (max-width: 720px) {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
 `;
 
 const SyncNote = styled.span`
@@ -137,10 +158,16 @@ export const Page = ({
   children,
   title,
   subtitle,
+  lead,
+  titleExtra,
 }: {
   title?: string;
   subtitle?: string;
   actions?: ReactNode;
+  /** Drawn before the title: a back control, an icon. */
+  lead?: ReactNode;
+  /** Drawn after the title on the same line: a chip, a menu. */
+  titleExtra?: ReactNode;
   children: ReactNode;
 }) => {
   const location = useLocation();
@@ -162,9 +189,15 @@ export const Page = ({
   return (
     <>
       <Header>
-        <div style={{ minWidth: 0 }}>
-          <Title>{title ?? item?.title ?? 'Unity HPC'}</Title>
-          {(subtitle ?? item?.subtitle) ? <Subtitle>{subtitle ?? item?.subtitle}</Subtitle> : null}
+        <div style={{ minWidth: 0, display: 'flex', alignItems: 'center', gap: 10 }}>
+          {lead}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <Title>{title ?? item?.title ?? 'Unity HPC'}</Title>
+              {titleExtra}
+            </div>
+            {(subtitle ?? item?.subtitle) ? <Subtitle>{subtitle ?? item?.subtitle}</Subtitle> : null}
+          </div>
         </div>
         <HeaderRight>
           {actions}

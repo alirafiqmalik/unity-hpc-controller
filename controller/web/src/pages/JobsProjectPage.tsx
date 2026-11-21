@@ -376,7 +376,7 @@ export const JobsProjectPage = () => {
             ? `${selectedApp?.label} is reserved. It has no runner, so you cannot submit it.`
             : form.application === 'llms-agents'
               ? 'An LLMs & Agents project opens as an evaluation workspace: datasets, evaluation runs, traces and assessments.'
-              : 'Open a card to see its readiness, declared resources and experiment catalog, dispatch a run, stop it, fetch results, or detach it.'}
+              : 'Open a card to configure a declared workflow, review a run, and follow its execution. Project controls remain available in the project header.'}
         </Hint>
       </Card>
     </Page>

@@ -2,11 +2,17 @@
 
 import styled from '@emotion/styled';
 import { IconSearch, IconX } from '@tabler/icons-react';
-import type {
-  InputHTMLAttributes,
-  ReactNode,
-  SelectHTMLAttributes,
-  TextareaHTMLAttributes,
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useId,
+  useEffect,
+  useRef,
+  type InputHTMLAttributes,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
 } from 'react';
 
 const inputSkin = `
@@ -119,12 +125,25 @@ const FieldWrapper = styled.div`
 type FieldProps = { label?: ReactNode; children: ReactNode; className?: string };
 
 /** A label above one control. */
-export const Field = ({ label, children, className }: FieldProps) => (
-  <FieldWrapper className={className}>
-    {label ? <StyledLabel>{label}</StyledLabel> : null}
-    {children}
-  </FieldWrapper>
-);
+export const Field = ({ label, children, className }: FieldProps) => {
+  const generatedId = useId();
+  let controlId: string | undefined;
+  const bindControl = (nodes: ReactNode): ReactNode => Children.map(nodes, (child) => {
+    if (!isValidElement<{ id?: string; children?: ReactNode }>(child)) return child;
+    if (!controlId && ([TextInput, TextArea, Select, SearchField, Checkbox, SelectionCheckbox].includes(child.type as typeof TextInput) || ['input', 'select', 'textarea'].includes(String(child.type)))) {
+      controlId = child.props.id || generatedId;
+      return cloneElement(child, { id: controlId });
+    }
+    return child.props.children ? cloneElement(child, { children: bindControl(child.props.children) }) : child;
+  });
+  const boundChildren = bindControl(children);
+  return (
+    <FieldWrapper className={className}>
+      {label ? <StyledLabel htmlFor={controlId}>{label}</StyledLabel> : null}
+      {boundChildren}
+    </FieldWrapper>
+  );
+};
 
 /** Two or three fields on one line, stacking on a narrow window. */
 export const FieldRow = styled.div<{ $columns?: number }>`
@@ -297,6 +316,29 @@ export const Checkbox = ({
     {label}
   </CheckboxLabel>
 );
+
+const BareCheckbox = styled.input`
+  accent-color: ${({ theme }) => theme.accent.primary};
+  cursor: pointer;
+  height: 14px;
+  margin: 0;
+  width: 14px;
+`;
+
+/**
+ * The record-table checkbox. `indeterminate` is the header state when only
+ * some of the shown rows are selected.
+ */
+export const SelectionCheckbox = ({
+  indeterminate = false,
+  ...rest
+}: InputHTMLAttributes<HTMLInputElement> & { indeterminate?: boolean }) => {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate && rest.checked !== true;
+  }, [indeterminate, rest.checked]);
+  return <BareCheckbox ref={ref} type="checkbox" {...rest} />;
+};
 
 const StyledToggle = styled.button<{ $on: boolean }>`
   background: ${({ theme, $on }) =>

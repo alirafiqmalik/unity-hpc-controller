@@ -52,7 +52,11 @@ HTTP (tests call `controller.http.handle`, no sockets):
 ## Project workspace
 
 `controller/workspace*.py` adds a versioned connection reader, draft store, plan compiler, and durable execution worker.
-The UI uses `/projects/:slug/*` and the separate `/api/v1/projects/:slug/workspace/*` API namespace.
+The dedicated project UI uses `/projects/:slug/*`.
+`controller/runner.py` exposes workflow setup, reviewed plans, and execution views through `/api/v1/projects/:slug/runner/*`.
+It reuses the durable workspace engine. The workspace API remains available for compatibility.
+LLMs & Agents projects retain their GenAI pages and launch through the same runner interface.
+Other applications open on the guided workflow runner.
 The fixed catalog and generic dispatch endpoints retain their existing contracts.
 
 Project-owned `unityHPC/project.json` declares scientific operations and source boundaries.
@@ -66,8 +70,10 @@ The last supports independent experiments and coordinated ranks. ML is an applic
 Legacy `ml` remains a CLI compatibility spelling for coordinated GPU execution. Historical values remain unchanged.
 
 See [ADR 0008](docs/adr/0008-project-workspace-and-approved-executions.md),
-[contract v1](docs/design/workspace-contract-v1.md), and
-[implementation progress](docs/design/experiments-progress.md).
+[contract v1](docs/workspace-contract-v1.md).
+The old research page modules, specifications, and delivery plans are retired.
+See [workflow runner](docs/workflow-runner.md) for the current project pages and API.
+The execution contract remains applicable to evaluation launch and continuation.
 
 ## 2. MCP tools
 

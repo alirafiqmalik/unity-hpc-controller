@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "application": "llms-agents",
+  "default_primitive": "gpu",
+  "default_mode": "independent",
+  "research_question": "Does the agent answer the evaluation dataset correctly, and does a change to the prompt or model improve it?",
+  "source_paths": [
+    "unityHPC/evaluate.py",
+    "unityHPC/agent.py",
+    "unityHPC/scorers.py",
+    "dataset",
+    "prompts"
+  ],
+  "environment": {
+    "path": "requirements.txt",
+    "version": "unpinned",
+    "secret_paths": ["unityHPC/.env"]
+  },
+  "ownership": {
+    "project": ["unityHPC/project.json", "unityHPC/evaluate.py", "unityHPC/agent.py", "unityHPC/scorers.py", "unityHPC/.env", "dataset", "prompts"],
+    "generated": [".unity-workspace/plans", ".unity-workspace/outputs"],
+    "protected_outputs": ["evaluations"]
+  },
+  "choice_readers": {
+    "datasets": {
+      "argv": ["python3", "-c", "import json,pathlib;print(json.dumps(sorted(p.name for p in pathlib.Path('dataset').iterdir() if p.is_dir() and not p.name.startswith('.'))))"],
+      "timeout_seconds": 5,
+      "location": "controller"
+    },
+    "scorers": {
+      "argv": ["python3", "-c", "import json,sys;sys.path.insert(0,'unityHPC');import scorers;print(json.dumps(scorers.names()))"],
+      "timeout_seconds": 5,
+      "location": "controller"
+    }
+  },
+  "parameters": {
+    "dataset": {"type": "string", "label": "Dataset", "choices_reader": "datasets", "default": "example"},
+    "model": {"type": "string", "label": "Model", "default": "Qwen/Qwen3-1.7B", "variant_eligible": true},
+    "scorers": {"type": "string", "label": "Scorers (comma separated)", "default": "correctness,response_length"},
+    "n_items": {"type": "integer", "label": "Records (0 = all)", "default": 0, "min": 0, "max": 100000},
+    "max_tokens": {"type": "integer", "label": "Max completion tokens", "default": 1024, "min": 1, "max": 65536, "variant_eligible": true},
+    "temperature": {"type": "number", "label": "Temperature", "default": 0.0, "min": 0, "max": 2, "variant_eligible": true},
+    "seed": {"type": "integer", "label": "Seed", "default": 42, "min": 0, "max": 2147483647, "variant_eligible": true},
+    "mock": {"type": "boolean", "label": "Mock engine (smoke test only)", "default": false, "allowed_purposes": ["smoke-test"]}
+  },
+  "operations": {
+    "evaluate": {
+      "argv": ["python3", "unityHPC/evaluate.py", "run",
+        "--dataset", {"param": "dataset"}, "--model", {"param": "model"}, "--scorers", {"param": "scorers"},
+        "--n-items", {"param": "n_items"}, "--max-tokens", {"param": "max_tokens"}, "--temperature", {"param": "temperature"},
+        "--seed", {"param": "seed"}, "--mock", {"param": "mock"},
+        "--out", {"context": "output_dir"}, "--execution-id", {"context": "execution_id"},
+        "--variant-id", {"context": "variant_id"}, "--stage-id", {"context": "stage_id"}, "--purpose", {"context": "purpose"}],
+      "cwd": ".", "location": "cluster", "version": "1", "timeout_seconds": 14400, "category": "Evaluate", "write_scope": "output_dir",
+      "input_ports": {},
+      "output_ports": {"evaluation": {"path": ".", "schema": "llms-agents.evaluation", "version": 1, "required": true, "cardinality": "one",
+        "completeness": {"required_files": ["manifest.json", "traces.jsonl"]}}},
+      "fetch_operation": "evaluation-fetch", "check_operation": "evaluation-check"
+    },
+    "evaluate-mock": {
+      "argv": ["python3", "unityHPC/evaluate.py", "run",
+        "--dataset", {"param": "dataset"}, "--model", {"param": "model"}, "--scorers", {"param": "scorers"},
+        "--n-items", {"param": "n_items"}, "--mock", "true",
+        "--out", {"context": "output_dir"}, "--execution-id", {"context": "execution_id"},
+        "--variant-id", {"context": "variant_id"}, "--stage-id", {"context": "stage_id"}, "--purpose", {"context": "purpose"}],
+      "cwd": ".", "location": "controller", "version": "1", "timeout_seconds": 300, "category": "Check", "write_scope": "output_dir",
+      "input_ports": {},
+      "output_ports": {"evaluation": {"path": ".", "schema": "llms-agents.evaluation", "version": 1, "required": true, "cardinality": "one",
+        "completeness": {"required_files": ["manifest.json", "traces.jsonl"]}}},
+      "fetch_operation": "evaluation-fetch", "check_operation": "evaluation-check"
+    },
+    "evaluation-check": {
+      "argv": ["python3", "unityHPC/evaluate.py", "validate", "--out", {"context": "output_dir"}],
+      "cwd": ".", "location": "controller", "version": "1", "timeout_seconds": 60
+    },
+    "evaluation-fetch": {
+      "argv": ["python3", "unityHPC/evaluate.py", "fetch", "--project-root", {"context": "project_root"}, "--relative", {"context": "relative_output_dir"}],
+      "cwd": ".", "location": "controller", "version": "1", "timeout_seconds": 620
+    },
+    "connection-check": {
+      "argv": ["python3", "unityHPC/evaluate.py", "check"],
+      "cwd": ".", "location": "controller", "version": "1", "timeout_seconds": 120
+    }
+  },
+  "workflows": {
+    "evaluate": {
+      "title": "Evaluate a dataset",
+      "parameters": ["dataset", "model", "scorers", "n_items", "max_tokens", "temperature", "seed"],
+      "defaults": {},
+      "stages": [
+        {"id": "evaluate", "operation": "evaluate", "depends_on": [], "purpose": "experiment", "scope": "variant",
+         "resources": {"primitive": "gpu", "mode": "independent", "gpus": 1, "cpus": 8, "walltime": "02:00:00", "memory_gb": 32},
+         "check_operation": "evaluation-check", "fetch_operation": "evaluation-fetch",
+         "outputs": [{"id": "evaluation", "path": ".", "schema": "llms-agents.evaluation", "version": 1, "required": true,
+                      "completeness": {"required_files": ["manifest.json", "traces.jsonl"]}}]}
+      ],
+      "metrics": ["accuracy", "response_length"]
+    },
+    "evaluate-smoke": {
+      "title": "Mock smoke test (no model)",
+      "parameters": ["dataset", "model", "scorers", "n_items", "mock"],
+      "defaults": {"mock": true, "n_items": 3, "model": "mock"},
+      "smoke_test_required": true,
+      "stages": [
+        {"id": "evaluate", "operation": "evaluate-mock", "depends_on": [], "purpose": "smoke-test", "scope": "variant",
+         "location": "controller", "resources": {"primitive": "cpu", "cpus": 1, "walltime": "00:05:00", "memory_gb": 2},
+         "check_operation": "evaluation-check",
+         "outputs": [{"id": "evaluation", "path": ".", "schema": "llms-agents.evaluation", "version": 1, "required": true,
+                      "completeness": {"required_files": ["manifest.json", "traces.jsonl"]}}]}
+      ],
+      "metrics": []
+    }
+  },
+  "metrics": {
+    "accuracy": {"label": "Accuracy", "source": "manifest.json", "field": "metrics.accuracy", "type": "number", "unit": "fraction",
+      "dimensions": ["model", "dataset"], "aggregation": "none", "missing": "error",
+      "definition": "Fraction of records whose correctness assessment passed."},
+    "response_length": {"label": "Response length", "source": "traces.jsonl", "field": "assessments.response_length.value", "type": "integer",
+      "unit": "words", "dimensions": ["model", "dataset", "record"], "aggregation": "mean", "missing": "omit",
+      "definition": "Words in the response, per record."}
+  },
+  "checks": [{"id": "connection-check", "operation": "connection-check", "timeout_seconds": 120}],
+  "fetch_operation": "evaluation-fetch",
+  "check_operation": "evaluation-check",
+  "genai": {
+    "schema_version": 1,
+    "datasets_dir": "dataset",
+    "evaluation_roots": [
+      {"path": "evaluations", "manifest": "manifest.json", "traces": "traces.jsonl", "depth": 1, "collection": "evaluations", "label": "Evaluations", "default": true},
+      {"path": ".unity-workspace/outputs", "manifest": "manifest.json", "provenance": "manifest.json", "traces": "traces.jsonl", "depth": 6, "collection": "workspace", "label": "Workspace executions", "default": true}
+    ],
+    "launch": {"workflows": ["evaluate", "evaluate-smoke"], "dataset_parameter": "dataset"},
+    "prompts_dir": "prompts",
+    "docs": "README.md"
+  }
+}

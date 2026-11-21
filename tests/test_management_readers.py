@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from lib import campaign
+from test_dispatcher_ledger import dispatcher
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -109,6 +110,72 @@ def test_refresh_without_any_telemetry_store_is_a_no_op(tmp_project, tmp_data_di
     campaign.record(tmp_project, "c1", "111", "smoke", "cpu")
     assert campaign.refresh_from_telemetry(tmp_project, "c1") == 0
     assert campaign.jobs(tmp_project, "c1")[0]["status"] == "PENDING"
+
+
+def test_worker_telemetry_refresh_preserves_live_scheduler_state(
+        dispatcher, tmp_data_dir):
+    from controller import workspace_worker as worker
+    from lib import paths
+
+    root = dispatcher.project
+    campaign.record(root, "c1", "12345", "evaluation", "gpu")
+    _seed_task_run(paths.summaries_db(), [("12345", "cpu", 0.0, "PENDING")])
+    result = dispatcher("status", "--campaign", "c1",
+                        STUB_SACCT="12345|RUNNING|gpu|00:00:21")
+    assert result.returncode == 0, result.stderr
+    observed = campaign.jobs(root, "c1")
+    assert observed[0]["status"] == "RUNNING"
+    assert observed[0]["hardware"] == "gpu"
+
+    # Polls between live checks must not relabel the running GPU job as queued
+    # on a CPU, or stamp the stale observation as a fresh update.
+    for _ in range(2):
+        assert worker._ledger(root, {"id": "c1"}) == observed
+
+    # A newer authoritative scheduler check can still report a real requeue.
+    result = dispatcher("status", "--campaign", "c1",
+                        STUB_SACCT="12345|PENDING|gpu|00:00:00")
+    assert result.returncode == 0, result.stderr
+    assert campaign.jobs(root, "c1")[0]["status"] == "PENDING"
+
+
+def test_telemetry_still_advances_new_jobs_and_finishes_running_jobs(
+        tmp_project, tmp_data_dir):
+    from lib import paths
+
+    campaign.record(tmp_project, "c1", "111", "evaluation", "gpu")
+    _seed_task_run(paths.summaries_db(), [("111", "a100", 21.0, "RUNNING")])
+    assert campaign.refresh_from_telemetry(tmp_project, "c1") == 1
+    assert campaign.jobs(tmp_project, "c1")[0]["status"] == "RUNNING"
+
+    # Telemetry-only projects must still learn other active state changes.
+    _seed_task_run(paths.summaries_db(), [("111", "a100", 30.0, "SUSPENDED")])
+    assert campaign.refresh_from_telemetry(tmp_project, "c1") == 1
+    assert campaign.jobs(tmp_project, "c1")[0]["status"] == "SUSPENDED"
+
+    _seed_task_run(paths.summaries_db(), [("111", "a100", 42.0, "COMPLETED")])
+    assert campaign.refresh_from_telemetry(tmp_project, "c1") == 1
+    terminal = campaign.jobs(tmp_project, "c1")
+    assert terminal[0]["status"] == "COMPLETED"
+    assert terminal[0]["elapsed_s"] == 42.0
+
+    _seed_task_run(paths.summaries_db(), [("111", "cpu", 0.0, "PENDING")])
+    assert campaign.refresh_from_telemetry(tmp_project, "c1") == 0
+    assert campaign.jobs(tmp_project, "c1") == terminal
+
+
+def test_same_state_telemetry_preserves_live_hardware_and_elapsed(
+        tmp_project, tmp_data_dir):
+    from lib import paths
+
+    campaign.record(tmp_project, "c1", "111", "evaluation", "gpu")
+    campaign.apply_states(tmp_project, "c1", {
+        "111": {"state": "RUNNING", "hardware": "gpu", "elapsed_s": 21.0}})
+    observed = campaign.jobs(tmp_project, "c1")
+    _seed_task_run(paths.summaries_db(), [("111", "cpu", 0.0, "RUNNING")])
+
+    assert campaign.refresh_from_telemetry(tmp_project, "c1") == 0
+    assert campaign.jobs(tmp_project, "c1") == observed
 
 
 def test_legacy_ledger_is_upgraded_in_place_not_rejected(tmp_project):
